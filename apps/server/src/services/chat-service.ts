@@ -1,0 +1,730 @@
+import type {
+  Attachment,
+  AttachmentView,
+  CallRecord,
+  Conversation,
+  Message,
+  PublicUser,
+  ReactionEmoji,
+  User,
+  UserReport,
+} from "../domain/models.js";
+import { toAttachmentView, toPublicUser } from "../domain/models.js";
+import { AppError } from "../lib/errors.js";
+import type { Repositories } from "../repositories/types.js";
+
+export type ReactionView = {
+  emoji: ReactionEmoji;
+  userIds: string[];
+  count: number;
+};
+
+export type MessageSnapshot = Omit<Message, "attachmentIds" | "reactions"> & {
+  sender: PublicUser;
+  attachments: AttachmentView[];
+  reactions: ReactionView[];
+  isFavorite?: boolean;
+};
+
+export type MessageView = MessageSnapshot & {
+  replyTo: MessageSnapshot | null;
+  forwardedFrom: MessageSnapshot | null;
+};
+
+export type ConversationView = Omit<
+  Conversation,
+  | "directKey"
+  | "lastMessageId"
+  | "pinnedMessageId"
+  | "pinnedMessageIds"
+  | "archivedBy"
+  | "mutedUntilBy"
+> & {
+  members: PublicUser[];
+  lastMessage: MessageView | null;
+  /** Latest pin, retained for Yargram 0.1 clients. */
+  pinnedMessage: MessageView | null;
+  pinnedMessages: MessageView[];
+  archived: boolean;
+  mutedUntil: string | null;
+  blocked: boolean;
+};
+
+export type ReadReceipt = {
+  conversationId: string;
+  messageIds: string[];
+  userId: string;
+  readAt: string;
+};
+
+export type PinsResult = {
+  conversationId: string;
+  message: MessageView | null;
+  pinnedMessages: MessageView[];
+  memberIds: string[];
+};
+
+export class ChatService {
+  constructor(private readonly repositories: Repositories) {}
+
+  async createSavedConversation(currentUserId: string): Promise<{ conversation: ConversationView; created: boolean }> {
+    await this.getUser(currentUserId);
+    const result = await this.repositories.conversations.findOrCreateSaved(currentUserId);
+    return { conversation: await this.toConversationView(result.conversation, currentUserId), created: result.created };
+  }
+
+  async createDirectConversation(currentUserId: string, otherUserId: string): Promise<{
+    conversation: ConversationView;
+    created: boolean;
+  }> {
+    if (currentUserId === otherUserId) {
+      throw new AppError(400, "SELF_CONVERSATION", "A direct chat with yourself is not supported");
+    }
+    if (!(await this.repositories.users.findById(otherUserId))) {
+      throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+    }
+    await this.assertUsersCanInteract(currentUserId, otherUserId);
+
+    const result = await this.repositories.conversations.findOrCreateDirect(
+      currentUserId,
+      otherUserId,
+    );
+    return {
+      conversation: await this.toConversationView(result.conversation, currentUserId),
+      created: result.created,
+    };
+  }
+
+  async listConversations(
+    currentUserId: string,
+    archived: boolean | "all" = "all",
+  ): Promise<ConversationView[]> {
+    const conversations = await this.repositories.conversations.listForUser(currentUserId);
+    return Promise.all(
+      conversations
+        .filter(
+          (conversation) =>
+            archived === "all" || conversation.archivedBy.includes(currentUserId) === archived,
+        )
+        .map((conversation) => this.toConversationView(conversation, currentUserId)),
+    );
+  }
+
+  async listMessages(
+    currentUserId: string,
+    conversationId: string,
+    options: { limit: number; before?: string; query?: string },
+  ): Promise<MessageView[]> {
+    await this.getAuthorizedConversation(currentUserId, conversationId);
+    const messages = await this.repositories.messages.listForConversation(conversationId, options);
+    return this.toMessageViews(messages, currentUserId);
+  }
+
+  async sendMessage(
+    currentUserId: string,
+    conversationId: string,
+    text: string,
+    replyToId?: string,
+    options: { attachmentIds?: string[]; forwardedFromId?: string } = {},
+  ): Promise<{ message: MessageView; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    await this.assertConversationInteractionAllowed(currentUserId, conversation);
+    if (replyToId !== undefined) {
+      const replyTarget = await this.repositories.messages.findById(replyToId);
+      if (!replyTarget || replyTarget.conversationId !== conversationId) {
+        throw new AppError(400, "REPLY_MESSAGE_INVALID", "Reply message is not in this conversation");
+      }
+    }
+    const attachmentIds = [...new Set(options.attachmentIds ?? [])];
+    if (!text.trim() && attachmentIds.length === 0) {
+      throw new AppError(400, "MESSAGE_EMPTY", "A message must contain text or an attachment");
+    }
+    if (attachmentIds.length > 10) {
+      throw new AppError(400, "TOO_MANY_ATTACHMENTS", "A message may contain at most 10 attachments");
+    }
+    await this.assertOwnedMessageAttachments(currentUserId, attachmentIds);
+    if (options.forwardedFromId !== undefined) {
+      const forwarded = await this.repositories.messages.findById(options.forwardedFromId);
+      if (!forwarded) {
+        throw new AppError(400, "FORWARDED_MESSAGE_INVALID", "Forwarded message was not found");
+      }
+      const sourceConversation = await this.repositories.conversations.findById(
+        forwarded.conversationId,
+      );
+      if (!sourceConversation?.memberIds.includes(currentUserId)) {
+        throw new AppError(403, "FORWARDED_MESSAGE_FORBIDDEN", "You cannot forward this message");
+      }
+    }
+
+    const message = await this.repositories.messages.create({
+      conversationId,
+      senderId: currentUserId,
+      text: text.trim(),
+      ...(replyToId === undefined ? {} : { replyToId }),
+      ...(options.forwardedFromId === undefined
+        ? {}
+        : { forwardedFromId: options.forwardedFromId }),
+      attachmentIds,
+    });
+    // A delivered message replaces its own draft.
+    await this.repositories.drafts.delete(currentUserId, conversationId);
+    return {
+      message: await this.toMessageView(message, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  async forwardMessage(
+    currentUserId: string,
+    sourceConversationId: string,
+    messageId: string,
+    targetConversationId: string,
+  ): Promise<{ message: MessageView; memberIds: string[] }> {
+    await this.getAuthorizedConversation(currentUserId, sourceConversationId);
+    const source = await this.getConversationMessage(sourceConversationId, messageId);
+    const target = await this.getAuthorizedConversation(currentUserId, targetConversationId);
+    await this.assertConversationInteractionAllowed(currentUserId, target);
+    const forwarded = await this.repositories.messages.create({
+      conversationId: targetConversationId,
+      senderId: currentUserId,
+      text: source.text,
+      forwardedFromId: source.id,
+      attachmentIds: source.attachmentIds,
+    });
+    return {
+      message: await this.toMessageView(forwarded, currentUserId),
+      memberIds: target.memberIds,
+    };
+  }
+
+  async updateMessage(
+    currentUserId: string,
+    conversationId: string,
+    messageId: string,
+    text: string,
+  ): Promise<{ message: MessageView; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    const existing = await this.getConversationMessage(conversationId, messageId);
+    if (existing.senderId !== currentUserId || existing.kind !== "user") {
+      throw new AppError(403, "MESSAGE_EDIT_FORBIDDEN", "You can only edit your own messages");
+    }
+    if (!text.trim() && existing.attachmentIds.length === 0) {
+      throw new AppError(400, "MESSAGE_EMPTY", "A message must contain text or an attachment");
+    }
+    const message = await this.repositories.messages.updateText(messageId, text.trim());
+    return {
+      message: await this.toMessageView(message, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  async deleteMessage(
+    currentUserId: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<{
+    conversationId: string;
+    messageId: string;
+    conversation: ConversationView;
+    memberIds: string[];
+  }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    await this.getConversationMessage(conversationId, messageId);
+    await this.repositories.messages.deleteFromConversation(conversationId, messageId);
+    const updatedConversation = await this.repositories.conversations.findById(conversationId);
+    if (!updatedConversation) {
+      throw new AppError(500, "DATA_INTEGRITY_ERROR", "Conversation disappeared during deletion");
+    }
+    return {
+      conversationId,
+      messageId,
+      conversation: await this.toConversationView(updatedConversation, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  async setReaction(
+    currentUserId: string,
+    conversationId: string,
+    messageId: string,
+    emoji: ReactionEmoji | null,
+  ): Promise<{ message: MessageView; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    await this.getConversationMessage(conversationId, messageId);
+    const message = await this.repositories.messages.setReaction(messageId, currentUserId, emoji);
+    return {
+      message: await this.toMessageView(message, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  async setFavorite(
+    currentUserId: string,
+    conversationId: string,
+    messageId: string,
+    favorite: boolean,
+  ): Promise<{ message: MessageView; favorite: boolean }> {
+    await this.getAuthorizedConversation(currentUserId, conversationId);
+    const existing = await this.getConversationMessage(conversationId, messageId);
+    await this.repositories.users.setFavorite(currentUserId, messageId, favorite);
+    return {
+      message: await this.toMessageView(existing, currentUserId),
+      favorite,
+    };
+  }
+
+  async listFavorites(currentUserId: string): Promise<MessageView[]> {
+    const user = await this.getUser(currentUserId);
+    const messages = await this.repositories.messages.listByIds(user.favoriteMessageIds);
+    const authorized: Message[] = [];
+    for (const message of messages) {
+      const conversation = await this.repositories.conversations.findById(message.conversationId);
+      if (conversation?.memberIds.includes(currentUserId)) authorized.push(message);
+    }
+    return this.toMessageViews(authorized.reverse(), currentUserId);
+  }
+
+  async setPinnedMessage(
+    currentUserId: string,
+    conversationId: string,
+    messageId: string | null,
+  ): Promise<PinsResult> {
+    await this.getAuthorizedConversation(currentUserId, conversationId);
+    if (messageId !== null) await this.getConversationMessage(conversationId, messageId);
+    const updated = await this.repositories.conversations.setPinnedMessage(
+      conversationId,
+      messageId,
+    );
+    return this.toPinsResult(updated, currentUserId);
+  }
+
+  async setMessagePinned(
+    currentUserId: string,
+    conversationId: string,
+    messageId: string,
+    pinned: boolean,
+  ): Promise<PinsResult> {
+    await this.getAuthorizedConversation(currentUserId, conversationId);
+    await this.getConversationMessage(conversationId, messageId);
+    const updated = await this.repositories.conversations.setMessagePinned(
+      conversationId,
+      messageId,
+      pinned,
+    );
+    return this.toPinsResult(updated, currentUserId);
+  }
+
+  async updateConversationSettings(
+    currentUserId: string,
+    conversationId: string,
+    input: { archived?: boolean; mutedUntil?: string | null },
+  ): Promise<{ conversation: ConversationView; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    const updated = await this.repositories.conversations.updateUserSettings(
+      conversationId,
+      currentUserId,
+      input,
+    );
+    return {
+      conversation: await this.toConversationView(updated, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  async markConversationRead(
+    currentUserId: string,
+    conversationId: string,
+  ): Promise<{ receipt: ReadReceipt; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    const result = await this.repositories.messages.markRead(conversationId, currentUserId);
+    return {
+      receipt: {
+        conversationId,
+        messageIds: result.messageIds,
+        userId: currentUserId,
+        readAt: new Date().toISOString(),
+      },
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  async setBlocked(
+    currentUserId: string,
+    otherUserId: string,
+    blocked: boolean,
+  ): Promise<{ userId: string; blocked: boolean }> {
+    if (currentUserId === otherUserId) {
+      throw new AppError(400, "SELF_BLOCK", "You cannot block yourself");
+    }
+    await this.getUser(otherUserId);
+    await this.repositories.users.setBlocked(currentUserId, otherUserId, blocked);
+    return { userId: otherUserId, blocked };
+  }
+
+  async listBlocked(currentUserId: string): Promise<PublicUser[]> {
+    const user = await this.getUser(currentUserId);
+    const users = await this.repositories.users.findManyByIds(user.blockedUserIds);
+    return users.map(toPublicUser);
+  }
+
+  async reportUser(
+    currentUserId: string,
+    reportedUserId: string,
+    reason: UserReport["reason"],
+    details?: string,
+  ): Promise<UserReport> {
+    if (currentUserId === reportedUserId) {
+      throw new AppError(400, "SELF_REPORT", "You cannot report yourself");
+    }
+    await this.getUser(reportedUserId);
+    return this.repositories.reports.create({
+      reporterId: currentUserId,
+      reportedUserId,
+      reason,
+      ...(details === undefined ? {} : { details: details.trim() }),
+    });
+  }
+
+  async beginCall(
+    currentUserId: string,
+    conversationId: string,
+    callId: string,
+    mode: "audio" | "video",
+  ): Promise<{ call: CallRecord; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    await this.assertConversationInteractionAllowed(currentUserId, conversation);
+    if (conversation.type === "saved") {
+      throw new AppError(400, "CALL_NOT_SUPPORTED", "Calls are not supported in Saved Messages");
+    }
+    const existing = await this.repositories.calls.findById(callId);
+    if (existing &&
+      (existing.conversationId !== conversationId || existing.initiatorId !== currentUserId)) {
+      throw new AppError(409, "CALL_ID_TAKEN", "This call identifier is already in use");
+    }
+    const call = await this.repositories.calls.create({
+      id: callId,
+      conversationId,
+      initiatorId: currentUserId,
+      mode,
+      status: "ringing",
+    });
+    return { call, memberIds: conversation.memberIds };
+  }
+
+  async answerCall(
+    currentUserId: string,
+    conversationId: string,
+    callId: string,
+  ): Promise<{ call: CallRecord; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    await this.assertConversationInteractionAllowed(currentUserId, conversation);
+    const call = await this.getConversationCall(conversationId, callId);
+    if (call.status !== "ringing") {
+      throw new AppError(409, "CALL_NOT_RINGING", "The call is no longer ringing");
+    }
+    if (call.initiatorId === currentUserId) {
+      throw new AppError(403, "CALL_ANSWER_FORBIDDEN", "The caller cannot answer their own call");
+    }
+    const updated = await this.repositories.calls.update(callId, {
+      status: "active",
+      answeredAt: new Date().toISOString(),
+    });
+    return { call: updated, memberIds: conversation.memberIds };
+  }
+
+  async updateCallMode(
+    currentUserId: string,
+    conversationId: string,
+    callId: string,
+    mode: "audio" | "video",
+  ): Promise<{ call: CallRecord; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    await this.getConversationCall(conversationId, callId);
+    return {
+      call: await this.repositories.calls.update(callId, { mode }),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  async finishCall(
+    currentUserId: string,
+    conversationId: string,
+    callId: string,
+    rejected = false,
+  ): Promise<{
+    call: CallRecord;
+    message: MessageView;
+    memberIds: string[];
+  }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    const call = await this.getConversationCall(conversationId, callId);
+    if (["completed", "missed", "rejected", "not_answered"].includes(call.status)) {
+      throw new AppError(409, "CALL_ALREADY_FINISHED", "The call has already finished");
+    }
+    const endedAt = new Date().toISOString();
+    const durationSeconds = call.answeredAt
+      ? Math.max(0, Math.floor((Date.parse(endedAt) - Date.parse(call.answeredAt)) / 1_000))
+      : 0;
+    const status = call.status === "active" ? "completed" : rejected ? "rejected" : "not_answered";
+    const updated = await this.repositories.calls.update(callId, {
+      status,
+      endedAt,
+      endedById: currentUserId,
+      durationSeconds,
+    });
+    const labels = {
+      completed: call.mode === "video" ? "Видеозвонок завершён" : "Аудиозвонок завершён",
+      rejected: "Звонок отклонён",
+      not_answered: "Нет ответа",
+    } as const;
+    const message = await this.repositories.messages.create({
+      conversationId,
+      senderId: call.initiatorId,
+      text: labels[status],
+      kind: "system",
+      systemEvent: "call",
+      call: {
+        callId,
+        callerId: call.initiatorId,
+        mode: call.mode,
+        outcome:
+          status === "completed" ? "completed" : status === "rejected" ? "declined" : "unanswered",
+        startedAt: call.startedAt,
+        endedAt,
+        durationSeconds,
+      },
+    });
+    return {
+      call: updated,
+      message: await this.toMessageView(message, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  async conversationIdsForUser(userId: string): Promise<string[]> {
+    const conversations = await this.repositories.conversations.listForUser(userId);
+    return conversations.map((conversation) => conversation.id);
+  }
+
+  async memberIdsForConversation(userId: string, conversationId: string): Promise<string[]> {
+    const conversation = await this.getAuthorizedConversation(userId, conversationId);
+    await this.assertConversationInteractionAllowed(userId, conversation);
+    return conversation.memberIds;
+  }
+
+  async publicUser(userId: string): Promise<PublicUser> {
+    return toPublicUser(await this.getUser(userId));
+  }
+
+  async markUserSeen(userId: string, timestamp = new Date().toISOString()): Promise<PublicUser> {
+    return toPublicUser(await this.repositories.users.updateLastSeen(userId, timestamp));
+  }
+
+  async canAccessAttachment(userId: string, attachment: Attachment): Promise<boolean> {
+    if (attachment.ownerId === userId || attachment.kind === "avatar") return true;
+    const messages = await this.repositories.messages.findByAttachmentId(attachment.id);
+    for (const message of messages) {
+      const conversation = await this.repositories.conversations.findById(message.conversationId);
+      if (conversation?.memberIds.includes(userId)) return true;
+    }
+    return false;
+  }
+
+  /** Shared validation for drafts and scheduled messages: only own, non-avatar files. */
+  async assertAttachableFiles(userId: string, attachmentIds: string[]): Promise<void> {
+    await this.assertOwnedMessageAttachments(userId, attachmentIds);
+  }
+
+  /** Shared validation for drafts and scheduled messages: membership plus blocking. */
+  async assertConversationUsable(userId: string, conversationId: string): Promise<Conversation> {
+    const conversation = await this.getAuthorizedConversation(userId, conversationId);
+    await this.assertConversationInteractionAllowed(userId, conversation);
+    return conversation;
+  }
+
+  private async assertOwnedMessageAttachments(userId: string, attachmentIds: string[]): Promise<void> {
+    if (attachmentIds.length === 0) return;
+    const attachments = await this.repositories.attachments.findManyByIds(attachmentIds);
+    if (attachments.length !== attachmentIds.length) {
+      throw new AppError(400, "ATTACHMENT_NOT_FOUND", "One or more attachments do not exist");
+    }
+    if (attachments.some((attachment) => attachment.ownerId !== userId)) {
+      throw new AppError(403, "ATTACHMENT_FORBIDDEN", "Only your own uploads may be attached");
+    }
+    if (attachments.some((attachment) => attachment.kind === "avatar")) {
+      throw new AppError(400, "ATTACHMENT_KIND_INVALID", "An avatar cannot be sent as a message file");
+    }
+  }
+
+  private async assertConversationInteractionAllowed(
+    currentUserId: string,
+    conversation: Conversation,
+  ): Promise<void> {
+    const otherId = conversation.memberIds.find((id) => id !== currentUserId);
+    if (otherId) await this.assertUsersCanInteract(currentUserId, otherId);
+  }
+
+  private async assertUsersCanInteract(firstUserId: string, secondUserId: string): Promise<void> {
+    const [first, second] = await Promise.all([
+      this.repositories.users.findById(firstUserId),
+      this.repositories.users.findById(secondUserId),
+    ]);
+    if (!first || !second) throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+    if (
+      first.blockedUserIds.includes(secondUserId) ||
+      second.blockedUserIds.includes(firstUserId)
+    ) {
+      throw new AppError(403, "USER_BLOCKED", "Communication with this user is blocked");
+    }
+  }
+
+  private async getUser(userId: string): Promise<User> {
+    const user = await this.repositories.users.findById(userId);
+    if (!user) throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+    return user;
+  }
+
+  private async getAuthorizedConversation(
+    userId: string,
+    conversationId: string,
+  ): Promise<Conversation> {
+    const conversation = await this.repositories.conversations.findById(conversationId);
+    if (!conversation) {
+      throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+    }
+    if (!conversation.memberIds.includes(userId)) {
+      throw new AppError(403, "CONVERSATION_FORBIDDEN", "You are not a member of this conversation");
+    }
+    return conversation;
+  }
+
+  private async getConversationMessage(conversationId: string, messageId: string): Promise<Message> {
+    const message = await this.repositories.messages.findById(messageId);
+    if (!message || message.conversationId !== conversationId) {
+      throw new AppError(404, "MESSAGE_NOT_FOUND", "Message was not found in this conversation");
+    }
+    return message;
+  }
+
+  private async getConversationCall(conversationId: string, callId: string): Promise<CallRecord> {
+    const call = await this.repositories.calls.findById(callId);
+    if (!call || call.conversationId !== conversationId) {
+      throw new AppError(404, "CALL_NOT_FOUND", "Call was not found in this conversation");
+    }
+    return call;
+  }
+
+  private async toConversationView(
+    conversation: Conversation,
+    currentUserId: string,
+  ): Promise<ConversationView> {
+    const users = await this.repositories.users.findManyByIds(conversation.memberIds);
+    if (users.length !== conversation.memberIds.length) {
+      throw new AppError(500, "DATA_INTEGRITY_ERROR", "Conversation references a missing user");
+    }
+    const usersById = new Map(users.map((user) => [user.id, user]));
+    const members = conversation.memberIds.map((id) => toPublicUser(usersById.get(id) as User));
+    const currentUser = usersById.get(currentUserId);
+    const otherUser = users.find((user) => user.id !== currentUserId);
+    const lastMessage = conversation.lastMessageId
+      ? await this.repositories.messages.findById(conversation.lastMessageId)
+      : null;
+    const pinned = await this.repositories.messages.listByIds(conversation.pinnedMessageIds);
+    const pinnedMessages = await this.toMessageViews(
+      pinned.filter((message) => message.conversationId === conversation.id),
+      currentUserId,
+    );
+
+    return {
+      id: conversation.id,
+      type: conversation.type,
+      memberIds: conversation.memberIds,
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
+      members,
+      lastMessage: lastMessage ? await this.toMessageView(lastMessage, currentUserId) : null,
+      pinnedMessage: pinnedMessages.at(-1) ?? null,
+      pinnedMessages,
+      archived: conversation.archivedBy.includes(currentUserId),
+      mutedUntil: conversation.mutedUntilBy[currentUserId] ?? null,
+      blocked: Boolean(
+        currentUser &&
+          otherUser &&
+          (currentUser.blockedUserIds.includes(otherUser.id) ||
+            otherUser.blockedUserIds.includes(currentUser.id)),
+      ),
+    };
+  }
+
+  private async toPinsResult(
+    conversation: Conversation,
+    currentUserId: string,
+  ): Promise<PinsResult> {
+    const pinned = await this.repositories.messages.listByIds(conversation.pinnedMessageIds);
+    const pinnedMessages = await this.toMessageViews(
+      pinned.filter((message) => message.conversationId === conversation.id),
+      currentUserId,
+    );
+    return {
+      conversationId: conversation.id,
+      message: pinnedMessages.at(-1) ?? null,
+      pinnedMessages,
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  private async toMessageViews(messages: Message[], currentUserId?: string): Promise<MessageView[]> {
+    return Promise.all(messages.map((message) => this.toMessageView(message, currentUserId)));
+  }
+
+  private async toMessageSnapshot(
+    message: Message,
+    currentUserId?: string,
+  ): Promise<MessageSnapshot> {
+    const [sender, attachments, currentUser] = await Promise.all([
+      this.repositories.users.findById(message.senderId),
+      this.repositories.attachments.findManyByIds(message.attachmentIds),
+      currentUserId ? this.repositories.users.findById(currentUserId) : Promise.resolve(null),
+    ]);
+    if (!sender) {
+      throw new AppError(500, "DATA_INTEGRITY_ERROR", "Message references a missing sender");
+    }
+    const { attachmentIds: _attachmentIds, reactions, ...safeMessage } = message;
+    const groupedReactions = new Map<ReactionEmoji, string[]>();
+    for (const reaction of reactions) {
+      const users = groupedReactions.get(reaction.emoji) ?? [];
+      users.push(reaction.userId);
+      groupedReactions.set(reaction.emoji, users);
+    }
+    return {
+      ...safeMessage,
+      sender: toPublicUser(sender),
+      attachments: attachments.map((attachment) => toAttachmentView(attachment, currentUserId)),
+      reactions: [...groupedReactions].map(([emoji, userIds]) => ({
+        emoji,
+        userIds,
+        count: userIds.length,
+      })),
+      ...(currentUser
+        ? { isFavorite: currentUser.favoriteMessageIds.includes(message.id) }
+        : {}),
+    };
+  }
+
+  private async toMessageView(message: Message, currentUserId?: string): Promise<MessageView> {
+    const [reply, forwarded] = await Promise.all([
+      message.replyToId ? this.repositories.messages.findById(message.replyToId) : null,
+      message.forwardedFromId
+        ? this.repositories.messages.findById(message.forwardedFromId)
+        : null,
+    ]);
+    return {
+      ...(await this.toMessageSnapshot(message, currentUserId)),
+      replyTo:
+        reply && reply.conversationId === message.conversationId
+          ? await this.toMessageSnapshot(reply, currentUserId)
+          : null,
+      forwardedFrom: forwarded ? await this.toMessageSnapshot(forwarded, currentUserId) : null,
+    };
+  }
+}

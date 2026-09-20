@@ -1,0 +1,7 @@
+dist/
+node_modules/
+data/*.json
+data/*.tmp
+data/*.bak
+!data/.gitkeep
+.env

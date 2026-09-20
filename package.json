@@ -1,0 +1,36 @@
+{
+  "name": "yargram",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Yargram 0.1 messenger for the Radmin VPN network",
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "install": "node scripts/install-workspaces.mjs",
+    "build": "npm run build --workspace @yargram/web && npm run build --workspace @yargram/server",
+    "dev": "concurrently --kill-others --names server,web --prefix-colors blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev --workspace @yargram/server",
+    "dev:web": "npm run dev --workspace @yargram/web",
+    "start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/start-yargram.ps1",
+    "smoke": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test.ps1",
+    "db:local": "node scripts/local-postgres.mjs",
+    "db:use-local": "node scripts/use-local-postgres.mjs",
+    "db:import": "node --import tsx apps/server/src/migrate-json.ts",
+    "lint": "eslint . --max-warnings=0",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "concurrently": "^9.2.1",
+    "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.4.0",
+    "typescript-eslint": "^8.65.0"
+  }
+}
