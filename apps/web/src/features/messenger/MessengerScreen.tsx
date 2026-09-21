@@ -977,8 +977,14 @@ export function MessengerScreen({
       case 'contacts':
         setSearchOpen(true);
         return;
+      case 'blocked':
+        setBlockedUsersOpen(true);
+        return;
       case 'favorites':
         void openSavedConversation();
+        return;
+      case 'favorites-messages':
+        setFavoritesOpen(true);
         return;
       case 'favorites-notes':
         setNotesOpen(true);
@@ -988,6 +994,9 @@ export function MessengerScreen({
         return;
       case 'toggle-theme':
         onToggleTheme();
+        return;
+      case 'logout':
+        onLogout(false);
         return;
     }
   }

@@ -3,10 +3,12 @@ import {
   ChevronDown,
   CircleHelp,
   Heart,
+  LogOut,
   Moon,
   Phone,
   Plus,
   Settings,
+  ShieldBan,
   Smile,
   Star,
   UserPlus,
@@ -25,11 +27,14 @@ export type SidebarAction =
   | 'create-group'
   | 'create-channel'
   | 'contacts'
+  | 'blocked'
   | 'calls'
   | 'favorites'
+  | 'favorites-messages'
   | 'favorites-notes'
   | 'settings'
-  | 'toggle-theme';
+  | 'toggle-theme'
+  | 'logout';
 
 interface SidebarProps {
   currentUser: User;
@@ -142,9 +147,11 @@ export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction
           <MenuRow icon={<UsersRound className="h-5 w-5" />} label="Создать группу" muted onClick={() => onAction('create-group')} />
           <MenuRow icon={<CircleHelp className="h-5 w-5" />} label="Создать канал" muted onClick={() => onAction('create-channel')} />
           <MenuRow icon={<Heart className="h-5 w-5" />} label="Контакты" onClick={() => onAction('contacts')} />
+          <MenuRow icon={<ShieldBan className="h-5 w-5" />} label="Заблокированные" onClick={() => onAction('blocked')} />
           <MenuRow icon={<Phone className="h-5 w-5" />} label="Звонки" muted onClick={() => onAction('calls')} />
           <MenuRow icon={<Bookmark className="h-5 w-5" />} label="Избранное" onClick={() => onAction('favorites')} />
-          <MenuRow icon={<Star className="h-5 w-5" />} label="Закладки" onClick={() => onAction('favorites-notes')} />
+          <MenuRow icon={<Star className="h-5 w-5" />} label="Закладки сообщений" onClick={() => onAction('favorites-messages')} />
+          <MenuRow icon={<Star className="h-5 w-5" />} label="Заметки" onClick={() => onAction('favorites-notes')} />
           <MenuRow icon={<Settings className="h-5 w-5" />} label="Настройки" onClick={() => onAction('settings')} />
 
           {/* Ночной режим — переключатель темы. */}
@@ -165,6 +172,16 @@ export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction
                 aria-hidden="true"
               />
             </span>
+          </button>
+
+          {/* Выйти — красный, как в Telegram Desktop. */}
+          <button
+            type="button"
+            onClick={() => onAction('logout')}
+            className="mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold text-danger transition hover:bg-danger/10"
+          >
+            <LogOut className="h-5 w-5" />
+            <span className="flex-1">Выйти</span>
           </button>
         </nav>
 

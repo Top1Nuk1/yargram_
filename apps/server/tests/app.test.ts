@@ -1357,6 +1357,36 @@ describe("Yargram API", () => {
     expect(invalid.status).toBe(400);
   });
 
+  it("lets a user set, change and clear their own birthday", async () => {
+    const harness = await createHarness();
+    const me = await register(harness.app, "bday-me@example.com", "BdayMe");
+    const auth = { Authorization: bearer(me.accessToken) };
+
+    const set1 = await request(harness.app).patch("/api/users/me").set(auth).send({ birthday: "2010-11-01" });
+    expect(set1.status).toBe(200);
+    expect(set1.body.user.birthday).toBe("2010-11-01");
+
+    const set2 = await request(harness.app).patch("/api/users/me").set(auth).send({ birthday: "2009-05-20" });
+    expect(set2.body.user.birthday).toBe("2009-05-20");
+
+    // Другой пользователь видит день рождения в профиле.
+    const peer = await register(harness.app, "bday-peer@example.com", "BdayPeer");
+    const peerAuth = { Authorization: bearer(peer.accessToken) };
+    const peerSees = await request(harness.app).get(`/api/users/${me.user.id}`).set(peerAuth);
+    expect(peerSees.body.user.birthday).toBe("2009-05-20");
+
+    // Очистка через null.
+    const cleared = await request(harness.app).patch("/api/users/me").set(auth).send({ birthday: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.user.birthday).toBeUndefined();
+    const peerAfterClear = await request(harness.app).get(`/api/users/${me.user.id}`).set(peerAuth);
+    expect(peerAfterClear.body.user.birthday).toBeUndefined();
+
+    // Неверный формат — 400.
+    const bad = await request(harness.app).patch("/api/users/me").set(auth).send({ birthday: "not-a-date" });
+    expect(bad.status).toBe(400);
+  });
+
   it("lets an owner revoke verification, the badge and extra usernames", async () => {
     const harness = await createHarness();
     const owner = await register(harness.app, "revoke-owner@example.com", "RevokeOwner");

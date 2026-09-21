@@ -44,6 +44,7 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [bio, setBio] = useState(user.bio ?? '');
+  const [birthday, setBirthday] = useState(user.birthday ?? '');
   /** Кого администрируем прямо сейчас: его состояние показывает панель ниже. */
   const [adminTarget, setAdminTarget] = useState<User | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -137,6 +138,8 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
         ...(themeColor !== (user.themeColor ?? '#3390ec') ? { themeColor } : {}),
         wallpaperUrl: wallpaperUrl.trim(),
         showLastSeen,
+        // Пустая строка → null, чтобы сервер стёр поле. Иначе — как ввёл пользователь.
+        birthday: birthday || null,
       });
       setProfileUser(updated);
       onSaved(updated);
@@ -341,6 +344,28 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
                 maxLength={280}
               />
             </div>
+
+          <div>
+            <label htmlFor="profile-birthday" className="mb-1.5 block text-sm font-semibold">День рождения</label>
+            <div className="relative">
+              <input
+                id="profile-birthday"
+                type="date"
+                className={fieldClass}
+                value={birthday}
+                onChange={(event) => setBirthday(event.target.value)}
+                max="2099-12-31"
+              />
+            </div>
+            <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
+              <span>День рождения видят другие пользователи в вашем профиле.</span>
+              {birthday && (
+                <button type="button" onClick={() => setBirthday('')} className="font-semibold text-brand transition hover:text-brand-strong">
+                  Убрать
+                </button>
+              )}
+            </div>
+          </div>
           </fieldset>
 
           </div>
