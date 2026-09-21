@@ -191,12 +191,19 @@ export function attachSocketServer(
       // incorrectly appear offline until their next reconnect.
       for (const onlineUserId of userSockets.keys()) {
         const onlineUser = await dependencies.chatService.publicUser(onlineUserId);
+        // Онлайн определяют живые подключения, а не lastSeenAt: время последнего
+        // визита есть и у тех, кто уже давно вышел, и по нему все подряд
+        // казались бы «в сети» до следующего переподключения.
+        // Онлайн определяют живые подключения, а не lastSeenAt: время последнего
+        // визита есть и у давно вышедших. Но приватность важнее: кто скрыл время
+        // визита (lastSeenStatus задан), тот не светится как «в сети».
+        const live = (userSockets.get(onlineUserId)?.size ?? 0) > 0 && onlineUser.lastSeenStatus === null;
         socket.emit("presence:updated", {
           userId: onlineUserId,
-          online: onlineUser.lastSeenAt !== null,
-          isOnline: onlineUser.lastSeenAt !== null,
-          lastSeenAt: onlineUser.lastSeenAt,
-          lastSeenStatus: onlineUser.lastSeenStatus,
+          online: live,
+          isOnline: live,
+          lastSeenAt: live ? null : onlineUser.lastSeenAt,
+          lastSeenStatus: live ? null : onlineUser.lastSeenStatus,
         });
       }
       if (wasOffline) {

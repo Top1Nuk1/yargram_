@@ -1392,6 +1392,33 @@ describe("Yargram API", () => {
     expect(profile.body.user.displayName).toBe("TgAlice");
   });
 
+  it("lets an owner assign and revoke administrator rights", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "rights-owner@example.com", "RightsOwner");
+    const admin = await register(harness.app, "rights-admin@example.com", "RightsAdmin");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const authorize = { Authorization: bearer(owner.accessToken) };
+
+    const assigned = await request(harness.app).put(`/api/admin/${admin.user.id}/assign`).set(authorize);
+    expect(assigned.status).toBe(200);
+    await expect(harness.repositories.users.findById(admin.user.id)).resolves.toMatchObject({
+      adminUserIds: [owner.user.id],
+    });
+
+    const revoked = await request(harness.app).delete(`/api/admin/${admin.user.id}/assign`).set(authorize);
+    expect(revoked.status).toBe(200);
+    await expect(harness.repositories.users.findById(admin.user.id)).resolves.toMatchObject({
+      adminUserIds: [],
+    });
+
+    // Без прав снимать права нельзя, даже у самого себя.
+    const forbidden = await request(harness.app)
+      .delete(`/api/admin/${admin.user.id}/assign`)
+      .set({ Authorization: bearer(admin.accessToken) });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_ADMIN");
+  });
+
   it("stores personal drafts, folders and a duplicate-free scheduled queue", async () => {
     const harness = await createHarness();
     const alice = await register(harness.app, "plan-alice@example.com", "PlanAlice");

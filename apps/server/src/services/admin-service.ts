@@ -93,6 +93,23 @@ export class AdminService {
     return users;
   }
 
+  async unassignAdmin(grantorId: string, targetUserId: string): Promise<User> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor || (!grantor.adminUserIds?.includes(grantorId) && !grantor.isOwner)) {
+      throw new AppError(403, "NOT_ADMIN", "You are not an administrator");
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
+    if (!grantor.isOwner && !grantor.adminUserIds?.includes(targetUserId)) {
+      throw new AppError(403, "NOT_ADMIN", "You can only administer users assigned to you");
+    }
+    const updated = await this.users.update(targetUserId, {
+      adminUserIds: (target.adminUserIds ?? []).filter((id) => id !== grantorId),
+    });
+    if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    return updated;
+  }
+
   async assignAdmin(grantorId: string, targetUserId: string): Promise<User> {
     if (targetUserId === grantorId) {
       throw new AppError(400, "SELF_ADMIN", "You are already an administrator");

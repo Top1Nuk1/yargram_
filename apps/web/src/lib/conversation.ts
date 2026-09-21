@@ -1,4 +1,5 @@
 import type { Conversation, Message, Participant, User } from '../types';
+import { updateUserPresence, type PresencePayload } from './presence';
 
 function participantUser(participant: Participant): User | null {
   if (participant.user) return participant.user;
@@ -76,4 +77,35 @@ export function sortMessages(items: Message[]): Message[] {
     const delta = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     return delta || a.id.localeCompare(b.id);
   });
+}
+
+/**
+ * Применяет presence-событие ко всем пользователям беседы: participants, members,
+ * users и otherUser. Без этого «в сети» в шапке чата обновлялось бы только после
+ * перезахода в диалог.
+ */
+export function updateConversationPresence(
+  conversation: Conversation,
+  payload: PresencePayload,
+): Conversation {
+  const updateParticipant = (participant: Participant): Participant => {
+    const id = participant.user?.id ?? participant.userId ?? participant.id;
+    if (id !== payload.userId) return participant;
+    return participant.user
+      ? { ...participant, user: updateUserPresence(participant.user, payload) }
+      : {
+          ...participant,
+          ...updateUserPresence(
+            { ...participant, id, displayName: participant.displayName ?? '' },
+            payload,
+          ),
+        };
+  };
+  return {
+    ...conversation,
+    participants: conversation.participants?.map(updateParticipant),
+    members: conversation.members?.map(updateParticipant),
+    users: conversation.users?.map((user) => updateUserPresence(user, payload)),
+    otherUser: conversation.otherUser ? updateUserPresence(conversation.otherUser, payload) : undefined,
+  };
 }

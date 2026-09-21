@@ -44,6 +44,8 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [bio, setBio] = useState(user.bio ?? '');
+  /** Кого администрируем прямо сейчас: его состояние показывает панель ниже. */
+  const [adminTarget, setAdminTarget] = useState<User | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
@@ -161,7 +163,40 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
     }
     setError('');
     api.adminGrant(token, profileUser.id ?? user.id, { targetUsername: username, ...input })
-      .then(() => setError(success))
+      .then((updated) => {
+        setError(success);
+        // Панель состояния цели должна показать свежие данные, а не те, что были до правки.
+        setAdminTarget((current) => (current ? { ...current, ...updated } : current));
+      })
+      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
+  }
+
+  /** Показывает текущее состояние цели: галочка, значок и список доп. юзернеймов. */
+  function inspectAdminTarget() {
+    const username = (document.getElementById('admin-target-id') as HTMLInputElement | null)
+      ?.value?.trim()
+      .replace(/^@/, '')
+      .toLowerCase();
+    if (!username) {
+      setError('Укажите юзернейм');
+      return;
+    }
+    setError('');
+    api.users(token, username)
+      .then((result) => {
+        const wanted = username;
+        const found = result.items.find(
+          (candidate) =>
+            candidate.username?.toLowerCase() === wanted ||
+            (candidate.usernames ?? []).some((alias) => alias.toLowerCase() === wanted),
+        );
+        if (!found) {
+          setAdminTarget(null);
+          setError(`Пользователь @${username} не найден`);
+          return;
+        }
+        setAdminTarget(found);
+      })
       .catch((reason: unknown) => setError(adminErrorMessage(reason)));
   }
 
@@ -355,6 +390,7 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
               <input id="admin-target-id" className={fieldClass} placeholder="username (например: top1nuk1)" />
               <input id="admin-usernames" className={fieldClass} placeholder="доп. юзернеймы через запятую: kotik, second_name" />
               <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" className="text-xs" onClick={() => inspectAdminTarget()}>Показать состояние</Button>
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ isVerified: true }, 'Галочка выдана')}>Подтвердить (галочка)</Button>
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ badge: 'yargram' }, 'Значок Yargram выдан')}>Значок Yargram</Button>
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => {
@@ -370,7 +406,46 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ isVerified: false }, 'Галочка снята')}>Снять галочку</Button>
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ badge: null }, 'Значок Yargram снят')}>Снять значок Yargram</Button>
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ usernames: [] }, 'Доп. юзернеймы очищены')}>Очистить доп. юзернеймы</Button>
+                <Button type="button" variant="secondary" className="text-xs" disabled={!adminTarget} onClick={() => {
+                  if (!adminTarget) return;
+                  setError('');
+                  api.adminUnassign(token, adminTarget.id)
+                    .then((updated) => {
+                      setError('Права администратора сняты');
+                      setAdminTarget({ ...adminTarget, ...updated });
+                    })
+                    .catch((reason: unknown) => setError(adminErrorMessage(reason)));
+                }}>Снять права админа</Button>
               </div>
+              {adminTarget && (
+                <div className="rounded-xl border border-line bg-canvas p-3">
+                  <p className="text-xs font-semibold">
+                    @{adminTarget.username ?? '—'}: галочка {adminTarget.isVerified ? 'есть' : 'нет'}, значок{' '}
+                    {adminTarget.badge === 'yargram' ? 'Yargram' : 'нет'}
+                  </p>
+                  {(adminTarget.usernames ?? []).length > 0 ? (
+                    <ul className="mt-2 space-y-1">
+                      {(adminTarget.usernames ?? []).map((alias) => (
+                        <li key={alias} className="flex items-center justify-between gap-2 text-xs">
+                          <span className="truncate">@{alias}</span>
+                          <button
+                            type="button"
+                            className="shrink-0 font-semibold text-danger hover:underline"
+                            onClick={() => runAdminGrant(
+                              { usernames: (adminTarget.usernames ?? []).filter((item) => item !== alias) },
+                              `Юзернейм @${alias} удалён`,
+                            )}
+                          >
+                            убрать
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted">Дополнительных юзернеймов нет.</p>
+                  )}
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => {
                   const field = document.getElementById('admin-target-id') as HTMLInputElement | null;

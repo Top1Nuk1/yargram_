@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { conversationTitle, getConversationPeer, sortMessages } from './conversation';
+import { conversationTitle, getConversationPeer, sortMessages, updateConversationPresence } from './conversation';
+import { formatLastSeen, isUserOnline } from '../features/messenger/messengerUtils';
 import type { Conversation, Message } from '../types';
 
 const conversation: Conversation = {
@@ -27,6 +28,38 @@ describe('conversation helpers', () => {
     expect(getConversationPeer(flagged, 'alice')).toMatchObject({
       isVerified: true,
       badge: 'yargram',
+    });
+  });
+
+  describe('presence', () => {
+    const live: Conversation = {
+      id: 'conversation-3',
+      members: [
+        { id: 'alice', displayName: 'Алиса' },
+        { id: 'bob', displayName: 'Борис', isOnline: true, online: true },
+      ],
+    };
+
+    it('shows the peer as online while the payload says so', () => {
+      const online = updateConversationPresence(live, { userId: 'bob', online: true, isOnline: true });
+      expect(isUserOnline(getConversationPeer(online, 'alice'))).toBe(true);
+    });
+
+    it('switches the peer to «был(а) …» without re-entering the chat', () => {
+      const offline = updateConversationPresence(live, {
+        userId: 'bob',
+        online: false,
+        isOnline: false,
+        lastSeenAt: '2026-09-21T18:00:00',
+      });
+      const peer = getConversationPeer(offline, 'alice');
+      expect(isUserOnline(peer)).toBe(false);
+      expect(formatLastSeen(peer, new Date('2026-09-21T19:00:00'))).toBe('Был(а) сегодня в 18:00');
+    });
+
+    it('leaves other conversations members untouched', () => {
+      const offline = updateConversationPresence(live, { userId: 'carol', online: false });
+      expect(isUserOnline(getConversationPeer(offline, 'alice'))).toBe(true);
     });
   });
 

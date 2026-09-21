@@ -68,6 +68,7 @@ import {
   messageSenderId,
   sortConversations,
   sortMessages,
+  updateConversationPresence,
 } from '../../lib/conversation';
 import { formatConversationTime, formatMessageTime } from '../../lib/format';
 import { buildMessageGroups, groupAt, groupSpacing } from '../../lib/messageGroups';
@@ -259,23 +260,6 @@ function updateConversationMessage(conversation: Conversation, updated: Message)
     pinnedMessages: conversation.pinnedMessages?.map((message) =>
       message.id === updated.id ? { ...message, ...updated } : message,
     ),
-  };
-}
-
-function updateConversationPresence(conversation: Conversation, payload: PresencePayload): Conversation {
-  const updateParticipant = (participant: Participant): Participant => {
-    const id = participant.user?.id ?? participant.userId ?? participant.id;
-    if (id !== payload.userId) return participant;
-    return participant.user
-      ? { ...participant, user: updateUserPresence(participant.user, payload) }
-      : { ...participant, ...updateUserPresence({ ...participant, id, displayName: participant.displayName ?? '' }, payload) };
-  };
-  return {
-    ...conversation,
-    participants: conversation.participants?.map(updateParticipant),
-    members: conversation.members?.map(updateParticipant),
-    users: conversation.users?.map((user) => updateUserPresence(user, payload)),
-    otherUser: conversation.otherUser ? updateUserPresence(conversation.otherUser, payload) : undefined,
   };
 }
 

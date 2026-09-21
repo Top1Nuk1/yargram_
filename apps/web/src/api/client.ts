@@ -509,6 +509,12 @@ export const api = {
     }).then((result) => ('user' in result ? result.user : result));
   },
 
+  adminUnassign(token: string, userId: string) {
+    return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/assign`, {
+      method: 'DELETE', token,
+    }).then((result) => ('user' in result ? result.user : result));
+  },
+
   blockedUsers(token: string, signal?: AbortSignal) {
     return request<RawCollection<User>>('/api/users/me/blocked', { token, signal }).then(
       (result): PaginatedItems<User> => ({ items: result.users ?? result.items ?? [] }),

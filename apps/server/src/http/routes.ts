@@ -328,6 +328,17 @@ export function createApiRouter(dependencies: {
     }),
   );
 
+  router.delete(
+    "/admin/:userId/assign",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const grantorId = request.auth.userId;
+      const { userId } = parseParams(userParamsSchema, request);
+      const updated = await dependencies.adminService.unassignAdmin(grantorId, userId);
+      response.json({ user: toPublicUser(updated) });
+    }),
+  );
+
   router.get(
     "/admin/users",
     requireAuth,
