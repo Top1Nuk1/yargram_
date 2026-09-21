@@ -93,6 +93,21 @@ interface JoinAnswerPayload {
   answer: RTCSessionDescriptionInit;
 }
 
+/** Новый offer внутри идущего звонка: демонстрация экрана или перезапуск ICE. */
+interface RenegotiatePayload {
+  callId: string;
+  conversationId: string;
+  fromUserId: string;
+  offer: RTCSessionDescriptionInit;
+}
+
+interface RenegotiateAnswerPayload {
+  callId: string;
+  conversationId: string;
+  fromUserId: string;
+  answer: RTCSessionDescriptionInit;
+}
+
 interface ParticipantJoinedPayload {
   callId: string;
   conversationId: string;
@@ -273,6 +288,7 @@ export function useWebRtcCall(socket: Socket | null) {
   const incomingOfferRef = useRef<IncomingCallPayload | null>(null);
   const invitePayloadRef = useRef<InviteIncomingPayload | null>(null);
   const pendingCandidatesRef = useRef<Map<string, BufferedCandidates>>(new Map());
+  const iceRestartRef = useRef<Map<string, number>>(new Map());
   const operationRef = useRef(0);
   const outgoingTimeoutRef = useRef<number | null>(null);
   const localVideoElementRef = useRef<HTMLVideoElement | null>(null);
@@ -481,7 +497,12 @@ export function useWebRtcCall(socket: Socket | null) {
     link.microphoneEnabled = packet.microphoneEnabled;
     link.cameraEnabled = packet.cameraEnabled;
     link.screenSharing = packet.screenSharing;
-    link.videoAvailable = packet.cameraEnabled || packet.screenSharing;
+    // Живая видеодорожка тоже считается: если пакет о состоянии не дошёл,
+    // картинку всё равно надо показать.
+    const hasVideo = link.stream.getVideoTracks().some(
+      (track) => track.readyState === 'live' && !track.muted,
+    );
+    link.videoAvailable = packet.cameraEnabled || packet.screenSharing || hasVideo;
     syncLinks();
   }, [syncLinks]);
 
@@ -707,6 +728,43 @@ const cleanupLinks = useCallback(() => {
     }
   }, []);
 
+  /**
+   * Повторная договорённость внутри уже идущего звонка. Нужна в двух случаях:
+   * появился новый видеопоток (демонстрация экрана) и связь развалилась —
+   * тогда вместе с restartIce это поднимает звонок заново.
+   */
+  const renegotiateLink = useCallback(async (link: InternalLink) => {
+    const active = callRef.current;
+    const connection = link.connection;
+    if (!active || !connection || !socketRef.current?.connected) return false;
+    try {
+      const offer = await connection.createOffer();
+      await connection.setLocalDescription(offer);
+      const localDescription = connection.localDescription;
+      if (!localDescription) return false;
+      socketRef.current.emit('call:renegotiate', {
+        callId: active.callId,
+        conversationId: active.conversationId,
+        toUserId: link.userId,
+        offer: { type: 'offer', sdp: localDescription.sdp },
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  /** Перезапуск ICE: два шанса, прежде чем признать звонок потерянным. */
+  const restartIceFor = useCallback(async (link: InternalLink) => {
+    const attempts = iceRestartRef.current.get(link.userId) ?? 0;
+    if (attempts >= 2) return false;
+    iceRestartRef.current.set(link.userId, attempts + 1);
+    const connection = link.connection;
+    if (!connection) return false;
+    if (typeof connection.restartIce === 'function') connection.restartIce();
+    return renegotiateLink(link);
+  }, [renegotiateLink]);
+
   const createPeerConnection = useCallback((
     callId: string,
     conversationId: string,
@@ -788,21 +846,40 @@ const cleanupLinks = useCallback(() => {
         });
         sendLocalMediaState();
       } else if (connection.connectionState === 'failed') {
-        if (linksRef.current.size === 1) {
-          setError('Звонок завершён из-за потери соединения.');
-          cleanup(true, callId);
-        } else {
-          setError('Не удалось установить связь с одним из участников.');
-          const linkEntry = linksRef.current.get(link.userId);
-          if (linkEntry) {
-            linkEntry.connection = null;
-            linkEntry.channel = null;
-            linkEntry.stream.getTracks().forEach((track) => stopTrack(track));
-            for (const track of linkEntry.stream.getTracks()) stopTrack(track);
-            linksRef.current.delete(link.userId);
-            syncLinks();
+        // Сначала пробуем поднять соединение заново: часто помогает, когда
+        // сетевой маршрут появился не сразу.
+        void restartIceFor(link).then((restarted) => {
+          if (restarted && linksRef.current.get(link.userId) === link) {
+            setError('Связь прервалась — перезапускаем соединение…');
+            return;
           }
-        }
+          if (linksRef.current.size === 1) {
+            setError('Звонок завершён из-за потери соединения.');
+            cleanup(true, callId);
+          } else {
+            setError('Не удалось установить связь с одним из участников.');
+            const linkEntry = linksRef.current.get(link.userId);
+            if (linkEntry) {
+              linkEntry.connection = null;
+              linkEntry.channel = null;
+              for (const track of linkEntry.stream.getTracks()) stopTrack(track);
+              linksRef.current.delete(link.userId);
+              syncLinks();
+            }
+          }
+        });
+      } else if (connection.connectionState === 'disconnected') {
+        // Короткая потеря сети: ждём, вдруг всё восстановится само.
+        window.setTimeout(() => {
+          if (linksRef.current.get(link.userId) !== link) return;
+          const state = connection.connectionState;
+          if (state === 'connected' || state === 'closed') return;
+          void restartIceFor(link).then((restarted) => {
+            if (restarted && linksRef.current.get(link.userId) === link) {
+              setError('Связь прервалась — перезапускаем соединение…');
+            }
+          });
+        }, 4_000);
       }
     };
     return connection;
@@ -813,6 +890,7 @@ const cleanupLinks = useCallback(() => {
     configureDataChannel,
     connectRemoteAudio,
     patchMatchingCall,
+    restartIceFor,
     sendLocalMediaState,
     syncLinks,
     updateLinkAvailability,
@@ -1230,6 +1308,7 @@ const cleanupLinks = useCallback(() => {
       next.mode = callModeForState(Boolean(camera), false, [...linksRef.current.values()]);
       updateCall(next);
       sendLocalMediaState();
+      for (const link of linksRef.current.values()) await renegotiateLink(link);
     } catch (reason) {
       for (const link of linksRef.current.values()) {
         await link.videoSender?.replaceTrack(null).catch(() => undefined);
@@ -1247,7 +1326,7 @@ const cleanupLinks = useCallback(() => {
       }
       setError(reason instanceof Error ? reason.message : 'Не удалось вернуться к камере.');
     }
-  }, [acquireCameraTrack, replacePreviewVideo, sendLocalMediaState, updateCall]);
+  }, [acquireCameraTrack, renegotiateLink, replacePreviewVideo, sendLocalMediaState, updateCall]);
 
   const toggleScreenShare = useCallback(async () => {
     const active = callRef.current;
@@ -1274,8 +1353,17 @@ const cleanupLinks = useCallback(() => {
         return;
       }
 
+      // Экран важнее камеры: текст и интерфейс должны оставаться читаемыми.
+      if ('contentHint' in track) track.contentHint = 'detail';
+
       for (const link of linksRef.current.values()) {
-        await link.videoSender?.replaceTrack(track);
+        let sender = link.videoSender;
+        // В аудио-звонке видеодорожки могло не быть — добавляем её перед подменой.
+        if (!sender && link.connection) {
+          sender = link.connection.addTransceiver('video', { direction: 'sendrecv' }).sender;
+          link.videoSender = sender;
+        }
+        if (sender) await sender.replaceTrack(track);
       }
       const camera = cameraTrackRef.current;
       cameraTrackRef.current = null;
@@ -1286,11 +1374,13 @@ const cleanupLinks = useCallback(() => {
       const next = { ...current, screenSharing: true, mode: 'video' as CallMode };
       updateCall(next);
       sendLocalMediaState();
+      // Собеседник должен получить новый SDP, иначе экран останется невидимым.
+      for (const link of linksRef.current.values()) await renegotiateLink(link);
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'NotAllowedError') return;
       setError(reason instanceof Error ? reason.message : 'Не удалось начать демонстрацию экрана.');
     }
-  }, [replacePreviewVideo, sendLocalMediaState, stopScreenShare, updateCall]);
+  }, [renegotiateLink, replacePreviewVideo, sendLocalMediaState, stopScreenShare, updateCall]);
 
   const setRemoteVolume = useCallback((value: number) => {
     const active = callRef.current;
@@ -1706,6 +1796,55 @@ const cleanupLinks = useCallback(() => {
       }
     };
 
+    const onRenegotiate = async (payload: RenegotiatePayload) => {
+      const active = callRef.current;
+      if (
+        !active
+        || active.callId !== payload.callId
+        || active.conversationId !== payload.conversationId
+      ) {
+        return;
+      }
+      const link = linksRef.current.get(payload.fromUserId);
+      const connection = link?.connection;
+      if (!link || !connection) return;
+      try {
+        await connection.setRemoteDescription(payload.offer);
+        await flushCandidates(payload.fromUserId);
+        const answer = await connection.createAnswer();
+        await connection.setLocalDescription(answer);
+        const localDescription = connection.localDescription;
+        if (!localDescription || !socketRef.current?.connected) return;
+        socketRef.current.emit('call:renegotiate-answer', {
+          callId: payload.callId,
+          conversationId: payload.conversationId,
+          toUserId: payload.fromUserId,
+          answer: { type: 'answer', sdp: localDescription.sdp },
+        });
+      } catch {
+        // Повторная договорённость не прошла — звонок продолжается как есть.
+      }
+    };
+
+    const onRenegotiateAnswer = async (payload: RenegotiateAnswerPayload) => {
+      const active = callRef.current;
+      const link = linksRef.current.get(payload.fromUserId);
+      if (
+        !active
+        || active.callId !== payload.callId
+        || active.conversationId !== payload.conversationId
+        || !link?.connection
+      ) {
+        return;
+      }
+      try {
+        await link.connection.setRemoteDescription(payload.answer);
+        await flushCandidates(payload.fromUserId);
+      } catch {
+        // Оставляем соединение в текущем состоянии.
+      }
+    };
+
     const onEnded = (payload: { callId: string; conversationId?: string }) => {
       const active = callRef.current;
       if (
@@ -1740,6 +1879,8 @@ const cleanupLinks = useCallback(() => {
     socket.on('call:join-offer', (payload: JoinOfferPayload) => void onJoinOffer(payload));
     socket.on('call:join-answer', (payload: JoinAnswerPayload) => void onJoinAnswer(payload));
     socket.on('call:ice', onDirectedIce);
+    socket.on('call:renegotiate', onRenegotiate);
+    socket.on('call:renegotiate-answer', onRenegotiateAnswer);
     socket.on('call:answered', onAnswered);
     socket.on('call:ice-candidate', onCandidate);
     socket.on('call:ended', onEnded);
@@ -1753,6 +1894,8 @@ const cleanupLinks = useCallback(() => {
       socket.off('call:join-offer');
       socket.off('call:join-answer');
       socket.off('call:ice', onDirectedIce);
+      socket.off('call:renegotiate', onRenegotiate);
+      socket.off('call:renegotiate-answer', onRenegotiateAnswer);
       socket.off('call:answered', onAnswered);
       socket.off('call:ice-candidate', onCandidate);
       socket.off('call:ended', onEnded);

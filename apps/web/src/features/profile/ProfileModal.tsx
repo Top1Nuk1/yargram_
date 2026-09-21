@@ -232,6 +232,48 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
       .catch((reason: unknown) => setError(adminErrorMessage(reason)));
   }
 
+  /** Заморозка: аккаунт остаётся, но человек не сможет войти. */
+  function toggleFreeze() {
+    if (!adminTarget) {
+      setError('Сначала нажмите «Показать состояние»');
+      return;
+    }
+    const next = !adminTarget.isFrozen;
+    const handle = adminTarget.username ? `@${adminTarget.username}` : adminTarget.displayName;
+    if (
+      next &&
+      !window.confirm(`Заморозить аккаунт ${handle}? Он не сможет войти и писать, пока вы не разморозите его.`)
+    ) {
+      return;
+    }
+    setError('');
+    api.adminFreeze(token, adminTarget.id, next)
+      .then((updated) => {
+        setAdminTarget({ ...adminTarget, ...updated });
+        setError(next ? `Аккаунт ${handle} заморожен.` : `Аккаунт ${handle} разморожен.`);
+      })
+      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
+  }
+
+  /** Удаление аккаунта: сообщения, черновики, заметки и файлы человека стираются. */
+  function deleteAccount() {
+    if (!adminTarget) {
+      setError('Сначала нажмите «Показать состояние»');
+      return;
+    }
+    const handle = adminTarget.username ? `@${adminTarget.username}` : adminTarget.displayName;
+    if (!window.confirm(`Удалить аккаунт ${handle}? Его сообщения, файлы и заметки будут стёрты безвозвратно.`)) {
+      return;
+    }
+    setError('');
+    api.adminDeleteUser(token, adminTarget.id)
+      .then(() => {
+        setAdminTarget(null);
+        setError(`Аккаунт ${handle} удалён.`);
+      })
+      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
+  }
+
   const fieldClass =
     'h-12 w-full rounded-xl border border-line bg-canvas pl-11 pr-4 text-[15px] text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10';
   // Списки дня/месяца/года: без иконки слева, поэтому без pl-11.
@@ -533,6 +575,30 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
                   )}
                 </div>
               )}
+              {/* Заморозка и удаление — только владелец Yargram. */}
+              <div className="flex flex-wrap gap-2 border-t border-line pt-3">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="text-xs"
+                  disabled={!adminTarget}
+                  onClick={() => toggleFreeze()}
+                >
+                  {adminTarget?.isFrozen ? 'Разморозить аккаунт' : 'Заморозить аккаунт'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="danger"
+                  className="text-xs"
+                  disabled={!adminTarget}
+                  onClick={() => deleteAccount()}
+                >
+                  Удалить аккаунт
+                </Button>
+                <span className="text-xs text-muted">
+                  Заморозка закрывает вход; удаление стирает аккаунт вместе с его сообщениями и файлами.
+                </span>
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => {
                   const field = document.getElementById('admin-target-id') as HTMLInputElement | null;

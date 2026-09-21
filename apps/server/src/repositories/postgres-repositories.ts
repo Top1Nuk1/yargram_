@@ -153,6 +153,10 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         return users.sort((a, b) => (a.username ?? a.displayName).localeCompare(b.username ?? b.displayName, "ru")).slice(0, options.limit);
       },
       findManyByIds: (ids) => select<User>(pool, "users", "id = ANY($1::text[])", [ids]),
+      async delete(id) {
+        const result = await pool.query<{ payload: User }>("DELETE FROM users WHERE id = $1 RETURNING payload", [id]);
+        return result.rows[0]?.payload ?? null;
+      },
     },
     conversations: {
       async findOrCreateSaved(userId) {
@@ -271,6 +275,8 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
       create: (input) => insert<Attachment>(pool, "attachments", { id: randomUUID(), ...input, createdAt: now() }),
       findById: (id) => find<Attachment>(pool, "attachments", id),
       findManyByIds: (ids) => orderedIds<Attachment>(pool, "attachments", ids),
+      listByOwner: (ownerId) =>
+        select<Attachment>(pool, "attachments", "owner_id = $1", [ownerId]),
       async delete(id) {
         const result = await pool.query<{ payload: Attachment }>("DELETE FROM attachments WHERE id = $1 RETURNING payload", [id]);
         return result.rows[0]?.payload ?? null;

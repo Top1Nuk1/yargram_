@@ -126,6 +126,13 @@ export class UploadService {
     return this.crypto.decryptBuffer(stored);
   }
 
+  /** Стирает все файлы человека — и с диска, и из базы. Нужно при удалении аккаунта. */
+  async deleteUserFiles(userId: string): Promise<void> {
+    for (const attachment of await this.repositories.attachments.listByOwner(userId)) {
+      await this.deleteStoredAttachment(attachment.id);
+    }
+  }
+
   private async assertMediaAccess(attachment: Attachment, subject: string): Promise<void> {
     // The same rule as chat access: the owner, an avatar, or a participant of a
     // conversation that references this attachment.

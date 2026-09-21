@@ -2,7 +2,6 @@ import {
   Bookmark,
   ChevronDown,
   CircleHelp,
-  Heart,
   LogOut,
   Moon,
   Phone,
@@ -12,7 +11,6 @@ import {
   Star,
   UserPlus,
   UsersRound,
-  Wallet,
   X,
 } from 'lucide-react';
 import { useEffect, type ReactNode } from 'react';
@@ -22,14 +20,11 @@ import type { User } from '../../types';
 
 export type SidebarAction =
   | 'profile'
-  | 'wallet'
   | 'create-group'
   | 'create-channel'
-  | 'contacts'
   | 'blocked'
   | 'calls'
   | 'favorites'
-  | 'favorites-messages'
   | 'favorites-notes'
   | 'settings'
   | 'toggle-theme'
@@ -138,14 +133,11 @@ export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction
         {/* Главное меню — иконки и ярлыки как в ТГ. */}
         <nav className="mt-5 flex-1 overflow-y-auto px-2" aria-label="Главное меню">
           <MenuRow icon={<UserPlus className="h-5 w-5" />} label="Мой профиль" onClick={() => onAction('profile')} />
-          <MenuRow icon={<Wallet className="h-5 w-5" />} label="Кошелёк" muted onClick={() => onAction('wallet')} />
           <MenuRow icon={<UsersRound className="h-5 w-5" />} label="Создать группу" muted onClick={() => onAction('create-group')} />
           <MenuRow icon={<CircleHelp className="h-5 w-5" />} label="Создать канал" muted onClick={() => onAction('create-channel')} />
-          <MenuRow icon={<Heart className="h-5 w-5" />} label="Контакты" onClick={() => onAction('contacts')} />
           <MenuRow icon={<ShieldBan className="h-5 w-5" />} label="Заблокированные" onClick={() => onAction('blocked')} />
           <MenuRow icon={<Phone className="h-5 w-5" />} label="Звонки" muted onClick={() => onAction('calls')} />
           <MenuRow icon={<Bookmark className="h-5 w-5" />} label="Избранное" onClick={() => onAction('favorites')} />
-          <MenuRow icon={<Star className="h-5 w-5" />} label="Закладки сообщений" onClick={() => onAction('favorites-messages')} />
           <MenuRow icon={<Star className="h-5 w-5" />} label="Заметки" onClick={() => onAction('favorites-notes')} />
           <MenuRow icon={<Settings className="h-5 w-5" />} label="Настройки" onClick={() => onAction('settings')} />
 

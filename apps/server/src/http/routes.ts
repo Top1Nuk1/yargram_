@@ -316,6 +316,8 @@ export function createApiRouter(dependencies: {
       path: ["targetUserId"],
     });
 
+  const adminFreezeSchema = z.object({ frozen: z.boolean() });
+
   router.post(
     "/admin/:userId/grant",
     requireAuth,
@@ -332,6 +334,29 @@ export function createApiRouter(dependencies: {
         ...(input.adminUserIds === undefined ? {} : { adminUserIds: input.adminUserIds }),
       });
       response.json({ user: toPublicUser(updated) });
+    }),
+  );
+
+  // Заморозка: аккаунт остаётся, но войти им нельзя. Только владелец.
+  router.post(
+    "/admin/:userId/freeze",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      const { frozen } = parseBody(adminFreezeSchema, request);
+      const updated = await dependencies.adminService.setFrozen(request.auth.userId, userId, frozen);
+      response.json({ user: toPublicUser(updated) });
+    }),
+  );
+
+  // Удаление аккаунта со всем, что ему принадлежало. Только владелец.
+  router.delete(
+    "/admin/:userId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      await dependencies.adminService.deleteUser(request.auth.userId, userId);
+      response.json({ ok: true, userId });
     }),
   );
 
@@ -386,6 +411,17 @@ export function createApiRouter(dependencies: {
           blockedByMe: currentUser?.blockedUserIds.includes(user.id) ?? false,
         },
       });
+    }),
+  );
+
+  // Что есть в переписке с этим человеком: профиль показывает только непустые разделы.
+  router.get(
+    "/users/:userId/media-summary",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      const summary = await dependencies.chatService.mediaSummary(request.auth.userId, userId);
+      response.json({ summary });
     }),
   );
 

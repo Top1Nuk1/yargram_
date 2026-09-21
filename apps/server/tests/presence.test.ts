@@ -34,7 +34,7 @@ async function harness() {
   const authService = new AuthService(repositories.users, { jwtSecret: config.jwtSecret, jwtExpiresIn: config.jwtExpiresIn, bcryptRounds: 4 });
   const chatService = new ChatService(repositories);
   const events = new RealtimeEvents();
-  const adminService = new AdminService(repositories.users);
+  const adminService = new AdminService(repositories);
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);
   const scheduledMessageService = new ScheduledMessageService(repositories, chatService, events);

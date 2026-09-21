@@ -1,5 +1,4 @@
 import {
-  AlertTriangle,
   Ban,
   Calendar,
   Copy,
@@ -11,7 +10,8 @@ import {
   Mic,
   MoreHorizontal,
   ShieldCheck,
-  UsersRound,
+  Snowflake,
+  Trash2,
   Video,
   X,
 } from 'lucide-react';
@@ -19,7 +19,8 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../../api/client';
 import { Avatar, Button } from '../../components/ui';
 import { UserName } from '../../components/UserName';
-import type { ReportReason, User } from '../../types';
+import type { MediaSummary, ReportReason, User } from '../../types';
+import { plural } from '../../lib/format';
 import { formatLastSeen } from '../messenger/messengerUtils';
 import {
   BIRTHDAY_YEARS,
@@ -53,6 +54,10 @@ interface UserProfileSheetProps {
   onSaved?: (user: User) => void;
   onBlockedChange?: (blocked: boolean, user: User) => void;
   onUnauthorized?: () => void;
+  /** Смотрящий — владелец Yargram: ему доступны заморозка и удаление аккаунта. */
+  viewerIsOwner?: boolean;
+  /** Аккаунт удалён — лист надо закрыть и обновить списки. */
+  onDeleted?: (userId: string) => void;
   onClose: () => void;
 }
 
@@ -74,6 +79,8 @@ export function UserProfileSheet({
   onSaved,
   onBlockedChange,
   onUnauthorized,
+  viewerIsOwner = false,
+  onDeleted,
   onClose,
 }: UserProfileSheetProps) {
   const [profile, setProfile] = useState(user);
@@ -85,6 +92,8 @@ export function UserProfileSheet({
   const [reportReason, setReportReason] = useState<ReportReason>('spam');
   const [reportDetails, setReportDetails] = useState('');
   // Свой день рождения правим прямо здесь, как в Telegram: три списка и автосохранение.
+  // Медиа в переписке с этим человеком: пустые разделы не показываем вовсе.
+  const [media, setMedia] = useState<MediaSummary | null>(null);
   const [bdDay, setBdDay] = useState(() => parseBirthday(user.birthday).day);
   const [bdMonth, setBdMonth] = useState(() => parseBirthday(user.birthday).month);
   const [bdYear, setBdYear] = useState(() => parseBirthday(user.birthday).year);
@@ -115,6 +124,19 @@ export function UserProfileSheet({
   }, [mode, token, user.id]);
 
   useEffect(() => {
+    if (mode === 'own') {
+      setMedia(null);
+      return;
+    }
+    const controller = new AbortController();
+    void api
+      .mediaSummary(token, user.id, controller.signal)
+      .then(setMedia)
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [mode, token, user.id]);
+
+  useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
     document.addEventListener('keydown', close);
     return () => document.removeEventListener('keydown', close);
@@ -122,6 +144,24 @@ export function UserProfileSheet({
 
   const online = profile.isOnline ?? profile.online;
   const age = useMemo(() => ageFromBirthday(profile.birthday), [profile.birthday]);
+
+  // Разделы медиа: только то, что есть в переписке. Пустые не показываем.
+  const mediaRows = useMemo(() => {
+    if (!media) return [];
+    const rows: { key: string; icon: ReactNode; count: number; forms: [string, string, string] }[] = [
+      { key: 'photos', icon: <ImageIcon className="h-5 w-5" />, count: media.photos, forms: ['фотография', 'фотографии', 'фотографий'] },
+      { key: 'videos', icon: <Video className="h-5 w-5" />, count: media.videos, forms: ['видео', 'видео', 'видео'] },
+      { key: 'voice', icon: <Mic className="h-5 w-5" />, count: media.voice, forms: ['голосовое сообщение', 'голосовых сообщения', 'голосовых сообщений'] },
+      { key: 'videoCircles', icon: <Video className="h-5 w-5" />, count: media.videoCircles, forms: ['видеосообщение', 'видеосообщения', 'видеосообщений'] },
+      { key: 'files', icon: <FileText className="h-5 w-5" />, count: media.files, forms: ['файл', 'файла', 'файлов'] },
+      { key: 'audio', icon: <Mic className="h-5 w-5" />, count: media.audio, forms: ['аудиофайл', 'аудиофайла', 'аудиофайлов'] },
+      { key: 'links', icon: <Link2 className="h-5 w-5" />, count: media.links, forms: ['ссылка', 'ссылки', 'ссылок'] },
+      { key: 'gifs', icon: <Gift className="h-5 w-5" />, count: media.gifs, forms: ['GIF', 'GIF', 'GIF'] },
+    ];
+    return rows
+      .filter((row) => row.count > 0)
+      .map((row) => ({ key: row.key, icon: row.icon, label: `${row.count} ${plural(row.count, row.forms)}` }));
+  }, [media]);
 
   async function toggleBlock() {
     if (!isBlocked && !window.confirm(`Заблокировать @${profile.username ?? profile.displayName}? Он не сможет писать и звонить вам.`)) return;
@@ -136,6 +176,42 @@ export function UserProfileSheet({
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
       setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось изменить блокировку.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Заморозка аккаунта: человек не сможет войти, но данные остаются. */
+  async function toggleFreeze() {
+    const next = !profile.isFrozen;
+    const handle = profile.username ? `@${profile.username}` : profile.displayName;
+    if (next && !window.confirm(`Заморозить аккаунт ${handle}? Он не сможет войти и писать.`)) return;
+    setBusy(true);
+    setError('');
+    try {
+      await api.adminFreeze(token, profile.id, next);
+      setProfile((current) => ({ ...current, isFrozen: next }));
+      setNotice(next ? 'Аккаунт заморожен.' : 'Аккаунт разморожен.');
+    } catch (reasonError) {
+      if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
+      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось изменить статус аккаунта.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Удаление аккаунта владельцем: сообщения, файлы и заметки стираются. */
+  async function deleteAccount() {
+    const handle = profile.username ? `@${profile.username}` : profile.displayName;
+    if (!window.confirm(`Удалить аккаунт ${handle}? Его сообщения, файлы и заметки будут стёрты безвозвратно.`)) return;
+    setBusy(true);
+    setError('');
+    try {
+      await api.adminDeleteUser(token, profile.id);
+      onDeleted?.(profile.id);
+    } catch (reasonError) {
+      if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
+      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось удалить аккаунт.');
     } finally {
       setBusy(false);
     }
@@ -393,23 +469,27 @@ export function UserProfileSheet({
             />
           )}
 
-          {/* Публикации — для публичных аккаунтов. Подарки убраны до реализации. */}
-          {mode === 'public' && (
-            <InfoRow icon={<FileText className="h-5 w-5" />} label="0 публикаций" hint="Публикации" />
+          {/* Медиа — только те разделы, которые в переписке реально есть. */}
+          {mode !== 'own' && mediaRows.length > 0 && (
+            <div className="mt-4 border-t border-line pt-3">
+              {mediaRows.map((row) => (
+                <MediaRow key={row.key} icon={row.icon} label={row.label} />
+              ))}
+            </div>
           )}
 
-          {/* Медиа-счётчики — для чужого профиля. Сейчас нет данных, показываем 0. */}
-          {mode !== 'own' && (
-            <div className="mt-4 border-t border-line pt-3">
-              <MediaRow icon={<ImageIcon className="h-5 w-5" />} label="0 фотографий" />
-              <MediaRow icon={<Video className="h-5 w-5" />} label="0 видео" />
-              <MediaRow icon={<FileText className="h-5 w-5" />} label="0 файлов" />
-              <MediaRow icon={<Mic className="h-5 w-5" />} label="0 аудиофайлов" />
-              <MediaRow icon={<Link2 className="h-5 w-5" />} label="0 ссылок" />
-              <MediaRow icon={<AlertTriangle className="h-5 w-5" />} label="0 опросов" />
-              <MediaRow icon={<Mic className="h-5 w-5" />} label="0 голосовых сообщений" />
-              <MediaRow icon={<Gift className="h-5 w-5" />} label="0 GIF" />
-              <MediaRow icon={<UsersRound className="h-5 w-5" />} label="0 общих групп" />
+          {/* Владелец Yargram может заморозить или удалить чужой аккаунт. */}
+          {mode !== 'own' && viewerIsOwner && (
+            <div className="mt-3 space-y-2 border-t border-line px-4 pt-3">
+              <p className="text-xs font-bold uppercase tracking-wide text-muted">Владелец</p>
+              <Button variant="secondary" className="w-full" loading={busy} onClick={() => void toggleFreeze()}>
+                <Snowflake className="h-4 w-4" />
+                {profile.isFrozen ? 'Разморозить аккаунт' : 'Заморозить аккаунт'}
+              </Button>
+              <Button variant="danger" className="w-full" loading={busy} onClick={() => void deleteAccount()}>
+                <Trash2 className="h-4 w-4" />
+                Удалить аккаунт
+              </Button>
             </div>
           )}
 

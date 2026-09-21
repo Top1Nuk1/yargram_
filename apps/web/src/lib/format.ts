@@ -11,6 +11,19 @@ const fullDateFormatter = new Intl.DateTimeFormat('ru-RU', {
   year: 'numeric',
 });
 
+/**
+ * Русские склонения по числу: plural(2, ['файл', 'файла', 'файлов']) → «файла».
+ * Формы: 1 штука, 2–4 штуки, 5+ штук.
+ */
+export function plural(count: number, forms: [string, string, string]): string {
+  const value = Math.abs(Math.trunc(count));
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  if (mod10 === 1 && mod100 !== 11) return forms[0];
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return forms[1];
+  return forms[2];
+}
+
 export function safeDate(value?: string | null): Date | null {
   if (!value) return null;
   const date = new Date(value);

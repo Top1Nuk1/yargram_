@@ -89,10 +89,8 @@ import {
 } from './MessageExtras';
 import {
   BlockedUsersModal,
-  FavoritesModal,
   ForwardMessageModal,
   NotesModal,
-
 } from './MessengerModals';
 import {
   conversationIsMuted,
@@ -311,7 +309,6 @@ export function MessengerScreen({
   const [profileOpen, setProfileOpen] = useState(false);
   const [ownProfileOpen, setOwnProfileOpen] = useState(false);
   const [peerProfileOpen, setPeerProfileOpen] = useState(false);
-  const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [blockedUsersOpen, setBlockedUsersOpen] = useState(false);
 
@@ -967,24 +964,17 @@ export function MessengerScreen({
       case 'profile':
         setOwnProfileOpen(true);
         return;
-      case 'wallet':
       case 'create-group':
       case 'create-channel':
       case 'calls':
         // В Yargram пока нет этих разделов — даём мягкую подсказку.
         setNotice('Этот раздел появится позже.');
         return;
-      case 'contacts':
-        setSearchOpen(true);
-        return;
       case 'blocked':
         setBlockedUsersOpen(true);
         return;
       case 'favorites':
         void openSavedConversation();
-        return;
-      case 'favorites-messages':
-        setFavoritesOpen(true);
         return;
       case 'favorites-notes':
         setNotesOpen(true);
@@ -2688,6 +2678,11 @@ export function MessengerScreen({
           onMore={() => setNotice('Дополнительные действия появятся позже.')}
           onBlockedChange={handleBlockedChange}
           onUnauthorized={() => onLogout(true)}
+          viewerIsOwner={Boolean(currentUser?.isOwner)}
+          onDeleted={() => {
+            setPeerProfileOpen(false);
+            void loadConversations();
+          }}
         />
       )}
       {ownProfileOpen && (
@@ -2722,18 +2717,6 @@ export function MessengerScreen({
                 : conversation,
             )));
             setNotice('Сообщение переслано.');
-          }}
-        />
-      )}
-      {favoritesOpen && (
-        <FavoritesModal
-          token={token}
-          currentUserId={currentUser.id}
-          onClose={() => setFavoritesOpen(false)}
-          onUnauthorized={() => onLogout(true)}
-          onOpenMessage={(conversationId, messageId) => {
-            pendingScrollMessageRef.current = messageId;
-            setSelectedId(conversationId);
           }}
         />
       )}

@@ -52,7 +52,7 @@ async function createHarness(seedState?: unknown) {
     bcryptRounds: config.bcryptRounds,
   });
   const chatService = new ChatService(repositories);
-  const adminService = new AdminService(repositories.users);
+  const adminService = new AdminService(repositories);
   const events = new RealtimeEvents();
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);
@@ -1530,6 +1530,107 @@ describe("Yargram API", () => {
       .set({ Authorization: bearer(admin.accessToken) });
     expect(forbidden.status).toBe(403);
     expect(forbidden.body.error.code).toBe("NOT_ADMIN");
+  });
+
+  it("counts only the media that is really present in the chat", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "summary-alice@example.com", "SummaryAlice");
+    const bob = await register(harness.app, "summary-bob@example.com", "SummaryBob");
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set(aliceAuth)
+      .send({ userId: bob.user.id });
+    const conversationId = direct.body.conversation.id as string;
+
+    const empty = await request(harness.app)
+      .get(`/api/users/${bob.user.id}/media-summary`)
+      .set(aliceAuth);
+    expect(empty.status).toBe(200);
+    expect(empty.body.summary).toMatchObject({ photos: 0, files: 0, links: 0, videos: 0 });
+
+    const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(32)]);
+    const image = await request(harness.app)
+      .post("/api/uploads?kind=image")
+      .set(aliceAuth)
+      .attach("file", png, { filename: "photo.png", contentType: "image/png" });
+    expect(image.status).toBe(201);
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set(aliceAuth)
+      .send({ text: "смотри https://example.com/photo", attachmentIds: [image.body.attachment.id] })
+      .expect(201);
+
+    const filled = await request(harness.app)
+      .get(`/api/users/${bob.user.id}/media-summary`)
+      .set(aliceAuth);
+    expect(filled.body.summary).toMatchObject({
+      photos: 1,
+      links: 1,
+      videos: 0,
+      voice: 0,
+      gifs: 0,
+      files: 0,
+    });
+
+    // Медиа из чужой переписки в профиль не попадает.
+    const carol = await register(harness.app, "summary-carol@example.com", "SummaryCarol");
+    const other = await request(harness.app)
+      .get(`/api/users/${bob.user.id}/media-summary`)
+      .set({ Authorization: bearer(carol.accessToken) });
+    expect(other.body.summary).toMatchObject({ photos: 0, links: 0 });
+  });
+
+  it("lets the owner freeze and delete an account", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "freeze-owner@example.com", "FreezeOwner");
+    const bob = await register(harness.app, "freeze-bob@example.com", "FreezeBob");
+    const plain = await register(harness.app, "freeze-plain@example.com", "FreezePlain");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+
+    const frozen = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: true });
+    expect(frozen.status).toBe(200);
+    expect(frozen.body.user.isFrozen).toBe(true);
+
+    // Замороженный не проходит даже с действующим токеном и не логинится.
+    const me = await request(harness.app)
+      .get("/api/users/me")
+      .set({ Authorization: bearer(bob.accessToken) });
+    expect(me.status).toBe(403);
+    expect(me.body.error.code).toBe("ACCOUNT_FROZEN");
+    const login = await request(harness.app)
+      .post("/api/auth/login")
+      .send({ email: "freeze-bob@example.com", password: "correct horse battery staple" });
+    expect(login.status).toBe(403);
+
+    // Обычный пользователь замораживать не может.
+    const forbidden = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set({ Authorization: bearer(plain.accessToken) })
+      .send({ frozen: false });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_OWNER");
+
+    const unfrozen = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: false });
+    expect(unfrozen.status).toBe(200);
+    expect(unfrozen.body.user.isFrozen).toBe(false);
+
+    // Удаление стирает аккаунт целиком.
+    const removed = await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth);
+    expect(removed.status).toBe(200);
+    await expect(harness.repositories.users.findById(bob.user.id)).resolves.toBeNull();
+
+    // Себя владельцу удалить нельзя.
+    const self = await request(harness.app).delete(`/api/admin/${owner.user.id}`).set(ownerAuth);
+    expect(self.status).toBe(400);
+    expect(self.body.error.code).toBe("SELF_ACTION");
   });
 
   it("stores personal drafts, folders and a duplicate-free scheduled queue", async () => {

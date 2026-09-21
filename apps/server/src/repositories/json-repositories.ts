@@ -186,6 +186,14 @@ class JsonUserRepository implements UserRepository {
     const idSet = new Set(ids);
     return this.database.read((state) => state.users.filter((user) => idSet.has(user.id)));
   }
+
+  async delete(id: string): Promise<User | null> {
+    return this.database.transaction((state) => {
+      const index = state.users.findIndex((user) => user.id === id);
+      if (index === -1) return null;
+      return state.users.splice(index, 1)[0] ?? null;
+    });
+  }
 }
 
 class JsonConversationRepository implements ConversationRepository {
@@ -483,6 +491,12 @@ class JsonAttachmentRepository implements AttachmentRepository {
         return attachment ? [attachment] : [];
       });
     });
+  }
+
+  async listByOwner(ownerId: string): Promise<Attachment[]> {
+    return this.database.read((state) =>
+      state.attachments.filter((attachment) => attachment.ownerId === ownerId),
+    );
   }
 
   async delete(id: string): Promise<Attachment | null> {

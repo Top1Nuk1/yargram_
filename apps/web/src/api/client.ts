@@ -15,6 +15,7 @@ import type {
   UpdateProfileInput,
   FavoriteNote,
   User,
+  MediaSummary,
 } from '../types';
 
 interface RequestOptions extends Omit<RequestInit, 'body'> {
@@ -189,6 +190,17 @@ async function authenticate(path: string, input: LoginInput | RegisterInput): Pr
   return { accessToken, user: result.user };
 }
 
+const EMPTY_MEDIA_SUMMARY: MediaSummary = {
+  photos: 0,
+  videos: 0,
+  files: 0,
+  audio: 0,
+  voice: 0,
+  videoCircles: 0,
+  gifs: 0,
+  links: 0,
+};
+
 export const api = {
   register(input: RegisterInput) {
     return authenticate('/api/auth/register', input);
@@ -224,6 +236,14 @@ export const api = {
       token,
       signal,
     }).then((result) => ('user' in result ? result.user : result));
+  },
+
+  /** Сколько чего лежит в переписке — чтобы профиль показывал только непустые разделы медиа. */
+  mediaSummary(token: string, userId: string, signal?: AbortSignal) {
+    return request<{ summary?: MediaSummary }>(
+      `/api/users/${encodeURIComponent(userId)}/media-summary`,
+      { token, signal },
+    ).then((result) => result.summary ?? EMPTY_MEDIA_SUMMARY);
   },
 
   upload(token: string, file: File, kind: Exclude<AttachmentKind, 'avatar'>, options?: UploadOptions) {
@@ -495,6 +515,20 @@ export const api = {
     return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/grant`, {
       method: 'POST', token, body: input,
     }).then((result) => ('user' in result ? result.user : result));
+  },
+
+  /** Заморозка/разморозка аккаунта — только владелец. */
+  adminFreeze(token: string, userId: string, frozen: boolean) {
+    return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/freeze`, {
+      method: 'POST', token, body: { frozen },
+    }).then((result) => ('user' in result ? result.user : result));
+  },
+
+  /** Удаление аккаунта со всеми его данными — только владелец. */
+  adminDeleteUser(token: string, userId: string) {
+    return request<{ ok?: boolean }>(`/api/admin/${encodeURIComponent(userId)}`, {
+      method: 'DELETE', token,
+    }).then(() => true);
   },
 
   adminList(token: string) {

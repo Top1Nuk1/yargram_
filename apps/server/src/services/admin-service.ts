@@ -1,5 +1,5 @@
 import { AppError } from "../lib/errors.js";
-import type { UserRepository } from "../repositories/types.js";
+import type { Repositories, UserRepository } from "../repositories/types.js";
 import type { User } from "../domain/models.js";
 
 export type AdminGrantInput = {
@@ -32,8 +32,27 @@ function normalizeHandles(values: string[]): string[] {
   return handles;
 }
 
+/** При удалении аккаунта историю не перебираем целиком — достаточно последних сообщений. */
+const DELETE_SCAN_PAGE_SIZE = 200;
+const DELETE_SCAN_PAGES = 50;
+
 export class AdminService {
-  constructor(private readonly users: UserRepository) {}
+  private readonly repositories: Repositories;
+  private readonly users: UserRepository;
+  /**
+   * Стирание файлов с диска живёт в UploadService, а он создаётся позже —
+   * поэтому подключаем его отдельно, чтобы удаление аккаунта было полным.
+   */
+  private removeUserFiles: ((userId: string) => Promise<void>) | undefined;
+
+  constructor(repositories: Repositories) {
+    this.repositories = repositories;
+    this.users = repositories.users;
+  }
+
+  setFileCleanup(removeUserFiles: ((userId: string) => Promise<void>) | undefined): void {
+    this.removeUserFiles = removeUserFiles;
+  }
 
   async grant(grantorId: string, input: AdminGrantInput): Promise<User> {
     const targetId = input.targetUserId || (await (async () => {
@@ -100,6 +119,96 @@ export class AdminService {
     const updated = await this.users.update(target.id, update);
     if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
     return updated;
+  }
+
+  /**
+   * Заморозка: аккаунт остаётся в базе, но войти и писать им нельзя — как
+   * временная блокировка владельцем. Разморозка тем же вызовом.
+   */
+  async setFrozen(grantorId: string, targetUserId: string, frozen: boolean): Promise<User> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can freeze accounts");
+    }
+    if (targetUserId === grantorId) {
+      throw new AppError(400, "SELF_ACTION", "You cannot freeze your own account");
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
+    if (target.isOwner) {
+      throw new AppError(400, "OWNER_PROTECTED", "Another owner's account cannot be frozen");
+    }
+    const updated = await this.users.update(targetUserId, { isFrozen: frozen });
+    if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    return updated;
+  }
+
+  /**
+   * Удаление аккаунта: стираем всё, что принадлежало человеку, — сообщения,
+   * черновики, отложенные, заметки и загруженные файлы. Чужие сообщения в
+   * общих чатах остаются.
+   */
+  async deleteUser(grantorId: string, targetUserId: string): Promise<void> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can delete accounts");
+    }
+    if (targetUserId === grantorId) {
+      throw new AppError(400, "SELF_ACTION", "You cannot delete your own account");
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
+    if (target.isOwner) {
+      throw new AppError(400, "OWNER_PROTECTED", "Another owner's account cannot be deleted");
+    }
+
+    const conversations = await this.repositories.conversations.listForUser(targetUserId);
+    for (const conversation of conversations) {
+      let before: string | undefined;
+      for (let page = 0; page < DELETE_SCAN_PAGES; page += 1) {
+        const batch = await this.repositories.messages.listForConversation(conversation.id, {
+          limit: DELETE_SCAN_PAGE_SIZE,
+          ...(before === undefined ? {} : { before }),
+        });
+        if (batch.length === 0) break;
+        for (const message of batch) {
+          if (message.senderId !== targetUserId) continue;
+          await this.repositories.messages.deleteFromConversation(conversation.id, message.id);
+        }
+        if (batch.length < DELETE_SCAN_PAGE_SIZE) break;
+        const cursor = batch[0]?.createdAt;
+        if (!cursor || cursor === before) break;
+        before = cursor;
+      }
+    }
+
+    for (const draft of await this.repositories.drafts.listForUser(targetUserId)) {
+      await this.repositories.drafts.delete(targetUserId, draft.conversationId);
+    }
+    for (const scheduled of await this.repositories.scheduledMessages.listForUser(targetUserId)) {
+      await this.repositories.scheduledMessages.cancel(scheduled.id, targetUserId);
+    }
+    for (const note of await this.repositories.favoriteNotes.list(targetUserId)) {
+      await this.repositories.favoriteNotes.delete(note.id, targetUserId);
+    }
+    // Файлы с диска и записи о них — аватар и всё, что человек загружал.
+    await this.removeUserFiles?.(targetUserId);
+
+    // Вычёркиваем удалённого из чужих списков блокировок и администрирования.
+    for (const user of await this.repositories.users.list({ limit: 10_000 })) {
+      const cleanup: Partial<User> = {};
+      if (user.blockedUserIds.includes(targetUserId)) {
+        cleanup.blockedUserIds = user.blockedUserIds.filter((id) => id !== targetUserId);
+      }
+      if ((user.adminUserIds ?? []).includes(targetUserId)) {
+        cleanup.adminUserIds = (user.adminUserIds ?? []).filter((id) => id !== targetUserId);
+      }
+      if (Object.keys(cleanup).length === 0) continue;
+      await this.users.update(user.id, cleanup);
+    }
+
+    const deleted = await this.users.delete(targetUserId);
+    if (!deleted) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
   }
 
   async listAdmins(grantorId: string): Promise<User[]> {

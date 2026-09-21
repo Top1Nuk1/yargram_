@@ -1,3 +1,5 @@
+import { plural } from '../../lib/format';
+
 /** Месяцы в родительном падеже — как их показывает Telegram. */
 export const MONTH_NAMES = [
   'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
@@ -60,9 +62,5 @@ export function ageFromBirthday(value: string | null | undefined): number | null
 
 /** Русское склонение для «N лет»: 1 год, 2–4 года, 5–20 лет (кроме 11–14). */
 export function pluralYears(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return 'год';
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'года';
-  return 'лет';
+  return plural(n, ['год', 'года', 'лет']);
 }

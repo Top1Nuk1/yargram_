@@ -72,6 +72,9 @@ export class AuthService {
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
       throw new AppError(401, "INVALID_CREDENTIALS", "Email or password is incorrect");
     }
+    if (user.isFrozen) {
+      throw new AppError(403, "ACCOUNT_FROZEN", "This account is frozen by the Yargram owner");
+    }
     return this.createResult(user);
   }
 
@@ -119,6 +122,10 @@ export class AuthService {
 
     const user = await this.users.findById(payload.sub);
     if (!user) throw new AppError(401, "INVALID_TOKEN", "The token user no longer exists");
+    // Заморозку проверяем на каждом запросе: старый токен не должен работать.
+    if (user.isFrozen) {
+      throw new AppError(403, "ACCOUNT_FROZEN", "This account is frozen by the Yargram owner");
+    }
     return user.id;
   }
 

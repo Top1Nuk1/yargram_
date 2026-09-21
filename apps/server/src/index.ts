@@ -50,7 +50,7 @@ async function main(): Promise<void> {
     bcryptRounds: config.bcryptRounds,
   });
   const chatService = new ChatService(repositories);
-  const adminService = new AdminService(repositories.users);
+  const adminService = new AdminService(repositories);
   const events = new RealtimeEvents();
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);

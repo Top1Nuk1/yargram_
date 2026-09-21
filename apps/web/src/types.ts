@@ -64,6 +64,18 @@ export interface User {
   birthday?: string | null;
 }
 
+/** Счётчики медиа в переписке: профиль показывает только то, что больше нуля. */
+export interface MediaSummary {
+  photos: number;
+  videos: number;
+  files: number;
+  audio: number;
+  voice: number;
+  videoCircles: number;
+  gifs: number;
+  links: number;
+}
+
 export interface Participant {
   id?: string;
   userId?: string;

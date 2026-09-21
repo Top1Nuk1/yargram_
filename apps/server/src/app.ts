@@ -37,6 +37,8 @@ export function createApp(dependencies: {
     (userId, attachment) => dependencies.chatService.canAccessAttachment(userId, attachment),
     dependencies.crypto,
   );
+  // Удаление аккаунта должно стирать и файлы с диска — этим занимается UploadService.
+  dependencies.adminService.setFileCleanup((userId) => uploadService.deleteUserFiles(userId));
   app.disable("x-powered-by");
   app.use(
     helmet({

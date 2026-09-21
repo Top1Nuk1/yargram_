@@ -68,6 +68,19 @@ const callDirectedIceSchema = callBaseSchema.extend({
     message: "candidate is required",
   }),
 });
+/**
+ * Повторная договорённость внутри уже идущего звонка: её шлют, когда у
+ * соединения появился новый поток (демонстрация экрана) или когда связь
+ * развалилась и ICE нужно запустить заново.
+ */
+const callRenegotiateSchema = callBaseSchema.extend({
+  toUserId: z.string().uuid(),
+  offer: descriptionSchema("offer"),
+});
+const callRenegotiateAnswerSchema = callBaseSchema.extend({
+  toUserId: z.string().uuid(),
+  answer: descriptionSchema("answer"),
+});
 const typingSchema = z.object({ conversationId: z.string().uuid() });
 
 type PendingWorkTracker = {
@@ -457,6 +470,48 @@ export function attachSocketServer(
           conversationId: input.conversationId,
           fromUserId: userId,
           candidate: input.candidate,
+        });
+      } catch (error) {
+        emitCallError(socket, payload, error);
+      }
+    });
+
+    // Демонстрация экрана и перезапуск ICE: новый offer внутри идущего звонка.
+    socket.on("call:renegotiate", async (payload: unknown) => {
+      try {
+        const input = callRenegotiateSchema.parse(payload);
+        const session = callSessions.get(input.callId);
+        if (!session) throw new AppError(404, "CALL_NOT_FOUND", "The call does not exist");
+        if (!session.joinedIds.has(userId) && userId !== session.initiatorId) {
+          throw new AppError(403, "CALL_NOT_MEMBER", "You are not a participant of this call");
+        }
+        if (!session.memberIds.includes(input.toUserId)) {
+          throw new AppError(403, "CALL_NOT_MEMBER", "This user is not a participant of the call");
+        }
+        io.to(`user:${input.toUserId}`).emit("call:renegotiate", {
+          callId: input.callId,
+          conversationId: input.conversationId,
+          fromUserId: userId,
+          offer: input.offer,
+        });
+      } catch (error) {
+        emitCallError(socket, payload, error);
+      }
+    });
+
+    socket.on("call:renegotiate-answer", async (payload: unknown) => {
+      try {
+        const input = callRenegotiateAnswerSchema.parse(payload);
+        const session = callSessions.get(input.callId);
+        if (!session) throw new AppError(404, "CALL_NOT_FOUND", "The call does not exist");
+        if (!session.joinedIds.has(userId) && userId !== session.initiatorId) {
+          throw new AppError(403, "CALL_NOT_MEMBER", "You are not a participant of this call");
+        }
+        io.to(`user:${input.toUserId}`).emit("call:renegotiate-answer", {
+          callId: input.callId,
+          conversationId: input.conversationId,
+          fromUserId: userId,
+          answer: input.answer,
         });
       } catch (error) {
         emitCallError(socket, payload, error);

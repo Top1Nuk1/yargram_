@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { formatConversationTime, formatDayLabel, formatMessageTime, initials, safeDate } from './format';
+import {
+  formatConversationTime,
+  formatDayLabel,
+  formatMessageTime,
+  initials,
+  plural,
+  safeDate,
+} from './format';
+
+describe('plural', () => {
+  it('склоняет по числу', () => {
+    expect(plural(1, ['файл', 'файла', 'файлов'])).toBe('файл');
+    expect(plural(2, ['файл', 'файла', 'файлов'])).toBe('файла');
+    expect(plural(5, ['файл', 'файла', 'файлов'])).toBe('файлов');
+  });
+
+  it('не ошибается на 11–14 и на большие числа', () => {
+    expect(plural(11, ['файл', 'файла', 'файлов'])).toBe('файлов');
+    expect(plural(21, ['файл', 'файла', 'файлов'])).toBe('файл');
+    expect(plural(114, ['файл', 'файла', 'файлов'])).toBe('файлов');
+    expect(plural(0, ['файл', 'файла', 'файлов'])).toBe('файлов');
+  });
+});
 
 const now = new Date('2026-09-21T12:00:00');
 

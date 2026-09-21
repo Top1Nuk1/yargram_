@@ -54,6 +54,18 @@ export type ConversationView = Omit<
   blockedByPeer: boolean;
 };
 
+/** Сколько чего лежит в переписке с человеком — для разделов медиа в профиле. */
+export type MediaSummary = {
+  photos: number;
+  videos: number;
+  files: number;
+  audio: number;
+  voice: number;
+  videoCircles: number;
+  gifs: number;
+  links: number;
+};
+
 export type ReadReceipt = {
   conversationId: string;
   messageIds: string[];
@@ -129,6 +141,50 @@ export class ChatService {
       ? messages.filter((message) => !blocked.includes(message.senderId))
       : messages;
     return this.toMessageViews(visible, currentUserId);
+  }
+
+  /**
+   * Считает медиа, которое есть в переписке с этим человеком. Профиль показывает
+   * только те разделы, где счётчик больше нуля: пустые «0 файлов» не нужны.
+   */
+  async mediaSummary(currentUserId: string, peerId: string): Promise<MediaSummary> {
+    const summary: MediaSummary = {
+      photos: 0,
+      videos: 0,
+      files: 0,
+      audio: 0,
+      voice: 0,
+      videoCircles: 0,
+      gifs: 0,
+      links: 0,
+    };
+    const conversations = await this.repositories.conversations.listForUser(currentUserId);
+    const shared = conversations.filter((conversation) => conversation.memberIds.includes(peerId));
+    for (const conversation of shared) {
+      let before: string | undefined;
+      for (let page = 0; page < MEDIA_SCAN_PAGES; page += 1) {
+        const batch = await this.repositories.messages.listForConversation(conversation.id, {
+          limit: MEDIA_SCAN_PAGE_SIZE,
+          ...(before === undefined ? {} : { before }),
+        });
+        if (batch.length === 0) break;
+        const ids = [...new Set(batch.flatMap((message) => message.attachmentIds))];
+        const attachments = ids.length ? await this.repositories.attachments.findManyByIds(ids) : [];
+        const byId = new Map(attachments.map((attachment) => [attachment.id, attachment]));
+        for (const message of batch) {
+          if (LINK_PATTERN.test(message.text)) summary.links += 1;
+          for (const id of message.attachmentIds) {
+            const attachment = byId.get(id);
+            if (attachment) countMedia(summary, attachment);
+          }
+        }
+        if (batch.length < MEDIA_SCAN_PAGE_SIZE) break;
+        const cursor = batch[0]?.createdAt;
+        if (!cursor || cursor === before) break;
+        before = cursor;
+      }
+    }
+    return summary;
   }
 
   async sendMessage(
@@ -770,4 +826,35 @@ export class ChatService {
       forwardedFrom: forwarded ? await this.toMessageSnapshot(forwarded, currentUserId) : null,
     };
   }
+}
+
+/** Профиль не обязан перебирать всю историю: достаточно последних сообщений. */
+const MEDIA_SCAN_PAGE_SIZE = 200;
+const MEDIA_SCAN_PAGES = 25;
+const LINK_PATTERN = /https?:\/\/\S+/i;
+
+function countMedia(summary: MediaSummary, attachment: Attachment): void {
+  if (attachment.kind === "image") {
+    if (attachment.mimeType === "image/gif") summary.gifs += 1;
+    else summary.photos += 1;
+    return;
+  }
+  // Кружочки и голосовые — отдельные разделы, как в Telegram.
+  if (attachment.mediaKind === "voice") {
+    summary.voice += 1;
+    return;
+  }
+  if (attachment.mediaKind === "video_circle") {
+    summary.videoCircles += 1;
+    return;
+  }
+  if (attachment.mimeType.startsWith("video/")) {
+    summary.videos += 1;
+    return;
+  }
+  if (attachment.mimeType.startsWith("audio/")) {
+    summary.audio += 1;
+    return;
+  }
+  summary.files += 1;
 }

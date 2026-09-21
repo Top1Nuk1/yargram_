@@ -53,6 +53,8 @@ export interface UserRepository {
   setFavorite(userId: string, messageId: string, favorite: boolean): Promise<User>;
   list(options: { query?: string; limit: number; excludeUserId?: string }): Promise<User[]>;
   findManyByIds(ids: string[]): Promise<User[]>;
+  /** Стирает аккаунт полностью — владелец удаляет пользователя. */
+  delete(id: string): Promise<User | null>;
 }
 
 export interface ConversationRepository {
@@ -101,6 +103,8 @@ export interface AttachmentRepository {
   create(input: Omit<Attachment, "id" | "createdAt">): Promise<Attachment>;
   findById(id: string): Promise<Attachment | null>;
   findManyByIds(ids: string[]): Promise<Attachment[]>;
+  /** Все файлы человека — нужно, чтобы удалить аккаунт без мусора на диске. */
+  listByOwner(ownerId: string): Promise<Attachment[]>;
   delete(id: string): Promise<Attachment | null>;
 }
 
