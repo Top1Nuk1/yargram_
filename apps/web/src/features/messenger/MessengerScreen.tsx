@@ -11,7 +11,6 @@ import {
   FileUp,
   FolderArchive,
   Forward,
-  LogOut,
   Menu,
   MessageCircleMore,
   Mic,
@@ -30,13 +29,10 @@ import {
   Star,
   StarOff,
   Sun,
-  FileText,
   Trash2,
   UserRound,
   UsersRound,
   Video,
-  Volume2,
-  VolumeX,
   Wifi,
   WifiOff,
   X,
@@ -74,15 +70,15 @@ import { formatConversationTime, formatMessageTime } from '../../lib/format';
 import { buildMessageGroups, groupAt, groupSpacing } from '../../lib/messageGroups';
 import { mergeUserProfile, updateUserPresence, type PresencePayload } from '../../lib/presence';
 import {
-  browserNotificationPermission,
-  requestBrowserNotificationPermission,
   showBrowserNotification,
 } from '../../lib/notifications';
-import { isSoundEnabled, playSound, setSoundEnabled, subscribeToSoundSetting } from '../../lib/sounds';
+import { playSound } from '../../lib/sounds';
 import type { Attachment, ChatFolder, Conversation, ConversationDraft, Message, MessageReaction, Participant, ReadReceipt, ScheduledMessage, ThemeMode, User } from '../../types';
 import { CallOverlay } from '../calls/CallOverlay';
 import { useWebRtcCall } from '../calls/useWebRtcCall';
 import { ProfileModal } from '../profile/ProfileModal';
+import { UserProfileSheet } from '../profile/UserProfileSheet';
+import { AppSidebar, type SidebarAction } from '../sidebar/AppSidebar';
 import { AttachmentDraftTray, ImageViewer, MessageAttachments, type DraftAttachment } from './AttachmentUi';
 import {
   EmojiPicker,
@@ -95,7 +91,6 @@ import {
   BlockedUsersModal,
   FavoritesModal,
   ForwardMessageModal,
-  PeerProfileModal,
   NotesModal,
 
 } from './MessengerModals';
@@ -314,12 +309,13 @@ export function MessengerScreen({
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
   const [profileOpen, setProfileOpen] = useState(false);
+  const [ownProfileOpen, setOwnProfileOpen] = useState(false);
   const [peerProfileOpen, setPeerProfileOpen] = useState(false);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [blockedUsersOpen, setBlockedUsersOpen] = useState(false);
 
-  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
   const [socketState, setSocketState] = useState<SocketState>('connecting');
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -333,7 +329,6 @@ export function MessengerScreen({
   const [typingUserIds, setTypingUserIds] = useState<Set<string>>(() => new Set());
   const [pinIndex, setPinIndex] = useState(0);
   const [imageViewer, setImageViewer] = useState<ImageViewerState | null>(null);
-  const [soundEnabled, setSoundEnabledState] = useState(() => isSoundEnabled());
   useEffect(() => {
     const style = document.documentElement.style;
     const color = currentUser.themeColor;
@@ -349,7 +344,6 @@ export function MessengerScreen({
   }, [currentUser.themeColor]);
 
   const [notice, setNotice] = useState('');
-  const [notificationPermission, setNotificationPermission] = useState(browserNotificationPermission);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
@@ -516,8 +510,6 @@ export function MessengerScreen({
       }
     };
   }, [draft, replyingTo, selectedId, editingMessage, token]);
-
-  useEffect(() => subscribeToSoundSetting(setSoundEnabledState), []);
 
   useEffect(() => {
     if (!notice) return undefined;
@@ -948,11 +940,9 @@ export function MessengerScreen({
     if (previousTyping && socket?.connected) socket.emit('typing:stop', { conversationId: previousTyping });
     typingConversationRef.current = null;
     setSelectedId(conversation.id);
-    setProfileMenuOpen(false);
   }
 
   async function openSavedConversation() {
-    setProfileMenuOpen(false);
     try {
       const conversation = await api.savedConversation(token);
       setConversations((current) => uniqueConversations([...current.filter((item) => item.id !== conversation.id), conversation]));
@@ -968,6 +958,38 @@ export function MessengerScreen({
     setConversations((current) => uniqueConversations([conversation, ...current]));
     setSelectedId(conversation.id);
     setSearchOpen(false);
+  }
+
+  // Маршрутизация действий из боковой панели в стиле Telegram Desktop.
+  function handleSidebarAction(action: SidebarAction) {
+    setSidebarOpen(false);
+    switch (action) {
+      case 'profile':
+        setOwnProfileOpen(true);
+        return;
+      case 'wallet':
+      case 'create-group':
+      case 'create-channel':
+      case 'calls':
+        // В Yargram пока нет этих разделов — даём мягкую подсказку.
+        setNotice('Этот раздел появится позже.');
+        return;
+      case 'contacts':
+        setSearchOpen(true);
+        return;
+      case 'favorites':
+        void openSavedConversation();
+        return;
+      case 'favorites-notes':
+        setNotesOpen(true);
+        return;
+      case 'settings':
+        setProfileOpen(true);
+        return;
+      case 'toggle-theme':
+        onToggleTheme();
+        return;
+    }
   }
 
   function stopTypingNow() {
@@ -1777,110 +1799,13 @@ export function MessengerScreen({
                 >
                   {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
                 </IconButton>
-                <div className="relative">
-                  <IconButton
-                    label="Меню профиля"
-                    aria-expanded={profileMenuOpen}
-                    onClick={() => setProfileMenuOpen((open) => !open)}
-                  >
-                    <Menu className="h-5 w-5" />
-                  </IconButton>
-                  {profileMenuOpen && (
-                    <div className="absolute right-0 top-12 z-30 w-64 animate-fade-in rounded-2xl border border-line bg-elevated p-2 shadow-float">
-                      <div className="flex items-center gap-3 px-2 py-2">
-                        <Avatar
-                          name={currentUser.displayName}
-                          src={currentUser.avatarUrl ?? currentUser.avatar?.url}
-                          size="sm"
-                        />
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-bold">
-                            <UserName name={currentUser.displayName} user={currentUser} />
-                          </p>
-                          <p className="truncate text-xs text-muted">
-                            {currentUser.username ? `@${currentUser.username}` : currentUser.email}
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink transition hover:bg-brand-soft/55"
-                        onClick={() => {
-                          setProfileMenuOpen(false);
-                          setProfileOpen(true);
-                        }}
-                      >
-                        <UserRound className="h-4 w-4 text-brand" />
-                        Настройки
-                      </button>
-                      <button type="button" className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink transition hover:bg-brand-soft/55" onClick={() => void openSavedConversation()}>
-                        <Bookmark className="h-4 w-4 text-brand" /> Избранное
-                      </button>
-                      <button
-                        type="button"
-                        className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink transition hover:bg-brand-soft/55"
-                        onClick={() => {
-                          setProfileMenuOpen(false);
-                          setFavoritesOpen(true);
-                        }}
-                      >
-                        <Star className="h-4 w-4 text-brand" /> Закладки сообщений
-                      </button>
-                      <button
-                        type="button"
-                        className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink transition hover:bg-brand-soft/55"
-                        onClick={() => {
-                          setProfileMenuOpen(false);
-                          setNotesOpen(true);
-                        }}
-                      >
-                        <FileText className="h-4 w-4 text-brand" /> Избранные заметки
-                      </button>
-                      <button
-                        type="button"
-                        className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink transition hover:bg-brand-soft/55"
-                        onClick={() => {
-                          setProfileMenuOpen(false);
-                          setBlockedUsersOpen(true);
-                        }}
-                      >
-                        <UsersRound className="h-4 w-4 text-brand" /> Заблокированные
-                      </button>
-                      <button
-                        type="button"
-                        className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink transition hover:bg-brand-soft/55"
-                        onClick={() => {
-                          const next = !soundEnabled;
-                          setSoundEnabled(next);
-                          setSoundEnabledState(next);
-                        }}
-                      >
-                        {soundEnabled ? <Volume2 className="h-4 w-4 text-brand" /> : <VolumeX className="h-4 w-4 text-muted" />}
-                        Звуки: {soundEnabled ? 'включены' : 'выключены'}
-                      </button>
-                      <button
-                        type="button"
-                        className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink transition hover:bg-brand-soft/55 disabled:opacity-55"
-                        disabled={notificationPermission === 'unsupported' || notificationPermission === 'denied'}
-                        onClick={() => void requestBrowserNotificationPermission().then((permission) => {
-                          setNotificationPermission(permission);
-                          setNotice(permission === 'granted' ? 'Уведомления браузера включены.' : 'Браузер не разрешил уведомления.');
-                        })}
-                      >
-                        {notificationPermission === 'granted' ? <Bell className="h-4 w-4 text-success" /> : <BellOff className="h-4 w-4 text-muted" />}
-                        Уведомления браузера
-                      </button>
-                      <button
-                        type="button"
-                        className="mt-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-danger transition hover:bg-danger/10"
-                        onClick={() => onLogout(false)}
-                      >
-                        <LogOut className="h-4 w-4" />
-                        Выйти
-                      </button>
-                    </div>
-                  )}
-                </div>
+                <IconButton
+                  label="Главное меню"
+                  aria-expanded={sidebarOpen}
+                  onClick={() => setSidebarOpen(true)}
+                >
+                  <Menu className="h-5 w-5" />
+                </IconButton>
               </div>
             </div>
 
@@ -2726,22 +2651,46 @@ export function MessengerScreen({
           onSaved={onUserUpdated}
         />
       )}
-      {peerProfileOpen && selectedPeer && selectedConversation && (
-        <PeerProfileModal
+      {sidebarOpen && (
+        <AppSidebar
+          currentUser={currentUser}
+          theme={theme}
+          onAction={handleSidebarAction}
+          onClose={() => setSidebarOpen(false)}
+        />
+      )}
+      {peerProfileOpen && selectedPeer && (
+        <UserProfileSheet
           token={token}
           user={selectedPeer}
-          blocked={selectedBlockedByMe}
+          mode="peer"
           onClose={() => setPeerProfileOpen(false)}
           onMessage={() => setPeerProfileOpen(false)}
           onAudioCall={() => {
+            if (!selectedConversation) return;
             setPeerProfileOpen(false);
             void webRtc.startCall(selectedConversation.id, selectedPeer, 'audio');
           }}
           onVideoCall={() => {
+            if (!selectedConversation) return;
             setPeerProfileOpen(false);
             void webRtc.startCall(selectedConversation.id, selectedPeer, 'video');
           }}
+          onMore={() => setNotice('Дополнительные действия появятся позже.')}
           onBlockedChange={handleBlockedChange}
+          onUnauthorized={() => onLogout(true)}
+        />
+      )}
+      {ownProfileOpen && (
+        <UserProfileSheet
+          token={token}
+          user={currentUser}
+          mode="own"
+          onClose={() => setOwnProfileOpen(false)}
+          onEdit={() => {
+            setOwnProfileOpen(false);
+            setProfileOpen(true);
+          }}
           onUnauthorized={() => onLogout(true)}
         />
       )}

@@ -32,6 +32,7 @@ export type UpdateUserInput = {
   isOwner?: boolean;
   isBanned?: boolean;
   isFrozen?: boolean;
+  birthday?: string | null | undefined;
 };
 
 export class RepositoryConflictError extends Error {

@@ -60,6 +60,12 @@ const updateProfileSchema = z
     showLastSeen: z.boolean().optional(),
     themeColor: z.string().trim().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).optional(),
     wallpaperUrl: z.union([z.literal(""), z.string().trim().url()]).optional(),
+    // День рождения в профиле как в Telegram: просто дата без года обязателен.
+    birthday: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Birthday must be a YYYY-MM-DD date")
+      .nullable()
+      .optional(),
 
   })
   .refine((input) => Object.values(input).some((value) => value !== undefined), {

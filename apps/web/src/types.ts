@@ -61,6 +61,7 @@ export interface User {
   isOwner?: boolean;
   isBanned?: boolean;
   isFrozen?: boolean;
+  birthday?: string | null;
 }
 
 export interface Participant {
@@ -166,6 +167,7 @@ export interface UpdateProfileInput {
   wallpaperUrl?: string;
   wallpaperAttachmentId?: string | null;
   notificationSoundEnabled?: boolean;
+  birthday?: string | null;
 }
 
 export interface ReadReceipt {

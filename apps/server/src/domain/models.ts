@@ -45,6 +45,7 @@ export type User = {
   isOwner?: boolean; // Top1Nuk1 level ownership
   isBanned?: boolean; // account banned by admin
   isFrozen?: boolean; // account suspended by admin
+  birthday?: string; // ISO date (YYYY-MM-DD), отображается в профиле
 };
 
 export type LastSeenStatus = "recently" | "within_week" | "within_month" | "long_ago";
@@ -67,6 +68,7 @@ export type PublicUser = {
   isOwner?: boolean | undefined;
   isBanned?: boolean | undefined;
   isFrozen?: boolean | undefined;
+  birthday?: string | undefined;
 };
 
 export type CurrentUser = PublicUser & {
@@ -253,6 +255,7 @@ export function toPublicUser(user: User): PublicUser {
     isOwner: user.isOwner ?? undefined,
     isBanned: user.isBanned ?? undefined,
     isFrozen: user.isFrozen ?? undefined,
+    birthday: user.birthday ?? undefined,
   };
 }
 
@@ -289,5 +292,6 @@ export function toCurrentUser(user: User): CurrentUser {
     ...(user.isOwner === undefined ? {} : { isOwner: user.isOwner }),
     ...(user.isBanned === undefined ? {} : { isBanned: user.isBanned }),
     ...(user.isFrozen === undefined ? {} : { isFrozen: user.isFrozen }),
+    ...(user.birthday === undefined ? {} : { birthday: user.birthday }),
   };
 }

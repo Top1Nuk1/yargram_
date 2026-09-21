@@ -92,6 +92,7 @@ export class AuthService {
       ...(input.notificationSoundEnabled === undefined ? {} : { notificationSoundEnabled: input.notificationSoundEnabled }),
       ...(input.themeColor === undefined ? {} : { themeColor: input.themeColor }),
       ...(input.wallpaperUrl === undefined ? {} : { wallpaperUrl: input.wallpaperUrl }),
+      ...(input.birthday === undefined ? {} : { birthday: input.birthday }),
     };
 
     try {

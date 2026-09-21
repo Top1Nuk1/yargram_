@@ -120,6 +120,10 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
             if (input.isOwner !== undefined) user.isOwner = input.isOwner;
             if (input.isBanned !== undefined) user.isBanned = input.isBanned;
             if (input.isFrozen !== undefined) user.isFrozen = input.isFrozen;
+            if (input.birthday !== undefined) {
+              if (input.birthday === null) delete user.birthday;
+              else user.birthday = input.birthday;
+            }
           });
         } catch (error) { return conflict(error); }
       },
