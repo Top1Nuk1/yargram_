@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { conversationTitle, getConversationPeer, sortMessages, updateConversationPresence } from './conversation';
+import {
+  applyAccountState,
+  conversationTitle,
+  getConversationPeer,
+  sortMessages,
+  updateConversationPresence,
+} from './conversation';
 import { formatLastSeen, isUserOnline } from '../features/messenger/messengerUtils';
-import type { Conversation, Message } from '../types';
+import type { AccountStatePayload, Conversation, Message } from '../types';
 
 const conversation: Conversation = {
   id: 'conversation-1',
@@ -69,5 +75,84 @@ describe('conversation helpers', () => {
       { id: '1', conversationId: 'c', text: 'Раньше', createdAt: '2026-07-27T12:00:00.000Z' },
     ];
     expect(sortMessages(messages).map((message) => message.id)).toEqual(['1', '2']);
+  });
+
+  describe('account:state', () => {
+    const chat: Conversation = {
+      id: 'conversation-9',
+      members: [
+        { id: 'alice', displayName: 'Алиса' },
+        { id: 'bob', displayName: 'Борис', username: 'boris', avatarUrl: '/boris.png' },
+      ],
+      lastMessage: {
+        id: 'm1',
+        conversationId: 'conversation-9',
+        text: 'привет',
+        createdAt: '2026-07-27T12:00:00.000Z',
+        senderId: 'bob',
+        sender: { id: 'bob', displayName: 'Борис', username: 'boris' },
+      },
+    };
+    const history: Message[] = [
+      { id: 'm1', conversationId: 'conversation-9', text: 'привет', createdAt: '2026-07-27T12:00:00.000Z', senderId: 'bob', sender: { id: 'bob', displayName: 'Борис' } },
+      { id: 'm2', conversationId: 'conversation-9', text: 'здравствуй', createdAt: '2026-07-27T12:01:00.000Z', senderId: 'alice', sender: { id: 'alice', displayName: 'Алиса' } },
+    ];
+
+    const frozen: AccountStatePayload = {
+      userId: 'bob',
+      frozen: true,
+      removed: false,
+      user: { id: 'bob', displayName: 'Удалённый аккаунт', isFrozen: true, avatarUrl: null, username: null },
+    };
+    const removed: AccountStatePayload = {
+      userId: 'bob',
+      frozen: false,
+      removed: true,
+      user: { id: 'bob', displayName: 'Удалённый аккаунт', isFrozen: false, avatarUrl: null, username: null },
+    };
+
+    it('заморозку показывает заглушкой сразу, без перезагрузки', () => {
+      const result = applyAccountState([chat], history, frozen);
+      const peer = getConversationPeer(result.conversations[0], 'alice');
+      expect(peer).toMatchObject({ displayName: 'Удалённый аккаунт', isFrozen: true, avatarUrl: null });
+      expect(conversationTitle(result.conversations[0], 'alice')).toBe('Удалённый аккаунт');
+      expect(result.conversations[0].lastMessage?.sender).toMatchObject({ displayName: 'Удалённый аккаунт' });
+      expect(result.messages.map((message) => message.id)).toEqual(['m1', 'm2']);
+      expect(result.messages[0].sender?.displayName).toBe('Удалённый аккаунт');
+      expect(result.removed).toBe(false);
+    });
+
+    it('удалённый аккаунт забирает свои сообщения из открытого чата', () => {
+      const result = applyAccountState([chat], history, removed);
+      expect(result.messages.map((message) => message.id)).toEqual(['m2']);
+      expect(result.removed).toBe(true);
+      expect(getConversationPeer(result.conversations[0], 'alice')).toMatchObject({
+        displayName: 'Удалённый аккаунт',
+        isFrozen: false,
+      });
+    });
+
+    it('разморозка возвращает настоящий профиль', () => {
+      const unfrozen: AccountStatePayload = {
+        userId: 'bob',
+        frozen: false,
+        removed: false,
+        user: { id: 'bob', displayName: 'Борис', username: 'boris', avatarUrl: '/boris.png' },
+      };
+      const frozenState = applyAccountState([chat], history, frozen);
+      const result = applyAccountState(frozenState.conversations, frozenState.messages, unfrozen);
+      expect(getConversationPeer(result.conversations[0], 'alice')).toMatchObject({
+        displayName: 'Борис',
+        username: 'boris',
+      });
+      expect(result.messages[0].sender?.displayName).toBe('Борис');
+    });
+
+    it('чужие беседы не трогает', () => {
+      const other: Conversation = { id: 'other', members: [{ id: 'carol', displayName: 'Кира' }] };
+      const result = applyAccountState([other], history, frozen);
+      expect(result.conversations[0].members).toEqual(other.members);
+      expect(getConversationPeer(result.conversations[0], 'alice')?.displayName).toBe('Кира');
+    });
   });
 });

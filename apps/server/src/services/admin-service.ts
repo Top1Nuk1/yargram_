@@ -1,6 +1,11 @@
 import { AppError } from "../lib/errors.js";
+import type { RealtimeEvents } from "../realtime/events.js";
 import type { Repositories, UserRepository } from "../repositories/types.js";
-import type { User } from "../domain/models.js";
+import {
+  accountStatePlaceholder,
+  toPublicUser,
+  type User,
+} from "../domain/models.js";
 
 export type AdminGrantInput = {
   targetUserId?: string;
@@ -39,15 +44,17 @@ const DELETE_SCAN_PAGES = 50;
 export class AdminService {
   private readonly repositories: Repositories;
   private readonly users: UserRepository;
+  private readonly events: RealtimeEvents;
   /**
    * Стирание файлов с диска живёт в UploadService, а он создаётся позже —
    * поэтому подключаем его отдельно, чтобы удаление аккаунта было полным.
    */
   private removeUserFiles: ((userId: string) => Promise<void>) | undefined;
 
-  constructor(repositories: Repositories) {
+  constructor(repositories: Repositories, events: RealtimeEvents) {
     this.repositories = repositories;
     this.users = repositories.users;
+    this.events = events;
   }
 
   setFileCleanup(removeUserFiles: ((userId: string) => Promise<void>) | undefined): void {
@@ -140,6 +147,14 @@ export class AdminService {
     }
     const updated = await this.users.update(targetUserId, { isFrozen: frozen });
     if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    // Собеседники должны увидеть «Удалённый аккаунт» сразу, без перезагрузки:
+    // заморозку показываем заглушкой, а разморозку — настоящим профилем.
+    this.events.publishAccountState({
+      userId: targetUserId,
+      frozen,
+      removed: false,
+      user: frozen ? accountStatePlaceholder(targetUserId, true) : toPublicUser(updated),
+    });
     return updated;
   }
 
@@ -209,6 +224,14 @@ export class AdminService {
 
     const deleted = await this.users.delete(targetUserId);
     if (!deleted) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    // Рассылаем последним: клиенты подменяют профиль заглушкой и выкидывают
+    // из открытого чата сообщения, которых на сервере уже нет.
+    this.events.publishAccountState({
+      userId: targetUserId,
+      frozen: false,
+      removed: true,
+      user: accountStatePlaceholder(targetUserId, false),
+    });
   }
 
   async listAdmins(grantorId: string): Promise<User[]> {

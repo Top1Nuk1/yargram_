@@ -307,6 +307,15 @@ function frozenPlaceholderFor(id: string): PublicUser {
 }
 
 /**
+ * Публичный вид аккаунта для рассылки в реальном времени: замороженный и
+ * удалённый выглядят одинаково («Удалённый аккаунт»), но у замороженного
+ * выставлен isFrozen — по нему клиент рисует снежинку.
+ */
+export function accountStatePlaceholder(id: string, frozen: boolean): PublicUser {
+  return frozen ? { ...removedUserPlaceholder(id), isFrozen: true } : removedUserPlaceholder(id);
+}
+
+/**
  * Превращает отсутствующего пользователя в заглушку, чтобы диалог не развалился
  * после удаления. Если пользователь заморожен — заменяем на снежинковую версию.
  */

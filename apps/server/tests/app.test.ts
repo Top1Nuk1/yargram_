@@ -52,8 +52,8 @@ async function createHarness(seedState?: unknown) {
     bcryptRounds: config.bcryptRounds,
   });
   const chatService = new ChatService(repositories);
-  const adminService = new AdminService(repositories);
   const events = new RealtimeEvents();
+  const adminService = new AdminService(repositories, events);
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);
   const scheduledMessageService = new ScheduledMessageService(repositories, chatService, events);
@@ -1697,6 +1697,69 @@ describe("Yargram API", () => {
 
     const profile = await request(harness.app).get(`/api/users/${bob.user.id}`).set(aliceAuth);
     expect(profile.status).toBe(404);
+  });
+
+  it("tells everyone in realtime that an account was frozen or deleted", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "rt-owner@example.com", "RtOwner");
+    const bob = await register(harness.app, "rt-bob@example.com", "RtBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+
+    const seen: { userId: string; frozen: boolean; removed: boolean; displayName: string; isFrozen: boolean | undefined }[] = [];
+    const unsubscribe = harness.events.onAccountState((event) => {
+      seen.push({
+        userId: event.userId,
+        frozen: event.frozen,
+        removed: event.removed,
+        displayName: event.user.displayName,
+        isFrozen: event.user.isFrozen,
+      });
+    });
+
+    await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: true })
+      .expect(200);
+    expect(seen.at(-1)).toMatchObject({
+      userId: bob.user.id,
+      frozen: true,
+      removed: false,
+      displayName: "Удалённый аккаунт",
+      isFrozen: true,
+    });
+
+    // Разморозка возвращает настоящий профиль.
+    await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: false })
+      .expect(200);
+    expect(seen.at(-1)).toMatchObject({
+      userId: bob.user.id,
+      frozen: false,
+      removed: false,
+      displayName: "RtBob",
+    });
+
+    await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth).expect(200);
+    expect(seen.at(-1)).toMatchObject({
+      userId: bob.user.id,
+      frozen: false,
+      removed: true,
+      displayName: "Удалённый аккаунт",
+      isFrozen: false,
+    });
+
+    unsubscribe();
+    // После отписки события не приходят — подписки не течёт.
+    await request(harness.app)
+      .post(`/api/admin/${owner.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: true })
+      .expect(400);
+    expect(seen).toHaveLength(3);
   });
 
   it("stores personal drafts, folders and a duplicate-free scheduled queue", async () => {

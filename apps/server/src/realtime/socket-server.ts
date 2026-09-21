@@ -716,6 +716,17 @@ export function attachSocketServer(
   dependencies.events.onScheduledMessage(({ userId, scheduled }) => {
     io.to(`user:${userId}`).emit("scheduled:updated", scheduled);
   });
+  dependencies.events.onAccountState((event) => {
+    // Всем: собеседники подменят профиль заглушкой прямо в открытом чате.
+    io.emit("account:state", event);
+    if (!event.frozen && !event.removed) return;
+    // Сам аккаунт больше не имеет права быть в сети — рвём его подключения,
+    // чтобы замороженный не писал и не звонил, пока сессия ещё жива.
+    for (const socketId of userSockets.get(event.userId) ?? []) {
+      io.sockets.sockets.get(socketId)?.disconnect(true);
+    }
+    userSockets.delete(event.userId);
+  });
 
   pendingWorkTrackers.set(io, pendingWork);
 

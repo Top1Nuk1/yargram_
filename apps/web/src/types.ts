@@ -97,6 +97,17 @@ export interface Participant {
   isFrozen?: boolean;
 }
 
+/**
+ * Аккаунт заморозили, разморозили или удалили — прилетает по сокету всем,
+ * чтобы собеседники увидели «Удалённый аккаунт» без перезагрузки.
+ */
+export interface AccountStatePayload {
+  userId: string;
+  frozen: boolean;
+  removed: boolean;
+  user: User;
+}
+
 export interface Message {
   id: string;
   conversationId: string;

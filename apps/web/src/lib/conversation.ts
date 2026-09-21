@@ -1,5 +1,83 @@
-import type { Conversation, Message, Participant, User } from '../types';
-import { updateUserPresence, type PresencePayload } from './presence';
+import type { AccountStatePayload, Conversation, Message, Participant, User } from '../types';
+import { mergeUserProfile, updateUserPresence, type PresencePayload } from './presence';
+
+function updateParticipantProfile(participant: Participant, user: User): Participant {
+  const participantId = participant.user?.id ?? participant.userId ?? participant.id;
+  if (participantId !== user.id) return participant;
+  return participant.user
+    ? { ...participant, user: mergeUserProfile(participant.user, user) }
+    : mergeUserProfile(participant, user);
+}
+
+/** Подменяет автора сообщения (и автора в replyTo) свежим профилем. */
+export function updateMessageProfile(
+  message: Message | null | undefined,
+  user: User,
+): Message | null | undefined {
+  if (!message) return message;
+  const replyTo = message.replyTo
+    ? (updateMessageProfile({ ...message.replyTo, replyTo: null }, user) as Message)
+    : message.replyTo;
+  return {
+    ...message,
+    sender: message.sender?.id === user.id ? mergeUserProfile(message.sender, user) : message.sender,
+    author: message.author?.id === user.id ? mergeUserProfile(message.author, user) : message.author,
+    replyTo,
+  };
+}
+
+/** Подменяет профиль участника во всех списках беседы и в её последних сообщениях. */
+export function updateConversationProfile(conversation: Conversation, user: User): Conversation {
+  return {
+    ...conversation,
+    participants: conversation.participants?.map((participant) => updateParticipantProfile(participant, user)),
+    members: conversation.members?.map((participant) => updateParticipantProfile(participant, user)),
+    users: conversation.users?.map((member) => (member.id === user.id ? mergeUserProfile(member, user) : member)),
+    otherUser:
+      conversation.otherUser?.id === user.id
+        ? mergeUserProfile(conversation.otherUser, user)
+        : conversation.otherUser,
+    lastMessage: updateMessageProfile(conversation.lastMessage, user) ?? null,
+    pinnedMessage: updateMessageProfile(conversation.pinnedMessage, user) ?? null,
+    pinnedMessages: conversation.pinnedMessages?.map(
+      (message) => updateMessageProfile(message, user) as Message,
+    ),
+  };
+}
+
+export type AccountStateResult = {
+  conversations: Conversation[];
+  messages: Message[];
+  /** Аккаунт удалён: сервер стёр его сообщения, список чатов нужно перечитать. */
+  removed: boolean;
+};
+
+/**
+ * Применяет событие «аккаунт заморозили / разморозили / удалили» к уже
+ * загруженным данным, чтобы «Удалённый аккаунт» появлялся без перезагрузки.
+ */
+export function applyAccountState(
+  conversations: Conversation[],
+  messages: Message[],
+  payload: AccountStatePayload,
+): AccountStateResult {
+  const user: User = { ...payload.user, id: payload.userId };
+  const nextConversations = conversations.map((conversation) =>
+    updateConversationProfile(conversation, user),
+  );
+  if (payload.removed) {
+    return {
+      conversations: nextConversations,
+      messages: messages.filter((message) => messageSenderId(message) !== payload.userId),
+      removed: true,
+    };
+  }
+  return {
+    conversations: nextConversations,
+    messages: messages.map((message) => updateMessageProfile(message, user) as Message),
+    removed: false,
+  };
+}
 
 function participantUser(participant: Participant): User | null {
   if (participant.user) return participant.user;

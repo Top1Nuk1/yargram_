@@ -35,6 +35,17 @@ export type ConversationSettingsEvent = {
 export type DraftEvent = { userId: string; draft: ConversationDraft | null };
 export type FoldersEvent = { userId: string; folders: ConversationFolder[] };
 export type ScheduledMessageEvent = { userId: string; scheduled: ScheduledMessage };
+/**
+ * Аккаунт заморозили, разморозили или удалили. Рассылаем всем: собеседники
+ * должны увидеть «Удалённый аккаунт» сразу, а не после перезагрузки.
+ */
+export type AccountStateEvent = {
+  userId: string;
+  frozen: boolean;
+  removed: boolean;
+  /** Публичный вид: настоящий профиль (разморозка) или заглушка. */
+  user: PublicUser;
+};
 
 export class RealtimeEvents {
   private readonly emitter = new EventEmitter();
@@ -125,6 +136,14 @@ export class RealtimeEvents {
 
   onScheduledMessage(listener: (event: ScheduledMessageEvent) => void): () => void {
     return this.subscribe("scheduled:updated", listener);
+  }
+
+  publishAccountState(event: AccountStateEvent): void {
+    this.emitter.emit("account:state", event);
+  }
+
+  onAccountState(listener: (event: AccountStateEvent) => void): () => void {
+    return this.subscribe("account:state", listener);
   }
 
   private subscribe<T>(eventName: string, listener: (event: T) => void): () => void {

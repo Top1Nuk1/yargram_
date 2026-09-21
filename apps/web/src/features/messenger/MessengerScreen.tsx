@@ -57,6 +57,7 @@ import {
   Spinner,
 } from '../../components/ui';
 import {
+  applyAccountState,
   conversationAvatar,
   conversationTimestamp,
   conversationTitle,
@@ -65,16 +66,18 @@ import {
   sortConversations,
   sortMessages,
   updateConversationPresence,
+  updateConversationProfile,
+  updateMessageProfile,
 } from '../../lib/conversation';
 import { formatConversationTime, formatMessageTime } from '../../lib/format';
 import { buildMessageGroups, groupAt, groupSpacing } from '../../lib/messageGroups';
-import { mergeUserProfile, updateUserPresence, type PresencePayload } from '../../lib/presence';
+import { updateUserPresence, type PresencePayload } from '../../lib/presence';
 import { avatarProps } from '../../lib/user';
 import {
   showBrowserNotification,
 } from '../../lib/notifications';
 import { playSound } from '../../lib/sounds';
-import type { Attachment, ChatFolder, Conversation, ConversationDraft, Message, MessageReaction, Participant, ReadReceipt, ScheduledMessage, ThemeMode, User } from '../../types';
+import type { AccountStatePayload, Attachment, ChatFolder, Conversation, ConversationDraft, Message, MessageReaction, ReadReceipt, ScheduledMessage, ThemeMode, User } from '../../types';
 import { CallOverlay } from '../calls/CallOverlay';
 import { useWebRtcCall } from '../calls/useWebRtcCall';
 import { ProfileModal } from '../profile/ProfileModal';
@@ -204,45 +207,6 @@ function applyReadReceipt(message: Message | null | undefined, receipt: ReadRece
   return {
     ...message,
     readBy: Array.from(new Set([...(message.readBy ?? []), receipt.userId])),
-  };
-}
-
-function updateParticipantProfile(participant: Participant, user: User): Participant {
-  const participantId = participant.user?.id ?? participant.userId ?? participant.id;
-  if (participantId !== user.id) return participant;
-  return participant.user
-    ? { ...participant, user: mergeUserProfile(participant.user, user) }
-    : mergeUserProfile(participant, user);
-}
-
-function updateMessageProfile(message: Message | null | undefined, user: User): Message | null | undefined {
-  if (!message) return message;
-  const replyTo = message.replyTo
-    ? (updateMessageProfile({ ...message.replyTo, replyTo: null }, user) as Message)
-    : message.replyTo;
-  return {
-    ...message,
-    sender: message.sender?.id === user.id ? mergeUserProfile(message.sender, user) : message.sender,
-    author: message.author?.id === user.id ? mergeUserProfile(message.author, user) : message.author,
-    replyTo,
-  };
-}
-
-function updateConversationProfile(conversation: Conversation, user: User): Conversation {
-  return {
-    ...conversation,
-    participants: conversation.participants?.map((participant) => updateParticipantProfile(participant, user)),
-    members: conversation.members?.map((participant) => updateParticipantProfile(participant, user)),
-    users: conversation.users?.map((member) => (member.id === user.id ? mergeUserProfile(member, user) : member)),
-    otherUser:
-      conversation.otherUser?.id === user.id
-        ? mergeUserProfile(conversation.otherUser, user)
-        : conversation.otherUser,
-    lastMessage: updateMessageProfile(conversation.lastMessage, user) ?? null,
-    pinnedMessage: updateMessageProfile(conversation.pinnedMessage, user) ?? null,
-    pinnedMessages: conversation.pinnedMessages?.map(
-      (message) => updateMessageProfile(message, user) as Message,
-    ),
   };
 }
 
@@ -607,7 +571,9 @@ export function MessengerScreen({
     realtimeSocket.on('connect_error', (error) => {
       if (!active) return;
       setSocketState('disconnected');
-      if (/token|auth|jwt|unauthorized/i.test(error.message)) onLogout(true);
+      // «frozen» и «no longer exists» — аккаунт заморозили или удалили прямо
+      // во время сессии: сервер уже разорвал сокет, выходим и мы.
+      if (/token|auth|jwt|unauthorized|frozen|no longer exists/i.test(error.message)) onLogout(true);
     });
     realtimeSocket.on('message:new', (message: Message) => {
       if (!active || !message?.id || !message.conversationId) return;
@@ -774,6 +740,20 @@ export function MessengerScreen({
       setConversations((current) =>
         current.map((conversation) => updateConversationProfile(conversation, user)),
       );
+    });
+    realtimeSocket.on('account:state', (payload: AccountStatePayload) => {
+      if (!active || !payload?.userId) return;
+      // Заморозили или удалили меня — сессия больше недействительна.
+      if (payload.userId === currentUser.id) {
+        if (payload.frozen || payload.removed) onLogout(true);
+        return;
+      }
+      const result = applyAccountState(conversationsRef.current, messagesRef.current, payload);
+      setConversations(result.conversations);
+      setMessages(result.messages);
+      // После удаления сервер стёр и сообщения человека — перечитываем чаты,
+      // чтобы пропала подпись последнего сообщения и счётчики сошлись.
+      if (result.removed) void loadConversations();
     });
     realtimeSocket.on('folders:updated', (items: ChatFolder[]) => {
       if (!active || !Array.isArray(items)) return;
