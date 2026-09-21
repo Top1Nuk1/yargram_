@@ -17,6 +17,10 @@ function participantUser(participant: Participant): User | null {
     showLastSeen: participant.showLastSeen,
     createdAt: participant.createdAt,
     blockedByMe: participant.blockedByMe,
+    // Значки едут вместе с участником: сервер отдаёт их в members, и без этого
+    // переноса значок Yargram и галочка пропадали бы в переписке.
+    isVerified: participant.isVerified,
+    badge: participant.badge,
   };
 }
 

@@ -79,6 +79,8 @@ export interface Participant {
   showLastSeen?: boolean;
   createdAt?: string;
   blockedByMe?: boolean;
+  isVerified?: boolean;
+  badge?: 'yargram' | null;
 }
 
 export interface Message {

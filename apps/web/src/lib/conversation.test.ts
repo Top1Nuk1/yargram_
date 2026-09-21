@@ -16,6 +16,20 @@ describe('conversation helpers', () => {
     expect(conversationTitle(conversation, 'alice')).toBe('Борис');
   });
 
+  it('keeps badge and verification flags on the peer', () => {
+    const flagged: Conversation = {
+      id: 'conversation-2',
+      members: [
+        { id: 'alice', displayName: 'Алиса' },
+        { id: 'bob', displayName: 'Борис', isVerified: true, badge: 'yargram' },
+      ],
+    };
+    expect(getConversationPeer(flagged, 'alice')).toMatchObject({
+      isVerified: true,
+      badge: 'yargram',
+    });
+  });
+
   it('sorts messages chronologically', () => {
     const messages: Message[] = [
       { id: '2', conversationId: 'c', text: 'Позже', createdAt: '2026-07-27T12:01:00.000Z' },
