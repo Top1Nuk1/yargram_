@@ -9,7 +9,6 @@ import {
   Plus,
   Settings,
   ShieldBan,
-  Smile,
   Star,
   UserPlus,
   UsersRound,
@@ -70,7 +69,7 @@ export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction
         aria-label="Меню"
         className="relative flex h-full w-[88vw] max-w-[360px] animate-slide-up flex-col bg-surface shadow-float sm:max-w-[400px]"
       >
-        {/* Шапка: аватар, имя, ссылка на эмодзи-статус и переключатель аккаунтов */}
+        {/* Шапка: аватар, имя, статус и переключатель аккаунтов */}
         <header className="px-5 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
           <div className="flex items-center gap-3">
             <Avatar name={currentUser.displayName} src={currentUser.avatarUrl ?? currentUser.avatar?.url} size="lg" online={online} />
@@ -78,14 +77,10 @@ export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction
               <p className="truncate text-base font-bold text-ink">
                 <UserName name={currentUser.displayName} user={currentUser} />
               </p>
-              <button
-                type="button"
-                onClick={() => onAction('profile')}
-                className="mt-0.5 inline-flex items-center gap-1 text-[13px] font-semibold text-brand transition hover:text-brand-strong"
-              >
-                <Smile className="h-3.5 w-3.5" />
-                Установить эмодзи-статус
-              </button>
+              {/* Эмодзи-статуса пока нет — показываем просто состояние подключения. */}
+              <p className="mt-0.5 truncate text-[13px] font-semibold text-muted">
+                {online ? 'в сети' : 'не в сети'}
+              </p>
             </div>
             <button
               type="button"
