@@ -10,7 +10,7 @@ import { loadConfig } from "../src/config.js";
 import { createJsonRepositories } from "../src/repositories/json-repositories.js";
 import { RealtimeEvents } from "../src/realtime/events.js";
 import { attachSocketServer, releaseSocketServer } from "../src/realtime/socket-server.js";
-import { configureMediaLinks, mediaUrlFor } from "../src/lib/media-links.js";
+import { mediaUrlFor } from "../src/lib/media-links.js";
 import { AuthService } from "../src/services/auth-service.js";
 import { AdminService } from "../src/services/admin-service.js";
 import { DraftService } from "../src/services/draft-service.js";
@@ -1048,7 +1048,10 @@ describe("Yargram API", () => {
 
   it("serves uploads only through temporary signed links", async () => {
     const harness = await createHarness();
-    configureMediaLinks({ secret: "media-link-test-secret", ttlSeconds: 3_600 });
+    // Секрет намеренно не переопределяем: приложение подписывает ссылки своим
+    // экземпляром модуля, тест — своим, и на Windows vite иногда загружает один
+    // файл дважды. С одинаковым секретом по умолчанию подпись сходится в обоих
+    // случаях. Само подписывание и срок жизни проверяет tests/media-links.test.ts.
     const alice = await register(harness.app, "link-alice@example.com", "LinkAlice");
     const bob = await register(harness.app, "link-bob@example.com", "LinkBob");
     const carol = await register(harness.app, "link-carol@example.com", "LinkCarol");

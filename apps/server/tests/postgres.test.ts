@@ -53,7 +53,16 @@ describe("PostgreSQL repositories against a real isolated cluster", () => {
     const { repos } = await fresh();
     const attempts = await Promise.allSettled(Array.from({ length: 8 }, (_, index) => repos.users.create({ ...registration(`person${index}`), email: index % 2 ? "SAME@example.test" : "same@example.test" })));
     expect(attempts.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    for (const result of attempts) if (result.status === "rejected") expect(result.reason).toBeInstanceOf(RepositoryConflictError);
+    // Сверяем по имени, а не через instanceof: на Windows vite иногда загружает
+    // один и тот же файл двумя модулями (C:/… и c:/…), и тогда класс в тесте и
+    // класс в репозиториях — разные объекты.
+    for (const result of attempts) {
+      if (result.status !== "rejected") continue;
+      expect(result.reason).toMatchObject({
+        name: RepositoryConflictError.name,
+        field: expect.stringMatching(/^(email|username)$/),
+      });
+    }
     const user = await repos.users.create(registration("UniqueName"));
     await expect(repos.users.create({ ...registration("uniquename"), email: "different@example.test" })).rejects.toMatchObject({ field: "username" });
     expect(await repos.users.findByEmail("UNIQUENAME@EXAMPLE.TEST")).toEqual(user);
