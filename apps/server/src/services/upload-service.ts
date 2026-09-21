@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, resolve, sep } from "node:path";
 import type { Attachment, AttachmentKind, AttachmentView, CurrentUser } from "../domain/models.js";
 import { toAttachmentView, toCurrentUser } from "../domain/models.js";
+import { ENCRYPTION_OVERHEAD, type AtRestCrypto } from "../lib/crypto.js";
 import { AppError } from "../lib/errors.js";
 import { verifyMediaToken } from "../lib/media-links.js";
 import type { Repositories } from "../repositories/types.js";
@@ -28,6 +29,7 @@ export class UploadService {
       userId: string,
       attachment: Attachment,
     ) => Promise<boolean>,
+    private readonly crypto: AtRestCrypto,
   ) {}
 
   async initialize(): Promise<void> {
@@ -42,7 +44,8 @@ export class UploadService {
     const validated = validateUpload(kind, input);
     const storedFileName = `${randomUUID()}${validated.extension}`;
     const filePath = this.resolveStoredFile(storedFileName);
-    await writeFile(filePath, input.data, { flag: "wx", mode: 0o600 });
+    // На диск кладём шифротекст: сам файл (а не только имя) ни о чём не говорит.
+    await writeFile(filePath, this.crypto.encryptBuffer(input.data), { flag: "wx", mode: 0o600 });
     try {
       const attachment = await this.repositories.attachments.create({
         ownerId: userId,
@@ -103,6 +106,26 @@ export class UploadService {
     return file;
   }
 
+  /** Тот же доступ, но сразу отдаёт расшифрованные байты — файлы лежат зашифрованными. */
+  async readAuthorizedFile(
+    id: string,
+    token: string | undefined,
+  ): Promise<{ attachment: Attachment; bytes: Buffer }> {
+    const { attachment } = await this.getAuthorizedFile(id, token);
+    return { attachment, bytes: await this.readStoredBytes(attachment) };
+  }
+
+  private async readStoredBytes(attachment: Attachment): Promise<Buffer> {
+    const filePath = this.resolveStoredFile(attachment.storedFileName);
+    let stored: Buffer;
+    try {
+      stored = await readFile(filePath);
+    } catch {
+      throw new AppError(404, "UPLOAD_NOT_FOUND", "The uploaded file was not found");
+    }
+    return this.crypto.decryptBuffer(stored);
+  }
+
   private async assertMediaAccess(attachment: Attachment, subject: string): Promise<void> {
     // The same rule as chat access: the owner, an avatar, or a participant of a
     // conversation that references this attachment.
@@ -116,7 +139,9 @@ export class UploadService {
     const filePath = this.resolveStoredFile(attachment.storedFileName);
     try {
       const details = await stat(filePath);
-      if (!details.isFile() || details.size !== attachment.size) throw new Error("Invalid upload file");
+      // Зашифрованный файл длиннее исходного ровно на служебный заголовок.
+      const expectedSizes = [attachment.size, attachment.size + ENCRYPTION_OVERHEAD];
+      if (!details.isFile() || !expectedSizes.includes(details.size)) throw new Error("Invalid upload file");
     } catch {
       throw new AppError(404, "UPLOAD_NOT_FOUND", "The uploaded file was not found");
     }

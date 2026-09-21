@@ -20,6 +20,11 @@ const environmentSchema = z
     TLS_PFX_PATH: z.preprocess(emptyStringToUndefined, z.string().min(1).optional()),
     TLS_PFX_PASSWORD: z.preprocess(emptyStringToUndefined, z.string().min(1).optional()),
     JWT_SECRET: z.string().min(16).default("yargram-development-secret-change-me"),
+    // Ключ шифрования данных в покое: текст сообщений и файлы на диске.
+    DB_ENCRYPTION_KEY: z
+      .string()
+      .min(16)
+      .default("yargram-development-encryption-key-change-me"),
     JWT_EXPIRES_IN: z.string().min(1).default("7d"),
     BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(14).default(10),
     MEDIA_TOKEN_TTL_SECONDS: z.coerce
@@ -63,6 +68,8 @@ export type ServerConfig = {
   tlsPfxPath?: string;
   tlsPfxPassword?: string;
   jwtSecret: string;
+  /** Ключ шифрования данных в покое (текст сообщений и файлы). */
+  dbEncryptionKey: string;
   jwtExpiresIn: string;
   bcryptRounds: number;
   mediaTokenTtlSeconds: number;
@@ -80,6 +87,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Server
     parsed.JWT_SECRET === "yargram-development-secret-change-me"
   ) {
     throw new Error("JWT_SECRET must be changed before starting in production");
+  }
+  if (
+    parsed.NODE_ENV === "production" &&
+    parsed.DB_ENCRYPTION_KEY === "yargram-development-encryption-key-change-me"
+  ) {
+    throw new Error("DB_ENCRYPTION_KEY must be changed before starting in production");
   }
   if (parsed.HTTPS_PORT && parsed.HTTPS_PORT === parsed.PORT) {
     throw new Error("HTTPS_PORT must be different from PORT");
@@ -107,6 +120,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Server
         }
       : {}),
     jwtSecret: parsed.JWT_SECRET,
+    dbEncryptionKey: parsed.DB_ENCRYPTION_KEY,
     jwtExpiresIn: parsed.JWT_EXPIRES_IN,
     bcryptRounds: parsed.BCRYPT_ROUNDS,
     mediaTokenTtlSeconds: parsed.MEDIA_TOKEN_TTL_SECONDS,

@@ -635,7 +635,7 @@ export function createApiRouter(dependencies: {
     asyncHandler(async (request, response) => {
       const { uploadId } = parseParams(uploadParamsSchema, request);
       const { download, t } = parseQuery(downloadQuerySchema, request);
-      const { attachment, filePath } = await dependencies.uploadService.getAuthorizedFile(
+      const { attachment, bytes } = await dependencies.uploadService.readAuthorizedFile(
         uploadId,
         t,
       );
@@ -652,7 +652,19 @@ export function createApiRouter(dependencies: {
         `${inline ? "inline" : "attachment"}; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`,
       );
       response.type(inline ? attachment.mimeType : "application/octet-stream");
-      response.sendFile(filePath);
+      // Файл на диске зашифрован, поэтому отдаём уже расшифрованные байты.
+      // Диапазоны (Range) поддерживаем вручную, чтобы аудио и видео можно было перематывать.
+      response.setHeader("Accept-Ranges", "bytes");
+      const range = parseByteRange(request.headers.range, bytes.length);
+      if (range) {
+        response.status(206);
+        response.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${bytes.length}`);
+        response.setHeader("Content-Length", String(range.end - range.start + 1));
+        response.end(bytes.subarray(range.start, range.end + 1));
+        return;
+      }
+      response.setHeader("Content-Length", String(bytes.length));
+      response.end(bytes);
     }),
   );
 
@@ -935,5 +947,35 @@ export function createApiRouter(dependencies: {
   }),
 );
 
-return router;
+  return router;
+}
+
+/**
+ * Разбирает заголовок Range. Поддерживаем только один диапазон: его достаточно
+ * браузерам, чтобы перематывать аудио и видео. Всё непонятное — отдаём целиком.
+ */
+function parseByteRange(
+  header: string | undefined,
+  size: number,
+): { start: number; end: number } | null {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return null;
+  const [, rawStart, rawEnd] = match;
+  if (!rawStart && !rawEnd) return null;
+
+  let start: number;
+  let end: number;
+  if (!rawStart) {
+    const suffix = Number(rawEnd);
+    if (!Number.isFinite(suffix) || suffix <= 0) return null;
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd ? Number(rawEnd) : size - 1;
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start > end || start >= size) return null;
+  return { start, end: Math.min(end, size - 1) };
 }

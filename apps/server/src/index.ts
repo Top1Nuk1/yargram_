@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   configureMediaLinks({ secret: config.jwtSecret, ttlSeconds: config.mediaTokenTtlSeconds });
   const storage = await openStorage(config);
-  const { repositories } = storage;
+  const { repositories, crypto } = storage;
   console.log(`Yargram storage: ${config.databaseDriver}`);
   try {
   const authService = new AuthService(repositories.users, {
@@ -65,6 +65,7 @@ async function main(): Promise<void> {
     folderService,
     scheduledMessageService,
     events,
+    crypto,
   });
   const httpServer = createHttpServer(app);
   const io = attachSocketServer(httpServer, { config, authService, chatService, events });

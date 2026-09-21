@@ -7,6 +7,7 @@ import type { ServerConfig } from "./config.js";
 import { createCorsOptions } from "./http/cors.js";
 import { createApiRouter } from "./http/routes.js";
 import { errorHandler, notFoundHandler } from "./lib/errors.js";
+import type { AtRestCrypto } from "./lib/crypto.js";
 import type { Repositories } from "./repositories/types.js";
 import type { RealtimeEvents } from "./realtime/events.js";
 import type { AuthService } from "./services/auth-service.js";
@@ -27,12 +28,14 @@ export function createApp(dependencies: {
   scheduledMessageService: ScheduledMessageService;
   repositories: Repositories;
   events: RealtimeEvents;
+  crypto: AtRestCrypto;
 }): Express {
   const app = express();
   const uploadService = new UploadService(
     dependencies.repositories,
     dependencies.config.uploadDirectory,
     (userId, attachment) => dependencies.chatService.canAccessAttachment(userId, attachment),
+    dependencies.crypto,
   );
   app.disable("x-powered-by");
   app.use(

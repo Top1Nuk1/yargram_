@@ -8,6 +8,8 @@ import { afterEach, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { lastSeenStatus } from "../src/domain/models.js";
+import { AtRestCrypto } from "../src/lib/crypto.js";
+import { withEncryption } from "../src/repositories/encrypted-repositories.js";
 import { createJsonRepositories } from "../src/repositories/json-repositories.js";
 import { RealtimeEvents } from "../src/realtime/events.js";
 import { attachSocketServer, releaseSocketServer } from "../src/realtime/socket-server.js";
@@ -27,7 +29,8 @@ async function harness() {
   const config = loadConfig({ NODE_ENV: "test", JWT_SECRET: "privacy-test-secret-long-enough", BCRYPT_ROUNDS: "4", DATA_DIR: directory });
   const database = new JsonDatabase(config.dataFile);
   await database.initialize();
-  const repositories = createJsonRepositories(database);
+  const crypto = new AtRestCrypto("test-encryption-key-at-least-16");
+  const repositories = withEncryption(createJsonRepositories(database), crypto);
   const authService = new AuthService(repositories.users, { jwtSecret: config.jwtSecret, jwtExpiresIn: config.jwtExpiresIn, bcryptRounds: 4 });
   const chatService = new ChatService(repositories);
   const events = new RealtimeEvents();
@@ -45,6 +48,7 @@ async function harness() {
     folderService,
     scheduledMessageService,
     events,
+    crypto,
   });
   const alice = await authService.register({ email: "alice@example.test", password: "password123", displayName: "Alice", username: "alice" });
   const bob = await authService.register({ email: "bob@example.test", password: "password123", displayName: "Bob", username: "bob" });

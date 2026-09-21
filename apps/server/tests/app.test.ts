@@ -11,6 +11,8 @@ import { createJsonRepositories } from "../src/repositories/json-repositories.js
 import { RealtimeEvents } from "../src/realtime/events.js";
 import { attachSocketServer, releaseSocketServer } from "../src/realtime/socket-server.js";
 import { mediaUrlFor } from "../src/lib/media-links.js";
+import { AtRestCrypto } from "../src/lib/crypto.js";
+import { withEncryption } from "../src/repositories/encrypted-repositories.js";
 import { AuthService } from "../src/services/auth-service.js";
 import { AdminService } from "../src/services/admin-service.js";
 import { DraftService } from "../src/services/draft-service.js";
@@ -42,7 +44,8 @@ async function createHarness(seedState?: unknown) {
   }
   const database = new JsonDatabase(config.dataFile);
   await database.initialize();
-  const repositories = createJsonRepositories(database);
+  const crypto = new AtRestCrypto("test-encryption-key-at-least-16");
+  const repositories = withEncryption(createJsonRepositories(database), crypto);
   const authService = new AuthService(repositories.users, {
     jwtSecret: config.jwtSecret,
     jwtExpiresIn: config.jwtExpiresIn,
@@ -64,10 +67,12 @@ async function createHarness(seedState?: unknown) {
     folderService,
     scheduledMessageService,
     events,
+    crypto,
   });
   return {
     app,
     config,
+    crypto,
     repositories,
     authService,
     chatService,
@@ -431,7 +436,8 @@ describe("Yargram API", () => {
     // Re-open the exact same on-disk file to simulate stopping and starting Yargram.
     const reloadedDatabase = new JsonDatabase(harness.config.dataFile);
     await reloadedDatabase.initialize();
-    const reloadedRepositories = createJsonRepositories(reloadedDatabase);
+    // Тот же ключ: после перезапуска зашифрованные сообщения читаются обратно.
+    const reloadedRepositories = withEncryption(createJsonRepositories(reloadedDatabase), harness.crypto);
     const reloadedChatService = new ChatService(reloadedRepositories);
 
     await expect(reloadedRepositories.users.findById(alice.user.id)).resolves.toMatchObject({
@@ -1194,7 +1200,7 @@ describe("Yargram API", () => {
 
     const reloadedDatabase = new JsonDatabase(harness.config.dataFile);
     await reloadedDatabase.initialize();
-    const repositories = createJsonRepositories(reloadedDatabase);
+    const repositories = withEncryption(createJsonRepositories(reloadedDatabase), harness.crypto);
     const chatService = new ChatService(repositories);
     await expect(repositories.reports.list()).resolves.toHaveLength(1);
     await expect(repositories.messages.findById(first.body.message.id)).resolves.toMatchObject({
