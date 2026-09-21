@@ -2328,7 +2328,7 @@ export function MessengerScreen({
                   </div>
                 )}
                 {messageState === 'ready' && messages.length > 0 && (
-                  <ol className="mx-auto flex min-h-full w-full max-w-[920px] flex-col justify-end gap-1.5 px-3 py-5 sm:px-7">
+                  <ol className="mx-auto flex min-h-full w-full max-w-[920px] flex-col justify-end px-3 py-5 sm:px-7">
                     {messages.map((message, index) => {
                       const mine = messageSenderId(message) === currentUser.id;
                       const readByPeer = (message.readBy ?? []).some((userId) => userId !== currentUser.id);
@@ -2336,6 +2336,15 @@ export function MessengerScreen({
                       const previousDay = previous ? formatDayLabel(previous.createdAt) : '';
                       const day = formatDayLabel(message.createdAt);
                       const showDay = index === 0 || previousDay !== day;
+                      const previousIsSystem =
+                        previous?.kind === 'system' || previous?.kind === 'call';
+                      // Сообщения подряд от одного автора: маленький зазор между пузырями,
+                      // аватар показывается только у последнего (см. isLastOfGroup ниже).
+                      const sameGroupAsPrevious =
+                        index > 0 &&
+                        !showDay &&
+                        !previousIsSystem &&
+                        messageSenderId(previous) === messageSenderId(message);
                       const system = message.kind === 'system' || message.kind === 'call';
                       // Аватар показываем у последнего сообщения подряд идущей группы
                       // одного автора — так он «уходит вниз», пока человек пишет дальше.
@@ -2351,7 +2360,11 @@ export function MessengerScreen({
                       const pinned = selectedPins.some((item) => item.id === message.id);
                       const favorite = Boolean(message.isFavorite ?? message.favoritedByMe);
                       return (
-                        <li key={message.id} id={`message-${message.id}`}>
+                        <li
+                          key={message.id}
+                          id={`message-${message.id}`}
+                          className={index === 0 ? '' : sameGroupAsPrevious ? 'mt-0.5' : 'mt-3'}
+                        >
                           {showDay && (
                             <div className="my-4 flex justify-center first:mt-0">
                               <span className="rounded-full border border-line/70 bg-surface/90 px-3 py-1 text-[11px] font-semibold text-muted shadow-sm backdrop-blur">
