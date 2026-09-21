@@ -2337,6 +2337,17 @@ export function MessengerScreen({
                       const day = formatDayLabel(message.createdAt);
                       const showDay = index === 0 || previousDay !== day;
                       const system = message.kind === 'system' || message.kind === 'call';
+                      // Аватар показываем у последнего сообщения подряд идущей группы
+                      // одного автора — так он «уходит вниз», пока человек пишет дальше.
+                      const next = messages[index + 1];
+                      const nextIsSystem = next ? next.kind === 'system' || next.kind === 'call' : false;
+                      const nextDay = next ? formatDayLabel(next.createdAt) : '';
+                      const isLastOfGroup =
+                        !next ||
+                        nextIsSystem ||
+                        nextDay !== day ||
+                        messageSenderId(next) !== messageSenderId(message);
+                      const sender = message.sender ?? message.author ?? selectedPeer;
                       const pinned = selectedPins.some((item) => item.id === message.id);
                       const favorite = Boolean(message.isFavorite ?? message.favoritedByMe);
                       return (
@@ -2351,8 +2362,19 @@ export function MessengerScreen({
                           {system ? (
                             <SystemMessage message={message} currentUserId={currentUser.id} />
                           ) : (
-                            <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                              <div className={`relative flex max-w-[94%] items-end gap-1 sm:max-w-[80%] ${mine ? 'flex-row' : 'flex-row-reverse'}`}>
+                            <div className={`flex items-end gap-2 ${mine ? 'justify-end' : 'justify-start'}`}>
+                              {!mine && (
+                                <span className="hidden w-9 shrink-0 md:block">
+                                  {isLastOfGroup && (
+                                    <Avatar
+                                      name={sender?.displayName ?? 'Пользователь'}
+                                      src={sender?.avatarUrl ?? sender?.avatar?.url}
+                                      size="sm"
+                                    />
+                                  )}
+                                </span>
+                              )}
+                              <div className={`relative flex min-w-0 max-w-[94%] items-end gap-1 sm:max-w-[80%] ${mine ? 'flex-row' : 'flex-row-reverse'}`}>
                                 {!message.pending && !message.failed && (
                                   <button
                                     type="button"
