@@ -69,7 +69,8 @@ import {
   sortConversations,
   sortMessages,
 } from '../../lib/conversation';
-import { formatConversationTime, formatDayLabel, formatMessageTime } from '../../lib/format';
+import { formatConversationTime, formatMessageTime } from '../../lib/format';
+import { buildMessageGroups, groupAt, groupSpacing } from '../../lib/messageGroups';
 import { mergeUserProfile, updateUserPresence, type PresencePayload } from '../../lib/presence';
 import {
   browserNotificationPermission,
@@ -413,6 +414,9 @@ export function MessengerScreen({
     ? getConversationPeer(selectedConversation, currentUser.id)
     : null;
   const selectedPins = useMemo(() => conversationPins(selectedConversation), [selectedConversation]);
+  // Границы дней и серий сообщений одного автора считаются за один проход,
+  // чтобы список не пересчитывал даты для каждой строки отдельно.
+  const messageGroups = buildMessageGroups(messages);
   const selectedBlocked = Boolean(selectedConversation?.blocked || selectedPeer?.blockedByMe);
   const peerTyping = Boolean(selectedPeer && typingUserIds.has(selectedPeer.id));
   const pendingScheduled = useMemo(
@@ -2330,32 +2334,9 @@ export function MessengerScreen({
                 {messageState === 'ready' && messages.length > 0 && (
                   <ol className="mx-auto flex min-h-full w-full max-w-[920px] flex-col justify-end px-3 py-5 sm:px-7">
                     {messages.map((message, index) => {
+                      const group = groupAt(messageGroups, index);
                       const mine = messageSenderId(message) === currentUser.id;
                       const readByPeer = (message.readBy ?? []).some((userId) => userId !== currentUser.id);
-                      const previous = messages[index - 1];
-                      const previousDay = previous ? formatDayLabel(previous.createdAt) : '';
-                      const day = formatDayLabel(message.createdAt);
-                      const showDay = index === 0 || previousDay !== day;
-                      const previousIsSystem =
-                        previous?.kind === 'system' || previous?.kind === 'call';
-                      // Сообщения подряд от одного автора: маленький зазор между пузырями,
-                      // аватар показывается только у последнего (см. isLastOfGroup ниже).
-                      const sameGroupAsPrevious =
-                        index > 0 &&
-                        !showDay &&
-                        !previousIsSystem &&
-                        messageSenderId(previous) === messageSenderId(message);
-                      const system = message.kind === 'system' || message.kind === 'call';
-                      // Аватар показываем у последнего сообщения подряд идущей группы
-                      // одного автора — так он «уходит вниз», пока человек пишет дальше.
-                      const next = messages[index + 1];
-                      const nextIsSystem = next ? next.kind === 'system' || next.kind === 'call' : false;
-                      const nextDay = next ? formatDayLabel(next.createdAt) : '';
-                      const isLastOfGroup =
-                        !next ||
-                        nextIsSystem ||
-                        nextDay !== day ||
-                        messageSenderId(next) !== messageSenderId(message);
                       const sender = message.sender ?? message.author ?? selectedPeer;
                       const pinned = selectedPins.some((item) => item.id === message.id);
                       const favorite = Boolean(message.isFavorite ?? message.favoritedByMe);
@@ -2363,22 +2344,22 @@ export function MessengerScreen({
                         <li
                           key={message.id}
                           id={`message-${message.id}`}
-                          className={index === 0 ? '' : sameGroupAsPrevious ? 'mt-0.5' : 'mt-3'}
+                          className={groupSpacing(index, group)}
                         >
-                          {showDay && (
+                          {group.showDay && (
                             <div className="my-4 flex justify-center first:mt-0">
                               <span className="rounded-full border border-line/70 bg-surface/90 px-3 py-1 text-[11px] font-semibold text-muted shadow-sm backdrop-blur">
-                                {day}
+                                {group.day}
                               </span>
                             </div>
                           )}
-                          {system ? (
+                          {group.service ? (
                             <SystemMessage message={message} currentUserId={currentUser.id} />
                           ) : (
                             <div className={`flex items-end gap-2 ${mine ? 'justify-end' : 'justify-start'}`}>
                               {!mine && (
                                 <span className="hidden w-9 shrink-0 md:block">
-                                  {isLastOfGroup && (
+                                  {group.endsGroup && (
                                     <button
                                       type="button"
                                       className="block rounded-full transition hover:opacity-90"

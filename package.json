@@ -23,7 +23,8 @@
     "db:import": "node --import tsx apps/server/src/migrate-json.ts",
     "lint": "eslint . --max-warnings=0",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "verify": "npm run typecheck && npm run lint && npm test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
