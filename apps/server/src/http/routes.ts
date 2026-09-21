@@ -1,7 +1,7 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { allowedReactionEmojis, toPublicUser } from "../domain/models.js";
+import { allowedReactionEmojis, toPublicUser, toPublicUserFor } from "../domain/models.js";
 import { asyncHandler } from "../lib/errors.js";
 import { parseBody, parseParams, parseQuery } from "../lib/validation.js";
 import type { Repositories } from "../repositories/types.js";
@@ -279,7 +279,7 @@ export function createApiRouter(dependencies: {
     });
     response.json({
       users: users.map((user) => ({
-        ...toPublicUser(user),
+        ...toPublicUserFor(user, request.auth.userId),
         blockedByMe: currentUser?.blockedUserIds.includes(user.id) ?? false,
       })),
     });
@@ -364,7 +364,7 @@ export function createApiRouter(dependencies: {
       }
       response.json({
         user: {
-          ...toPublicUser(user),
+          ...toPublicUserFor(user, request.auth.userId),
           blockedByMe: currentUser?.blockedUserIds.includes(user.id) ?? false,
         },
       });
@@ -377,7 +377,7 @@ export function createApiRouter(dependencies: {
     asyncHandler(async (request, response) => {
       const { userId } = parseParams(userParamsSchema, request);
       const result = await dependencies.chatService.setBlocked(request.auth.userId, userId, true);
-      const user = await dependencies.chatService.publicUser(userId);
+      const user = await dependencies.chatService.publicUser(userId, request.auth.userId);
       response.json({ ...result, user: { ...user, blockedByMe: true } });
     }),
   );
@@ -388,7 +388,7 @@ export function createApiRouter(dependencies: {
     asyncHandler(async (request, response) => {
       const { userId } = parseParams(userParamsSchema, request);
       const result = await dependencies.chatService.setBlocked(request.auth.userId, userId, false);
-      const user = await dependencies.chatService.publicUser(userId);
+      const user = await dependencies.chatService.publicUser(userId, request.auth.userId);
       response.json({ ...result, user: { ...user, blockedByMe: false } });
     }),
   );

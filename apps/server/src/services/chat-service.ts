@@ -9,7 +9,7 @@ import type {
   User,
   UserReport,
 } from "../domain/models.js";
-import { toAttachmentView, toPublicUser } from "../domain/models.js";
+import { toAttachmentView, toPublicUser, toPublicUserFor } from "../domain/models.js";
 import { AppError } from "../lib/errors.js";
 import type { Repositories } from "../repositories/types.js";
 
@@ -48,6 +48,10 @@ export type ConversationView = Omit<
   archived: boolean;
   mutedUntil: string | null;
   blocked: boolean;
+  /** Я заблокировал собеседника: писать и звонить нельзя, пока не разблокирую. */
+  blockedByMe: boolean;
+  /** Собеседник заблокировал меня: писать можно, но ему это не доставляется. */
+  blockedByPeer: boolean;
 };
 
 export type ReadReceipt = {
@@ -117,7 +121,14 @@ export class ChatService {
   ): Promise<MessageView[]> {
     await this.getAuthorizedConversation(currentUserId, conversationId);
     const messages = await this.repositories.messages.listForConversation(conversationId, options);
-    return this.toMessageViews(messages, currentUserId);
+    // Сообщения от заблокированных мною не существуют для меня — даже если они
+    // были отправлены до блокировки или пока она действовала.
+    const me = await this.repositories.users.findById(currentUserId);
+    const blocked = me?.blockedUserIds ?? [];
+    const visible = blocked.length
+      ? messages.filter((message) => !blocked.includes(message.senderId))
+      : messages;
+    return this.toMessageViews(visible, currentUserId);
   }
 
   async sendMessage(
@@ -392,7 +403,7 @@ export class ChatService {
     mode: "audio" | "video",
   ): Promise<{ call: CallRecord; memberIds: string[] }> {
     const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
-    await this.assertConversationInteractionAllowed(currentUserId, conversation);
+    await this.assertConversationCallable(currentUserId, conversation);
     if (conversation.type === "saved") {
       throw new AppError(400, "CALL_NOT_SUPPORTED", "Calls are not supported in Saved Messages");
     }
@@ -417,7 +428,7 @@ export class ChatService {
     callId: string,
   ): Promise<{ call: CallRecord; memberIds: string[] }> {
     const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
-    await this.assertConversationInteractionAllowed(currentUserId, conversation);
+    await this.assertConversationCallable(currentUserId, conversation);
     const call = await this.getConversationCall(conversationId, callId);
     if (call.status !== "ringing") {
       throw new AppError(409, "CALL_NOT_RINGING", "The call is no longer ringing");
@@ -512,8 +523,8 @@ export class ChatService {
     return conversation.memberIds;
   }
 
-  async publicUser(userId: string): Promise<PublicUser> {
-    return toPublicUser(await this.getUser(userId));
+  async publicUser(userId: string, viewerId?: string | null): Promise<PublicUser> {
+    return toPublicUserFor(await this.getUser(userId), viewerId);
   }
 
   async markUserSeen(userId: string, timestamp = new Date().toISOString()): Promise<PublicUser> {
@@ -561,6 +572,15 @@ export class ChatService {
     conversation: Conversation,
   ): Promise<void> {
     const otherId = conversation.memberIds.find((id) => id !== currentUserId);
+    if (otherId) await this.assertNotBlockedByMe(currentUserId, otherId);
+  }
+
+  /** Звонок запрещён в обе стороны: звонить заблокировавшему нельзя. */
+  private async assertConversationCallable(
+    currentUserId: string,
+    conversation: Conversation,
+  ): Promise<void> {
+    const otherId = conversation.memberIds.find((id) => id !== currentUserId);
     if (otherId) await this.assertUsersCanInteract(currentUserId, otherId);
   }
 
@@ -576,6 +596,25 @@ export class ChatService {
     ) {
       throw new AppError(403, "USER_BLOCKED", "Communication with this user is blocked");
     }
+  }
+
+  /**
+   * Блокирующий не может общаться, пока не снимет блокировку. Обратное направление
+   * здесь не запрещаем: как в Telegram, заблокированный писать может — сообщение
+   * сохраняется у него, но блокирующему не доставляется (см. membersBlocking).
+   */
+  private async assertNotBlockedByMe(currentUserId: string, otherUserId: string): Promise<void> {
+    const me = await this.repositories.users.findById(currentUserId);
+    if (!me) throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+    if (me.blockedUserIds.includes(otherUserId)) {
+      throw new AppError(403, "USER_BLOCKED", "You blocked this user");
+    }
+  }
+
+  /** Участники, которым не доставляем сообщения автора: те, кто его заблокировал. */
+  async membersBlocking(authorId: string, memberIds: string[]): Promise<string[]> {
+    const users = await this.repositories.users.findManyByIds(memberIds);
+    return users.filter((user) => user.blockedUserIds.includes(authorId)).map((user) => user.id);
   }
 
   private async getUser(userId: string): Promise<User> {
@@ -623,12 +662,19 @@ export class ChatService {
       throw new AppError(500, "DATA_INTEGRITY_ERROR", "Conversation references a missing user");
     }
     const usersById = new Map(users.map((user) => [user.id, user]));
-    const members = conversation.memberIds.map((id) => toPublicUser(usersById.get(id) as User));
     const currentUser = usersById.get(currentUserId);
     const otherUser = users.find((user) => user.id !== currentUserId);
-    const lastMessage = conversation.lastMessageId
+    const blockedByMe = Boolean(currentUser && otherUser && currentUser.blockedUserIds.includes(otherUser.id));
+    const blockedByPeer = Boolean(currentUser && otherUser && otherUser.blockedUserIds.includes(currentUser.id));
+    const hiddenAuthors = currentUser?.blockedUserIds ?? [];
+    // Заблокированный видит профиль блокирующего без аватара и без времени визита.
+    const members = conversation.memberIds.map((id) =>
+      toPublicUserFor(usersById.get(id) as User, currentUserId),
+    );
+    const storedLast = conversation.lastMessageId
       ? await this.repositories.messages.findById(conversation.lastMessageId)
       : null;
+    const lastMessage = storedLast && !hiddenAuthors.includes(storedLast.senderId) ? storedLast : null;
     const pinned = await this.repositories.messages.listByIds(conversation.pinnedMessageIds);
     const pinnedMessages = await this.toMessageViews(
       pinned.filter((message) => message.conversationId === conversation.id),
@@ -647,12 +693,9 @@ export class ChatService {
       pinnedMessages,
       archived: conversation.archivedBy.includes(currentUserId),
       mutedUntil: conversation.mutedUntilBy[currentUserId] ?? null,
-      blocked: Boolean(
-        currentUser &&
-          otherUser &&
-          (currentUser.blockedUserIds.includes(otherUser.id) ||
-            otherUser.blockedUserIds.includes(currentUser.id)),
-      ),
+      blocked: blockedByMe || blockedByPeer,
+      blockedByMe,
+      blockedByPeer,
     };
   }
 

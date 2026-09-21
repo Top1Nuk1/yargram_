@@ -1170,9 +1170,24 @@ describe("Yargram API", () => {
       .put(`/api/users/${bob.user.id}/block`)
       .set("Authorization", bearer(alice.accessToken));
     expect(blocked.body.blocked).toBe(true);
-    const forbidden = await request(harness.app)
+    // По-телеграмовски: заблокированный отправить может, но блокирующий этого
+    // сообщения не видит ни в сокете, ни в истории.
+    const fromBlocked = await request(harness.app)
       .post(`/api/conversations/${conversationId}/messages`)
       .set("Authorization", bearer(bob.accessToken))
+      .send({ text: "Blocked message" });
+    expect(fromBlocked.status).toBe(201);
+    const aliceHistory = await request(harness.app)
+      .get(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(aliceHistory.body.messages.map((message: { id: string }) => message.id)).not.toContain(
+      fromBlocked.body.message.id,
+    );
+
+    // А вот сам блокирующий писать не может, пока не снимет блокировку.
+    const forbidden = await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(alice.accessToken))
       .send({ text: "Blocked message" });
     expect(forbidden.status).toBe(403);
     expect(forbidden.body.error.code).toBe("USER_BLOCKED");
@@ -1330,6 +1345,53 @@ describe("Yargram API", () => {
     expect(selfAdmin.body.error.code).toBe("SELF_ADMIN");
   });
 
+  it("hides a blocked user's messages and the blocker's profile, like Telegram", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "tg-alice@example.com", "TgAlice");
+    const bob = await register(harness.app, "tg-bob@example.com", "TgBob");
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id });
+    const conversationId = direct.body.conversation.id as string;
+    await request(harness.app)
+      .put(`/api/users/${bob.user.id}/block`)
+      .set("Authorization", bearer(alice.accessToken))
+      .expect(200);
+
+    // Заблокированный пишет: сообщение сохраняется и видно ему самому.
+    const sent = await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ text: "привет из блокировки" });
+    expect(sent.status).toBe(201);
+    const bobHistory = await request(harness.app)
+      .get(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(bobHistory.body.messages.map((message: { id: string }) => message.id)).toContain(sent.body.message.id);
+
+    // Блокирующий этого сообщения не видит.
+    const aliceHistory = await request(harness.app)
+      .get(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(aliceHistory.body.messages.map((message: { id: string }) => message.id)).not.toContain(
+      sent.body.message.id,
+    );
+
+    // Направления блокировки видны каждому по-своему.
+    const aliceList = await request(harness.app).get("/api/conversations").set("Authorization", bearer(alice.accessToken));
+    expect(aliceList.body.conversations[0]).toMatchObject({ blockedByMe: true, blockedByPeer: false });
+    const bobList = await request(harness.app).get("/api/conversations").set("Authorization", bearer(bob.accessToken));
+    expect(bobList.body.conversations[0]).toMatchObject({ blockedByMe: false, blockedByPeer: true });
+
+    // Профиль блокирующего для заблокированного: без аватара и без времени визита.
+    const profile = await request(harness.app)
+      .get(`/api/users/${alice.user.id}`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(profile.body.user).toMatchObject({ avatarUrl: null, lastSeenAt: null, lastSeenStatus: "long_ago" });
+    expect(profile.body.user.displayName).toBe("TgAlice");
+  });
+
   it("stores personal drafts, folders and a duplicate-free scheduled queue", async () => {
     const harness = await createHarness();
     const alice = await register(harness.app, "plan-alice@example.com", "PlanAlice");
@@ -1464,7 +1526,7 @@ describe("Yargram API", () => {
         .set(bobAuth);
       expect(history.body.messages.at(-1)).toMatchObject({ text: "по расписанию" });
 
-      // A blocked conversation fails the delivery instead of retrying forever.
+      // Меня заблокировали: сообщение по расписанию уходит, но адресату не доставляется.
       await harness.repositories.users.setBlocked(alice.user.id, bob.user.id, true);
       const blocked = await harness.repositories.scheduledMessages.create({
         userId: bob.user.id,
@@ -1473,9 +1535,9 @@ describe("Yargram API", () => {
         attachmentIds: [],
         sendAt: new Date(clock - 1_000).toISOString(),
       });
-      expect(await queue.dispatchDue()).toBe(0);
+      expect(await queue.dispatchDue()).toBe(1);
       expect(await harness.repositories.scheduledMessages.findById(blocked.id)).toMatchObject({
-        status: "failed",
+        status: "sent",
       });
     } finally {
       bobClient.close();

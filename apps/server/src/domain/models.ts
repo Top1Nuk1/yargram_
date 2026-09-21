@@ -256,6 +256,24 @@ export function toPublicUser(user: User): PublicUser {
   };
 }
 
+/**
+ * Профиль глазами конкретного смотрящего. Если владелец профиля заблокировал
+ * смотрящего, тот видит только имя — как в Telegram: без аватара и без времени
+ * визита («был(а) давно»).
+ */
+export function toPublicUserFor(user: User, viewerId?: string | null): PublicUser {
+  const base = toPublicUser(user);
+  if (!viewerId || !user.blockedUserIds?.includes(viewerId)) return base;
+  return {
+    ...base,
+    avatar: null,
+    avatarUrl: null,
+    lastSeenAt: null,
+    lastSeenStatus: "long_ago",
+    online: false,
+  };
+}
+
 export function toCurrentUser(user: User): CurrentUser {
   return {
     ...toPublicUser(user),

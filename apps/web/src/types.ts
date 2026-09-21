@@ -130,6 +130,10 @@ export interface Conversation {
   archived?: boolean;
   mutedUntil?: string | null;
   blocked?: boolean;
+  /** Я заблокировал собеседника: писать и звонить нельзя. */
+  blockedByMe?: boolean;
+  /** Собеседник заблокировал меня: писать можно, но ему это не доставляется. */
+  blockedByPeer?: boolean;
 }
 
 export interface AuthResult {

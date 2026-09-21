@@ -417,7 +417,16 @@ export function MessengerScreen({
   // Границы дней и серий сообщений одного автора считаются за один проход,
   // чтобы список не пересчитывал даты для каждой строки отдельно.
   const messageGroups = buildMessageGroups(messages);
-  const selectedBlocked = Boolean(selectedConversation?.blocked || selectedPeer?.blockedByMe);
+  // Направления блокировки разные: «я заблокировал» закрывает отправку и звонки,
+  // а «меня заблокировали» — нет. Как в Telegram, заблокированный писать может,
+  // просто собеседник эти сообщения не получит.
+  const selectedBlockedByMe = Boolean(
+    selectedConversation?.blockedByMe ??
+      (selectedConversation?.blocked && selectedPeer?.blockedByMe) ??
+      false,
+  );
+  const selectedBlockedByPeer = Boolean(selectedConversation?.blockedByPeer ?? false);
+  const selectedBlocked = selectedBlockedByMe || selectedBlockedByPeer;
   const peerTyping = Boolean(selectedPeer && typingUserIds.has(selectedPeer.id));
   const pendingScheduled = useMemo(
     () =>
@@ -1105,7 +1114,7 @@ export function MessengerScreen({
     event?.preventDefault();
     const text = draft.trim();
     const conversationId = selectedId;
-    if (!conversationId || sending || selectedBlocked) return;
+    if (!conversationId || sending || selectedBlockedByMe) return;
 
     if (editingMessage) {
       if (!text && !(editingMessage.attachments?.length)) return;
@@ -1428,7 +1437,7 @@ export function MessengerScreen({
   }
 
   function openSchedulePicker() {
-    if (!selectedId || selectedBlocked || sending) return;
+    if (!selectedId || selectedBlockedByMe || sending) return;
     if (editingMessage) {
       setNotice('Отложить можно только новое сообщение.');
       return;
@@ -1565,7 +1574,7 @@ export function MessengerScreen({
   const VOICE_MIME_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
 
   async function startVoiceRecording() {
-    if (!selectedId || selectedBlocked || sending || recording || recordPending || editingMessage) return;
+    if (!selectedId || selectedBlockedByMe || sending || recording || recordPending || editingMessage) return;
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       setNotice('Запись голоса доступна по HTTPS-адресу (порт 3443) в современном браузере.');
       return;
@@ -1722,7 +1731,7 @@ export function MessengerScreen({
     }
   }
 
-  const draftCanAcceptFiles = Boolean(selectedId && !selectedBlocked && !sending);
+  const draftCanAcceptFiles = Boolean(selectedId && !selectedBlockedByMe && !sending);
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
     if (!draftCanAcceptFiles) return;
@@ -2044,7 +2053,7 @@ export function MessengerScreen({
                           name={title}
                           src={conversationAvatar(conversation, currentUser.id)}
                           size="md"
-                          online={peer ? isUserOnline(peer) : undefined}
+                          online={peer && !conversation.blockedByPeer ? isUserOnline(peer) : undefined}
                         />}
                         <span className="min-w-0 flex-1">
                           <span className="flex items-baseline gap-2">
@@ -2109,7 +2118,7 @@ export function MessengerScreen({
                     name={conversationTitle(selectedConversation, currentUser.id)}
                     src={conversationAvatar(selectedConversation, currentUser.id)}
                     size="sm"
-                    online={selectedPeer ? isUserOnline(selectedPeer) : undefined}
+                    online={selectedPeer && !selectedBlockedByPeer ? isUserOnline(selectedPeer) : undefined}
                   />}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold sm:text-[15px]">
@@ -2598,12 +2607,12 @@ export function MessengerScreen({
                     className="sr-only"
                     multiple
                     onChange={handleSelectedFiles}
-                    disabled={sending || selectedBlocked || Boolean(editingMessage)}
+                    disabled={sending || selectedBlockedByMe || Boolean(editingMessage)}
                   />
                   <IconButton
                     label="Прикрепить фото или файл"
                     type="button"
-                    disabled={sending || selectedBlocked || Boolean(editingMessage)}
+                    disabled={sending || selectedBlockedByMe || Boolean(editingMessage)}
                     className="h-11 w-11 shrink-0"
                     onClick={() => fileInputRef.current?.click()}
                   >
@@ -2612,7 +2621,7 @@ export function MessengerScreen({
                   <IconButton
                     label={recording ? 'Остановить запись' : recordPending ? 'Ожидание доступа к устройству' : recordMode === 'video_circle' ? 'Записать видеокружок' : 'Голосовое сообщение'}
                     type="button"
-                    disabled={sending || selectedBlocked || Boolean(editingMessage) || recordPending}
+                    disabled={sending || selectedBlockedByMe || Boolean(editingMessage) || recordPending}
                     className={`h-11 w-11 shrink-0 ${recording ? 'bg-danger text-white hover:bg-danger/85' : ''}`}
                     onClick={() => {
                       if (recording) stopVoiceRecording();
@@ -2628,7 +2637,7 @@ export function MessengerScreen({
                     <IconButton
                       label="Добавить эмодзи"
                       type="button"
-                      disabled={sending || selectedBlocked}
+                      disabled={sending || selectedBlockedByMe}
                       className={`h-11 w-11 shrink-0 ${emojiOpen ? 'bg-brand-soft text-brand' : ''}`}
                       onClick={() => setEmojiOpen((open) => !open)}
                     >
@@ -2656,7 +2665,7 @@ export function MessengerScreen({
                     <IconButton
                       label="Отправить позже"
                       type="button"
-                      disabled={sending || selectedBlocked || Boolean(editingMessage) || recording}
+                      disabled={sending || selectedBlockedByMe || Boolean(editingMessage) || recording}
                       className={`h-11 w-11 shrink-0 ${scheduleOpen ? 'bg-brand-soft text-brand' : ''}`}
                       onClick={() => (scheduleOpen ? setScheduleOpen(false) : openSchedulePicker())}
                     >
@@ -2693,8 +2702,8 @@ export function MessengerScreen({
                       onKeyDown={handleComposerKeyDown}
                       rows={1}
                       className="max-h-32 min-h-11 w-full resize-none rounded-[1.2rem] border border-line bg-canvas px-4 py-2.5 text-[15px] leading-6 outline-none transition placeholder:text-muted/65 focus:border-brand/50 focus:ring-4 focus:ring-brand/10"
-                      placeholder={selectedBlocked ? 'Отправка недоступна' : editingMessage ? 'Измените сообщение…' : replyingTo ? 'Напишите ответ…' : 'Сообщение…'}
-                      disabled={sending || selectedBlocked}
+                      placeholder={selectedBlockedByMe ? 'Отправка недоступна' : editingMessage ? 'Измените сообщение…' : replyingTo ? 'Напишите ответ…' : 'Сообщение…'}
+                      disabled={sending || selectedBlockedByMe}
                     />
                   </label>
                   <IconButton
@@ -2702,7 +2711,7 @@ export function MessengerScreen({
                     type="submit"
                     disabled={
                       sending ||
-                      selectedBlocked ||
+                      selectedBlockedByMe ||
                       draftAttachments.some((item) => item.status !== 'uploaded') ||
                       (!draft.trim() && !draftAttachments.some((item) => item.status === 'uploaded'))
                     }
@@ -2737,7 +2746,7 @@ export function MessengerScreen({
         <PeerProfileModal
           token={token}
           user={selectedPeer}
-          blocked={selectedBlocked}
+          blocked={selectedBlockedByMe}
           onClose={() => setPeerProfileOpen(false)}
           onMessage={() => setPeerProfileOpen(false)}
           onAudioCall={() => {

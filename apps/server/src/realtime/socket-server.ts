@@ -615,7 +615,12 @@ export function attachSocketServer(
   }
 
   dependencies.events.onNewMessage(({ message, memberIds }) => {
-    emitToMembers(io, memberIds, "message:new", message);
+    // Заблокировавшему автора сообщения оно не доставляется: как в Telegram,
+    // отправка проходит, но адресат её не видит даже после разблокировки.
+    void dependencies.chatService
+      .membersBlocking(message.senderId, memberIds)
+      .then((hidden) => emitToMembers(io, memberIds.filter((id) => !hidden.includes(id)), "message:new", message))
+      .catch(() => emitToMembers(io, memberIds, "message:new", message));
   });
   dependencies.events.onUpdatedMessage(({ message, memberIds }) => {
     emitToMembers(io, memberIds, "message:updated", message);
