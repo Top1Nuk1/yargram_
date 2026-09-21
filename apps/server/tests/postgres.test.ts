@@ -72,6 +72,18 @@ describe("PostgreSQL repositories against a real isolated cluster", () => {
     expect(new Set(directs.map((result) => result.conversation.id)).size).toBe(1);
   });
 
+  it("finds a user by any username spelling, including mixed-case aliases", async () => {
+    const { repos } = await fresh();
+    const user = await repos.users.create({ ...registration("Top1Nuk1"), email: "mixed@example.test" });
+    await repos.users.update(user.id, { usernames: ["MiXeD_Alias", "second_name"] });
+    // Регистр в никах сохраняем, ищем без него — и по основному, и по доп.
+    for (const query of ["Top1Nuk1", "top1nuk1", "TOP1NUK1", "MiXeD_Alias", "mixed_alias", "Second_Name"]) {
+      expect(await repos.users.findByUsername(query)).toMatchObject({ id: user.id });
+      expect((await repos.users.list({ query, limit: 20 })).map((candidate) => candidate.id)).toContain(user.id);
+    }
+    expect(await repos.users.findByUsername("nobody_here")).toBeNull();
+  });
+
   it("preserves concurrent reactions/read state, message order, pins and deletion cleanup", async () => {
     const { repos } = await fresh();
     const alice = await repos.users.create(registration("alice"));

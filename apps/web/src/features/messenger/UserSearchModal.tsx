@@ -14,6 +14,18 @@ interface UserSearchModalProps {
 
 type SearchState = 'idle' | 'loading' | 'success' | 'error';
 
+/**
+ * Какой @ник показать в строке результата. Если человека нашли по
+ * дополнительному юзернейму, показываем именно его — иначе не понятно, почему
+ * строка попала в выдачу.
+ */
+function displayHandle(user: User, query: string): string {
+  const wanted = query.trim().replace(/^@/, '').toLowerCase();
+  const handles = [user.username ?? '', ...(user.usernames ?? [])].filter(Boolean);
+  const matched = handles.find((handle) => handle.toLowerCase().includes(wanted));
+  return matched ?? handles[0] ?? '';
+}
+
 export function UserSearchModal({ token, currentUserId, onClose, onConversation }: UserSearchModalProps) {
   const [query, setQuery] = useState('');
   const [users, setUsers] = useState<User[]>([]);
@@ -46,7 +58,12 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
       setError('');
       try {
         const result = await api.users(token, normalized, controller.signal);
-        setUsers(result.items.filter((user) => user.id !== currentUserId && Boolean(user.username)));
+        // Без основного ника человек тоже находится — по дополнительному.
+        setUsers(
+          result.items.filter(
+            (user) => user.id !== currentUserId && (Boolean(user.username) || Boolean(user.usernames?.length)),
+          ),
+        );
         setState('success');
       } catch (reason) {
         if (reason instanceof DOMException && reason.name === 'AbortError') return;
@@ -94,7 +111,7 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
         <header className="flex items-start justify-between px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
           <div>
             <h2 id="user-search-title" className="text-xl font-extrabold tracking-[-0.025em] text-ink">Новый диалог</h2>
-            <p className="mt-1 text-sm text-muted">Найдите человека по его @username</p>
+            <p className="mt-1 text-sm text-muted">Найдите человека по его @username — основному или дополнительному</p>
           </div>
           <IconButton label="Закрыть" onClick={onClose}>
             <X className="h-5 w-5" />
@@ -161,7 +178,9 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
                       <p className="truncate text-sm font-bold text-ink">
                         <UserName name={user.displayName} user={user} size="sm" />
                       </p>
-                      <p className="mt-0.5 truncate text-xs text-muted">@{user.username}</p>
+                      <p className="mt-0.5 truncate text-xs text-muted">
+                        {displayHandle(user, query) ? `@${displayHandle(user, query)}` : ''}
+                      </p>
                     </div>
                     <Button
                       type="button"

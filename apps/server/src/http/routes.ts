@@ -301,7 +301,8 @@ export function createApiRouter(dependencies: {
         .union([z.enum(["yargram", ""]), z.null()])
         .transform((value) => (value === "yargram" ? "yargram" : null))
         .optional(),
-      usernames: z.array(z.string().trim().min(3).max(32)).optional(),
+      // Регистр в никах сохраняем, но адрес всё так же латиница/цифры/_.
+      usernames: z.array(usernameSchema).optional(),
       adminUserIds: z.array(z.string().uuid()).optional(),
     })
     .refine((data) => data.targetUserId || data.targetUsername, {

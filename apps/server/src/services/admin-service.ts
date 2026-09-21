@@ -12,6 +12,26 @@ export type AdminGrantInput = {
   adminUserIds?: string[] | undefined;
 };
 
+/**
+ * Ники храним в том регистре, в котором их написал человек: «Kotik» и «kotik»
+ * — один и тот же адрес, но на экране он должен выглядеть так, как его набрали.
+ * Поэтому здесь только чистим пробелы и @ и выбрасываем дубли, а все
+ * сравнения и поиск идут через lower() — в репозиториях и на клиенте.
+ */
+function normalizeHandles(values: string[]): string[] {
+  const seen = new Set<string>();
+  const handles: string[] = [];
+  for (const value of values) {
+    const handle = value.trim().replace(/^@/, "");
+    if (!handle) continue;
+    const key = handle.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    handles.push(handle);
+  }
+  return handles;
+}
+
 export class AdminService {
   constructor(private readonly users: UserRepository) {}
 
@@ -50,10 +70,13 @@ export class AdminService {
       throw new AppError(400, "SELF_ADMIN", "Only the owner can badge their own account");
     }
 
-    const normalizedUsernames = (input.usernames ?? [])
-      .map((name) => name.trim().replace(/^@/, "").toLowerCase())
-      .filter(Boolean);
+    const normalizedUsernames = normalizeHandles(input.usernames ?? []);
+    const primaryKey = target.username?.toLowerCase();
     for (const name of normalizedUsernames) {
+      // Тот же адрес в другом регистре: не плодим дубль внутри одного аккаунта.
+      if (primaryKey && name.toLowerCase() === primaryKey) {
+        throw new AppError(409, "USERNAME_TAKEN", `Username @${name} already belongs to this account`);
+      }
       const existing = await this.users.findByUsername(name);
       if (existing && existing.id !== target.id) {
         throw new AppError(409, "USERNAME_TAKEN", `Username @${name} is already in use`);

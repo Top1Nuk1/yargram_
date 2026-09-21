@@ -32,4 +32,10 @@ describe('AdditionalHandles', () => {
     const { container } = render(<AdditionalHandles usernames={['monk']} primaryUsername="monk" />);
     expect(container.firstChild).toBeNull();
   });
+
+  it('compares handles without case, so @Monk does not duplicate @monk', () => {
+    const { container } = render(<AdditionalHandles usernames={['Monk', 'crow']} primaryUsername="monk" />);
+    expect(container.textContent).not.toContain('@Monk');
+    expect(container.textContent).toContain('@crow');
+  });
 });

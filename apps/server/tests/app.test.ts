@@ -1258,23 +1258,25 @@ describe("Yargram API", () => {
     const target = await register(harness.app, "alias-target@example.com", "AliasTarget");
     await harness.repositories.users.update(owner.user.id, { isOwner: true });
     const authorize = { Authorization: bearer(owner.accessToken) };
+    const targetId = target.user.id;
 
     const granted = await request(harness.app)
       .post(`/api/admin/${owner.user.id}/grant`)
       .set(authorize)
-      .send({ targetUserId: target.user.id, usernames: ["Kotik", "@second_name"] });
+      .send({ targetUserId: targetId, usernames: ["Kotik", "@second_name"] });
     expect(granted.status).toBe(200);
-    expect(granted.body.user.usernames).toEqual(["kotik", "second_name"]);
+    // Регистр сохраняем так, как ник написал человек: @Kotik остаётся @Kotik.
+    expect(granted.body.user.usernames).toEqual(["Kotik", "second_name"]);
 
     // Every alias is searchable through the regular user search.
     for (const query of ["kotik", "second_name", "aliastarget"]) {
       const search = await request(harness.app)
         .get(`/api/users?q=${query}`)
         .set(authorize);
-      expect(search.body.users.map((user: { id: string }) => user.id)).toContain(target.user.id);
+      expect(search.body.users.map((user: { id: string }) => user.id)).toContain(targetId);
     }
     await expect(harness.repositories.users.findByUsername("kotik")).resolves.toMatchObject({
-      id: target.user.id,
+      id: targetId,
     });
 
     // Aliases belong to the account: a new registration cannot take one.
@@ -1287,6 +1289,72 @@ describe("Yargram API", () => {
         username: "kotik",
       })
       .expect(409);
+  });
+
+  it("treats usernames as case-insensitive everywhere", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "case-owner@example.com", "CaseOwner");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const authorize = { Authorization: bearer(owner.accessToken) };
+
+    // Основной ник с большими буквами: регистр сохраняем, ищем в любом.
+    const target = await request(harness.app)
+      .post("/api/auth/register")
+      .send({
+        email: "case-target@example.com",
+        password: "correct horse battery staple",
+        displayName: "CaseTarget",
+        username: "Top1Nuk1",
+      });
+    expect(target.status).toBe(201);
+    const targetId = target.body.user.id as string;
+    expect(target.body.user.username).toBe("Top1Nuk1");
+
+    const granted = await request(harness.app)
+      .post(`/api/admin/${owner.user.id}/grant`)
+      .set(authorize)
+      .send({ targetUserId: targetId, usernames: ["MiXeD_Alias", "@second", "MiXeD_alias"] });
+    expect(granted.status).toBe(200);
+    // Дубль в одном запросе склеивается, регистр первого написания остаётся.
+    expect(granted.body.user.usernames).toEqual(["MiXeD_Alias", "second"]);
+
+    // Поиск находит человека по любому нику и в любом регистре.
+    for (const query of ["Top1Nuk1", "top1nuk1", "TOP1NUK1", "ToP1NuK1", "MiXeD_Alias", "mixed_alias", "MIXED_ALIAS", "Second", "SECOND"]) {
+      const search = await request(harness.app).get(`/api/users?q=${encodeURIComponent(query)}`).set(authorize);
+      expect(search.body.users.map((user: { id: string }) => user.id)).toContain(targetId);
+    }
+
+    // Админская панель ищет цель по нику без учёта регистра и с @.
+    for (const name of ["Top1Nuk1", "top1nuk1", "TOP1NUK1", "MiXeD_Alias", "mixed_alias"]) {
+      await expect(harness.repositories.users.findByUsername(name)).resolves.toMatchObject({ id: targetId });
+    }
+    // Поиск цели для админки: @ и регистр не мешают.
+    for (const name of ["Top1Nuk1", "TOP1NUK1", "MiXeD_Alias", "@MIXED_ALIAS"]) {
+      const byUsername = await request(harness.app)
+        .post(`/api/admin/${owner.user.id}/grant`)
+        .set(authorize)
+        .send({ targetUsername: name, isVerified: true });
+      expect(byUsername.status).toBe(200);
+      expect(byUsername.body.user.id).toBe(targetId);
+    }
+
+    // Тот же адрес в другом регистре занят — и внутри аккаунта, и у соседа.
+    const sameAccount = await request(harness.app)
+      .post(`/api/admin/${owner.user.id}/grant`)
+      .set(authorize)
+      .send({ targetUserId: targetId, usernames: ["TOP1NUK1"] });
+    expect(sameAccount.status).toBe(409);
+    const taken = await request(harness.app)
+      .post("/api/auth/register")
+      .send({ email: "case-clash@example.com", password: "correct horse battery staple", displayName: "Clash", username: "SECOND" });
+    expect(taken.status).toBe(409);
+
+    // Кириллица и пробелы в никах не проходят валидацию.
+    const invalid = await request(harness.app)
+      .post(`/api/admin/${owner.user.id}/grant`)
+      .set(authorize)
+      .send({ targetUserId: targetId, usernames: ["Котик", "has space"] });
+    expect(invalid.status).toBe(400);
   });
 
   it("lets an owner revoke verification, the badge and extra usernames", async () => {
@@ -1334,7 +1402,7 @@ describe("Yargram API", () => {
 
     const granted = await grant({ targetUserId: owner.user.id, usernames: ["Kotik", "@second"] });
     expect(granted.status).toBe(200);
-    expect(granted.body.user.usernames).toEqual(["kotik", "second"]);
+    expect(granted.body.user.usernames).toEqual(["Kotik", "second"]);
     await expect(harness.repositories.users.findByUsername("kotik")).resolves.toMatchObject({
       id: owner.user.id,
     });

@@ -13,7 +13,9 @@ interface AdditionalHandlesProps {
  * Если после фильтрации список пуст — ничего не рендерит.
  */
 export function AdditionalHandles({ usernames, primaryUsername, className = 'text-muted' }: AdditionalHandlesProps) {
-  const filtered = usernames?.filter((handle) => handle !== primaryUsername) ?? [];
+  // Сравниваем без регистра: @Kotik и @kotik — один и тот же адрес, дубль не нужен.
+  const primary = primaryUsername?.toLowerCase();
+  const filtered = usernames?.filter((handle) => handle.toLowerCase() !== primary) ?? [];
   if (filtered.length === 0) return null;
   return (
     <span className={`truncate text-[12px] ${className}`}>

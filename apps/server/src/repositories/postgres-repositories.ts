@@ -88,12 +88,14 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
       findById: (id) => find<User>(pool, "users", id),
       async findByEmail(email) { return (await select<User>(pool, "users", "email_key = lower($1)", [email]))[0] ?? null; },
       async findByUsername(username) {
+        // Основной ник сравниваем по сгенерированной колонке lower(username),
+        // дополнительные — по lower(alias): регистр в никах сохраняем, ищем без него.
         return (
           (
             await select<User>(
               pool,
               "users",
-              "username_key = lower($1) OR payload->'usernames' ? lower($1)",
+              "username_key = lower($1) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(payload->'usernames', '[]'::jsonb)) AS alias WHERE lower(alias) = lower($1))",
               [username],
             )
           )[0] ?? null

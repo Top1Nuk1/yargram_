@@ -326,7 +326,7 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
                 required
               />
             </div>
-            <p className="mt-1.5 text-xs text-muted">По этому адресу вас смогут найти: @{username || 'username'}</p>
+            <p className="mt-1.5 text-xs text-muted">По этому адресу вас смогут найти: @{username || 'username'} · регистр не важен</p>
           </div>
 
             <label htmlFor="profile-bio" className="mb-1.5 block text-sm font-semibold">О себе</label>
