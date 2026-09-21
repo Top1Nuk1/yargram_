@@ -27,22 +27,19 @@ function Wait-ForEnter {
     }
 }
 
-if (-not (Test-IsAdministrator)) {
-    Write-Host "Yargram запросит права администратора для настройки доступа через Radmin VPN." -ForegroundColor Yellow
-    $arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    try {
-        Start-Process `
-            -FilePath "powershell.exe" `
-            -ArgumentList $arguments `
-            -WorkingDirectory $projectRoot `
-            -Verb RunAs | Out-Null
-    }
-    catch {
-        Write-Host "Запрос UAC был отменён. Запустите bat-файл ещё раз и нажмите 'Да'." -ForegroundColor Red
-        Wait-ForEnter
-        exit 1
-    }
-    return
+# Окно сервера обязано работать без повышения: встроенная PostgreSQL
+# (embedded-postgres) отказывается стартовать под административным токеном —
+# "Execution of PostgreSQL by a user with administrative permissions is not
+# permitted". Права нужны только файрволу и остановке прежнего экземпляра,
+# поэтому повышение запрашивается точечно, отдельным процессом.
+if (Test-IsAdministrator) {
+    Write-Host ""
+    Write-Host "Yargram нельзя запускать от имени администратора." -ForegroundColor Red
+    Write-Host "Встроенная PostgreSQL отказывается стартовать с повышенными правами." -ForegroundColor Yellow
+    Write-Host "Закройте окно и запустите «Запустить Yargram.bat» обычным двойным" -ForegroundColor Yellow
+    Write-Host "кликом — лаунчер сам спросит права, когда они понадобятся." -ForegroundColor Yellow
+    Wait-ForEnter
+    exit 1
 }
 
 try {
@@ -52,13 +49,27 @@ try {
     Write-Host "             Yargram — запуск" -ForegroundColor Cyan
     Write-Host "=============================================" -ForegroundColor DarkCyan
 
-    Write-Host "[1/4] Останавливаем предыдущую версию Yargram..." -ForegroundColor Cyan
-    & (Join-Path $PSScriptRoot "stop-yargram.ps1") -Quiet
+    Write-Host "[1/3] Останавливаем прежнюю версию и открываем доступ другу..." -ForegroundColor Cyan
+    $accessScript = Join-Path $PSScriptRoot "prepare-yargram-access.ps1"
+    $accessArguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$accessScript`""
+    $accessProcess = Start-Process `
+        -FilePath "powershell.exe" `
+        -ArgumentList $accessArguments `
+        -WorkingDirectory $projectRoot `
+        -Verb RunAs `
+        -Wait `
+        -PassThru
+    $accessLog = Join-Path $projectRoot "runtime/launch-access.log"
+    if (Test-Path -LiteralPath $accessLog -PathType Leaf) {
+        foreach ($line in @(Get-Content -LiteralPath $accessLog)) {
+            if ($line) { Write-Host "      $line" }
+        }
+    }
+    if ($accessProcess.ExitCode -ne 0) {
+        throw "Не удалось подготовить доступ (код $($accessProcess.ExitCode)). Откройте scripts\open-firewall.ps1 от имени администратора и посмотрите ошибку."
+    }
 
-    Write-Host "[2/4] Разрешаем доступ другу через Radmin VPN..." -ForegroundColor Cyan
-    & (Join-Path $PSScriptRoot "open-firewall.ps1")
-
-    Write-Host "[3/4] Запускаем новую сборку в отдельном окне..." -ForegroundColor Cyan
+    Write-Host "[2/3] Запускаем новую сборку в отдельном окне..." -ForegroundColor Cyan
     $startScript = Join-Path $PSScriptRoot "start-yargram.ps1"
     $serverArguments = "-NoLogo -NoExit -NoProfile -ExecutionPolicy Bypass -File `"$startScript`""
     Start-Process `
@@ -66,7 +77,7 @@ try {
         -ArgumentList $serverArguments `
         -WorkingDirectory $projectRoot | Out-Null
 
-    Write-Host "[4/4] Ждём готовности HTTP и защищённого HTTPS..." -ForegroundColor Cyan
+    Write-Host "[3/3] Ждём готовности HTTP и защищённого HTTPS..." -ForegroundColor Cyan
     $ready = $false
     for ($attempt = 0; $attempt -lt 240; $attempt++) {
         try {
@@ -97,7 +108,7 @@ try {
     Write-Host "Yargram запущен успешно." -ForegroundColor Green
     Write-Host "Ваша ссылка:  $httpsUrl" -ForegroundColor Yellow
     Write-Host "Ссылка другу: $httpsUrl" -ForegroundColor Yellow
-    
+
     Write-Host ""
     Write-Host "Не закрывайте окно сервера, пока друг пользуется Yargram." -ForegroundColor Magenta
     Start-Process $httpsUrl

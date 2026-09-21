@@ -14,9 +14,9 @@ coverage/
 apps/server/data/*.json
 !apps/server/data/.gitkeep
 
-# Generated HTTPS certificates (includes the private server key)
-runtime/https/
-runtime/postgres/
+# Generated runtime artifacts: HTTPS certificates (with the private server key),
+# the local PostgreSQL cluster, previews, e2e and test output, launch logs.
+runtime/
 apps/server/data/uploads/
 apps/server/data/*.backup-*
 
@@ -38,9 +38,3 @@ Desktop.ini
 # Local leftovers: kept on disk, not part of the Yargram project
 Ошибки/
 в приложение/
-
-# Generated runtime artifacts (preview, e2e and test output)
-runtime/design-preview/
-runtime/e2e-data/
-runtime/e2e-logs/
-runtime/test-logs/

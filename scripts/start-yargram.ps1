@@ -198,7 +198,17 @@ if ($ForceBuild -or (Test-BuildRequired)) {
 }
 
 & node (Join-Path $PSScriptRoot "ensure-postgres.mjs")
-if ($LASTEXITCODE -ne 0) { throw "Не удалось запустить PostgreSQL. Проверьте runtime/postgres/launcher.log." }
+if ($LASTEXITCODE -ne 0) {
+    $launcherLog = Join-Path $ProjectRoot "runtime/postgres/launcher.log"
+    $hint = "Не удалось запустить PostgreSQL (код $LASTEXITCODE). Смотрите $launcherLog."
+    if ((Test-Path -LiteralPath $launcherLog -PathType Leaf) -and
+        ((Get-Content -LiteralPath $launcherLog -Raw) -match "administrative permissions")) {
+        $hint = "PostgreSQL отказалась стартовать: это окно запущено с правами администратора. " +
+                "Закройте его и запустите «Запустить Yargram.bat» обычным двойным кликом — " +
+                "лаунчер сам запросит права только для файрвола, а сервер и база пойдут без повышения."
+    }
+    throw $hint
+}
 
 Write-Host "Подготовка доверенного HTTPS для звонков..." -ForegroundColor Cyan
 & (Join-Path $PSScriptRoot "setup-https.ps1")
