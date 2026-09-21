@@ -51,6 +51,7 @@ import { fixWebmDuration } from '@fix-webm-duration/fix';
 import { api, ApiError } from '../../api/client';
 import { Logo } from '../../components/Logo';
 import { UserName } from '../../components/UserName';
+import { AdditionalHandles, primaryHandle } from '../../components/AdditionalHandles';
 import {
   Avatar,
   Button,
@@ -2045,12 +2046,16 @@ export function MessengerScreen({
                         <span className="min-w-0 flex-1">
                           <span className="flex items-baseline gap-2">
                             <span className="min-w-0 flex-1">
-                    <UserName className="text-sm font-semibold" name={title} user={peer} />
+                    <UserName className="text-sm font-semibold" name={primaryHandle(peer) || title} user={peer} />
                   </span>
                             <span className={`shrink-0 text-[11px] ${active ? 'text-white/70' : 'text-muted'}`}>
                               {formatConversationTime(conversationTimestamp(conversation))}
                             </span>
                           </span>
+                          <AdditionalHandles
+                            usernames={peer?.usernames}
+                            className={`mt-0.5 block ${active ? 'text-white/65' : 'text-muted'}`}
+                          />
                           <span className={`mt-1 flex items-center gap-1 truncate text-[13px] ${active ? 'text-white/75' : 'text-muted'}`}>
                             {conversationIsMuted(conversation) && <BellOff className="h-3 w-3 shrink-0" />}
                             <span className="truncate">{messageSummary(conversation.lastMessage)}</span>
@@ -2110,10 +2115,14 @@ export function MessengerScreen({
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold sm:text-[15px]">
                       <UserName
-                        name={conversationTitle(selectedConversation, currentUser.id)}
+                        name={primaryHandle(selectedPeer) || conversationTitle(selectedConversation, currentUser.id)}
                         user={selectedPeer}
                       />
                     </span>
+                    <AdditionalHandles
+                      usernames={selectedPeer?.usernames}
+                      className="mt-0.5 block text-muted"
+                    />
                     <span className={`mt-0.5 block truncate text-xs ${peerTyping ? 'font-semibold text-brand' : 'text-muted'}`}>
                       {peerTyping ? 'Печатает…' : selectedPeer ? formatLastSeen(selectedPeer) : selectedConversation.type === 'saved' ? 'Сообщения и файлы для себя' : 'Личный диалог'}
                     </span>
