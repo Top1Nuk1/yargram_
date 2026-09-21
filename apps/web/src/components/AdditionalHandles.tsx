@@ -1,5 +1,3 @@
-import type { User } from '../types';
-
 interface AdditionalHandlesProps {
   usernames?: string[] | null;
   /** Основной @username — его выкидываем из списка, чтобы не было дубля. */
@@ -29,15 +27,3 @@ export function AdditionalHandles({ usernames, primaryUsername, className = 'tex
     </span>
   );
 }
-
-/**
- * Основной @handle пользователя: «@username» если есть, иначе отображаемое имя.
- * Именно его показываем как идентификатор рядом с дополнительными никами.
- */
-export function primaryHandle(user: Pick<User, 'username' | 'displayName'> | null | undefined): string {
-  if (!user) return '';
-  return user.username ? `@${user.username}` : user.displayName;
-}
-
-/** Просто экспорт типа, чтобы импортировать отсюда вместе с компонентом. */
-export type Handles = NonNullable<User['usernames']>;

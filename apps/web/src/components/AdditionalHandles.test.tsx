@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
-import { AdditionalHandles, primaryHandle } from './AdditionalHandles';
+import { AdditionalHandles } from './AdditionalHandles';
 
 describe('AdditionalHandles', () => {
   it('renders nothing when there are no alternate usernames', () => {
@@ -31,21 +31,5 @@ describe('AdditionalHandles', () => {
   it('renders nothing when the only alternate equals the primary username', () => {
     const { container } = render(<AdditionalHandles usernames={['monk']} primaryUsername="monk" />);
     expect(container.firstChild).toBeNull();
-  });
-});
-
-describe('primaryHandle', () => {
-  it('returns the @username when available', () => {
-    expect(primaryHandle({ username: 'monk', displayName: 'Александр' })).toBe('@monk');
-  });
-
-  it('falls back to the display name when there is no username', () => {
-    expect(primaryHandle({ username: null, displayName: 'Алиса' })).toBe('Алиса');
-    expect(primaryHandle({ displayName: 'Алиса' })).toBe('Алиса');
-  });
-
-  it('returns an empty string for a missing user', () => {
-    expect(primaryHandle(null)).toBe('');
-    expect(primaryHandle(undefined)).toBe('');
   });
 });

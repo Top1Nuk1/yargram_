@@ -15,7 +15,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../../api/client';
 import { Avatar, Button, IconButton, InlineError, Spinner } from '../../components/ui';
 import { UserName } from '../../components/UserName';
-import { AdditionalHandles, primaryHandle } from '../../components/AdditionalHandles';
+import { AdditionalHandles } from '../../components/AdditionalHandles';
 import { conversationTitle, getConversationPeer, messageSenderId } from '../../lib/conversation';
 import { formatMessageTime } from '../../lib/format';
 import type { Conversation, Message, ReportReason, User, FavoriteNote } from '../../types';
@@ -254,7 +254,7 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
       <div className="text-center">
         <Avatar name={profile.displayName} src={profile.avatarUrl ?? profile.avatar?.url} size="xl" online={profile.isOnline ?? profile.online} className="justify-center" />
         <h3 className="mt-4 text-xl font-black tracking-[-0.025em]">
-          <UserName name={primaryHandle(profile)} user={profile} />
+          <UserName name={profile.displayName} user={profile} />
         </h3>
         <div className="mt-1 flex items-center justify-center gap-2 text-sm font-semibold text-brand">
           {profile.username ? <span>@{profile.username}</span> : null}
