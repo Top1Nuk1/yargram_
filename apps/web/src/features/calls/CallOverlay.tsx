@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { Avatar, Button, IconButton, Spinner } from '../../components/ui';
+import { avatarProps } from '../../lib/user';
 import type { User } from '../../types';
 import {
   DEFAULT_CALL_SETTINGS,
@@ -219,7 +220,7 @@ function InviteParticipantModal({
                       onClose();
                     }}
                   >
-                    <Avatar name={user.displayName} src={user.avatarUrl} size="sm" />
+                    <Avatar name={user.displayName} src={user.avatarUrl} size="sm" {...avatarProps(user)} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-bold">{user.displayName}</span>
                       {user.username && <span className="block truncate text-xs text-white/45">@{user.username}</span>}
@@ -334,7 +335,7 @@ export function CallOverlay({
           <PictureInPicture className="h-4 w-4" />
         </button>
         <div className="flex items-center gap-2.5 px-3 py-2.5">
-          <Avatar name={call.peer.displayName} src={call.peer.avatarUrl} size="sm" />
+          <Avatar name={call.peer.displayName} src={call.peer.avatarUrl} size="sm" {...avatarProps(call.peer)} />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-bold">{call.peer.displayName}</p>
             <p className="text-[11px] text-white/55">
@@ -398,7 +399,7 @@ export function CallOverlay({
           videoLayout && remoteVideoAvailable ? 'opacity-0' : 'opacity-100'
         }`}>
           <div className={`text-center ${call.status === 'incoming' || call.status === 'outgoing' ? 'animate-pulse' : ''}`}>
-            <Avatar name={call.peer.displayName} src={call.peer.avatarUrl} size="xl" className="scale-125" />
+            <Avatar name={call.peer.displayName} src={call.peer.avatarUrl} size="xl" className="scale-125" {...avatarProps(call.peer)} />
             <h2 className="mt-8 max-w-[80vw] truncate text-2xl font-extrabold sm:text-3xl">{call.peer.displayName}</h2>
             {call.peer.username && <p className="mt-1 text-sm text-white/50">@{call.peer.username}</p>}
             {call.invited && (

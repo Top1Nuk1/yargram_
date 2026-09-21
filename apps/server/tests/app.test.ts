@@ -1633,6 +1633,72 @@ describe("Yargram API", () => {
     expect(self.body.error.code).toBe("SELF_ACTION");
   });
 
+  it("shows frozen and deleted accounts as a placeholder instead of breaking the chat", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "gone-owner@example.com", "GoneOwner");
+    const alice = await register(harness.app, "gone-alice@example.com", "GoneAlice");
+    const bob = await register(harness.app, "gone-bob@example.com", "GoneBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set(aliceAuth)
+      .send({ userId: bob.user.id })
+      .expect(201);
+    const conversationId = direct.body.conversation.id as string;
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set({ Authorization: bearer(bob.accessToken) })
+      .send({ text: "привет, это Боб" })
+      .expect(201);
+
+    // Заморозка: собеседник превращается в «Удалённый аккаунт» со снежинкой.
+    await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: true })
+      .expect(200);
+
+    const frozenList = await request(harness.app).get("/api/conversations").set(aliceAuth);
+    expect(frozenList.status).toBe(200);
+    const frozenPeer = frozenList.body.conversations[0].members.find(
+      (member: { id: string }) => member.id === bob.user.id,
+    );
+    expect(frozenPeer).toMatchObject({
+      displayName: "Удалённый аккаунт",
+      isFrozen: true,
+      avatarUrl: null,
+      username: null,
+    });
+
+    // Удаление: диалог и история остаются читаемыми, автор — заглушка.
+    await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth).expect(200);
+
+    const afterDelete = await request(harness.app).get("/api/conversations").set(aliceAuth);
+    expect(afterDelete.status).toBe(200);
+    expect(afterDelete.body.conversations).toHaveLength(1);
+    const removedPeer = afterDelete.body.conversations[0].members.find(
+      (member: { id: string }) => member.id === bob.user.id,
+    );
+    expect(removedPeer).toMatchObject({
+      displayName: "Удалённый аккаунт",
+      isFrozen: false,
+      avatarUrl: null,
+    });
+
+    // Историю удалённого из чужих диалогов стираем, но сама переписка читается.
+    const history = await request(harness.app)
+      .get(`/api/conversations/${conversationId}/messages?limit=50`)
+      .set(aliceAuth);
+    expect(history.status).toBe(200);
+    expect(history.body.messages).toHaveLength(0);
+
+    const profile = await request(harness.app).get(`/api/users/${bob.user.id}`).set(aliceAuth);
+    expect(profile.status).toBe(404);
+  });
+
   it("stores personal drafts, folders and a duplicate-free scheduled queue", async () => {
     const harness = await createHarness();
     const alice = await register(harness.app, "plan-alice@example.com", "PlanAlice");

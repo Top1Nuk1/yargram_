@@ -22,6 +22,9 @@ function participantUser(participant: Participant): User | null {
     // переноса значок Yargram и галочка пропадали бы в переписке.
     isVerified: participant.isVerified,
     badge: participant.badge,
+    // Заморозку тоже нужно перенести: иначе у замороженного собеседника
+    // пропадала снежинка, хотя сервер её присылает.
+    isFrozen: participant.isFrozen,
   };
 }
 

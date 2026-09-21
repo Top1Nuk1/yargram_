@@ -18,6 +18,7 @@ import { UserName } from '../../components/UserName';
 import { AdditionalHandles } from '../../components/AdditionalHandles';
 import { conversationTitle, getConversationPeer, messageSenderId } from '../../lib/conversation';
 import { formatMessageTime } from '../../lib/format';
+import { avatarProps } from '../../lib/user';
 import type { Conversation, Message, ReportReason, User, FavoriteNote } from '../../types';
 import { formatLastSeen, messageSummary } from './messengerUtils';
 
@@ -102,7 +103,7 @@ export function ForwardMessageModal({ token, message, conversations, currentUser
           return (
             <li key={conversation.id}>
               <button type="button" disabled={busyId !== null} onClick={() => void forward(conversation)} className="flex w-full items-center gap-3 rounded-xl p-2.5 text-left transition hover:bg-brand-soft/45 disabled:opacity-55">
-                <Avatar name={title} src={peer?.avatarUrl} size="sm" online={peer?.isOnline ?? peer?.online} />
+                <Avatar name={title} src={peer?.avatarUrl} size="sm" online={peer?.isOnline ?? peer?.online} {...avatarProps(peer, title)} />
                 <span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold">{title}</span><span className="block truncate text-xs text-muted">{peer?.username ? `@${peer.username}` : 'Личный диалог'}</span></span>
                 {busyId === conversation.id ? <Spinner className="h-4 w-4 text-brand" /> : <Forward className="h-4 w-4 text-muted" />}
               </button>
@@ -252,7 +253,7 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
   return (
     <Modal title="Профиль" onClose={onClose} width="sm:max-w-[520px]">
       <div className="text-center">
-        <Avatar name={profile.displayName} src={profile.avatarUrl ?? profile.avatar?.url} size="xl" online={profile.isOnline ?? profile.online} className="justify-center" />
+        <Avatar name={profile.displayName} src={profile.avatarUrl ?? profile.avatar?.url} size="xl" online={profile.isOnline ?? profile.online} className="justify-center" {...avatarProps(profile)} />
         <h3 className="mt-4 text-xl font-black tracking-[-0.025em]">
           <UserName name={profile.displayName} user={profile} />
         </h3>
@@ -333,7 +334,7 @@ export function BlockedUsersModal({ token, onClose, onUnauthorized }: BlockedUse
     <Modal title="Заблокированные" description="Эти пользователи не могут писать и звонить вам" onClose={onClose}>
       {loading && <div className="grid min-h-48 place-items-center"><Spinner className="h-7 w-7 text-brand" /></div>}
       {!loading && users.length === 0 && <div className="grid min-h-48 place-items-center text-center"><div><ShieldCheck className="mx-auto h-9 w-9 text-success" /><p className="mt-3 font-bold">Список пуст</p></div></div>}
-      <ul className="space-y-1">{users.map((user) => <li key={user.id} className="flex items-center gap-3 rounded-xl p-2.5 hover:bg-brand-soft/35"><Avatar name={user.displayName} src={user.avatarUrl} size="sm" /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold"><UserName name={user.displayName} user={user} size="sm" /></span><span className="block truncate text-xs text-muted">{user.username ? `@${user.username}` : ''}</span></span><Button variant="secondary" className="min-h-9 rounded-xl px-3 text-xs" loading={busyId === user.id} onClick={() => void unblock(user)}>Разблокировать</Button></li>)}</ul>
+      <ul className="space-y-1">{users.map((user) => <li key={user.id} className="flex items-center gap-3 rounded-xl p-2.5 hover:bg-brand-soft/35"><Avatar name={user.displayName} src={user.avatarUrl} size="sm" {...avatarProps(user)} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold"><UserName name={user.displayName} user={user} size="sm" /></span><span className="block truncate text-xs text-muted">{user.username ? `@${user.username}` : ''}</span></span><Button variant="secondary" className="min-h-9 rounded-xl px-3 text-xs" loading={busyId === user.id} onClick={() => void unblock(user)}>Разблокировать</Button></li>)}</ul>
       {error && <p className="mt-3 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>}
     </Modal>
   );

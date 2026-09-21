@@ -263,8 +263,12 @@ export function toPublicUser(user: User): PublicUser {
  * Профиль глазами конкретного смотрящего. Если владелец профиля заблокировал
  * смотрящего, тот видит только имя — как в Telegram: без аватара и без времени
  * визита («был(а) давно»).
+ *
+ * Замороженный аккаунт прячется так же, как удалённый, но с пометкой
+ * `isFrozen: true`, чтобы клиент поставил рядом снежинку.
  */
 export function toPublicUserFor(user: User, viewerId?: string | null): PublicUser {
+  if (user.isFrozen) return frozenPlaceholderFor(user.id);
   const base = toPublicUser(user);
   if (!viewerId || !user.blockedUserIds?.includes(viewerId)) return base;
   return {
@@ -275,6 +279,44 @@ export function toPublicUserFor(user: User, viewerId?: string | null): PublicUse
     lastSeenStatus: "long_ago",
     online: false,
   };
+}
+
+/** Заглушка для удалённого аккаунта: имени/аватара нет, биография пустая. */
+export function removedUserPlaceholder(id: string): PublicUser {
+  return {
+    id,
+    displayName: "Удалённый аккаунт",
+    username: null,
+    bio: "",
+    avatar: null,
+    avatarUrl: null,
+    lastSeenAt: null,
+    lastSeenStatus: null,
+    online: false,
+    createdAt: new Date(0).toISOString(),
+    isFrozen: false,
+  };
+}
+
+/** Заглушка для замороженного аккаунта — клиент показывает на ней снежинку. */
+function frozenPlaceholderFor(id: string): PublicUser {
+  return {
+    ...removedUserPlaceholder(id),
+    isFrozen: true,
+  };
+}
+
+/**
+ * Превращает отсутствующего пользователя в заглушку, чтобы диалог не развалился
+ * после удаления. Если пользователь заморожен — заменяем на снежинковую версию.
+ */
+export function ensurePublicUser(
+  user: User | null | undefined,
+  fallbackId: string,
+  viewerId?: string | null,
+): PublicUser {
+  if (!user) return removedUserPlaceholder(fallbackId);
+  return toPublicUserFor(user, viewerId);
 }
 
 export function toCurrentUser(user: User): CurrentUser {

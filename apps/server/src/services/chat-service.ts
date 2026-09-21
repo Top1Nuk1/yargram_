@@ -9,7 +9,7 @@ import type {
   User,
   UserReport,
 } from "../domain/models.js";
-import { toAttachmentView, toPublicUser, toPublicUserFor } from "../domain/models.js";
+import { toAttachmentView, toPublicUser, toPublicUserFor, ensurePublicUser, removedUserPlaceholder } from "../domain/models.js";
 import { AppError } from "../lib/errors.js";
 import type { Repositories } from "../repositories/types.js";
 
@@ -714,18 +714,15 @@ export class ChatService {
     currentUserId: string,
   ): Promise<ConversationView> {
     const users = await this.repositories.users.findManyByIds(conversation.memberIds);
-    if (users.length !== conversation.memberIds.length) {
-      throw new AppError(500, "DATA_INTEGRITY_ERROR", "Conversation references a missing user");
-    }
+    // Удалённый аккаунт не должен ронять диалог — подставляем заглушку.
     const usersById = new Map(users.map((user) => [user.id, user]));
     const currentUser = usersById.get(currentUserId);
     const otherUser = users.find((user) => user.id !== currentUserId);
     const blockedByMe = Boolean(currentUser && otherUser && currentUser.blockedUserIds.includes(otherUser.id));
-    const blockedByPeer = Boolean(currentUser && otherUser && otherUser.blockedUserIds.includes(currentUser.id));
+    const blockedByPeer = Boolean(currentUser && otherUser && otherUser.blockedUserIds.includes(currentUserId));
     const hiddenAuthors = currentUser?.blockedUserIds ?? [];
-    // Заблокированный видит профиль блокирующего без аватара и без времени визита.
     const members = conversation.memberIds.map((id) =>
-      toPublicUserFor(usersById.get(id) as User, currentUserId),
+      ensurePublicUser(usersById.get(id), id, currentUserId),
     );
     const storedLast = conversation.lastMessageId
       ? await this.repositories.messages.findById(conversation.lastMessageId)
@@ -785,9 +782,8 @@ export class ChatService {
       this.repositories.attachments.findManyByIds(message.attachmentIds),
       currentUserId ? this.repositories.users.findById(currentUserId) : Promise.resolve(null),
     ]);
-    if (!sender) {
-      throw new AppError(500, "DATA_INTEGRITY_ERROR", "Message references a missing sender");
-    }
+    // Удалённый отправитель не должен ронять переписку: подставляем заглушку.
+    if (!sender) return this.placeholderSnapshot(message, attachments, currentUserId);
     const { attachmentIds: _attachmentIds, reactions, ...safeMessage } = message;
     const groupedReactions = new Map<ReactionEmoji, string[]>();
     for (const reaction of reactions) {
@@ -824,6 +820,31 @@ export class ChatService {
           ? await this.toMessageSnapshot(reply, currentUserId)
           : null,
       forwardedFrom: forwarded ? await this.toMessageSnapshot(forwarded, currentUserId) : null,
+    };
+  }
+
+  /**
+   * Снимок сообщения для автора, которого уже нет в базе. Чтобы переписка не
+   * падала, подставляем заглушку «Удалённый аккаунт» вместо настоящего профиля.
+   */
+  private async placeholderSnapshot(
+    message: Message,
+    attachments: Attachment[],
+    currentUserId: string | undefined,
+  ): Promise<MessageSnapshot> {
+    const { attachmentIds: _attachmentIds, reactions, ...safeMessage } = message;
+    return {
+      ...safeMessage,
+      sender: removedUserPlaceholder(message.senderId),
+      attachments: attachments.map((attachment) => toAttachmentView(attachment, currentUserId)),
+      reactions: [],
+      ...(currentUserId
+        ? {
+            isFavorite: Boolean(
+              (await this.repositories.users.findById(currentUserId))?.favoriteMessageIds.includes(message.id),
+            ),
+          }
+        : {}),
     };
   }
 }

@@ -1,8 +1,10 @@
+import { Snowflake } from 'lucide-react';
 import type { User } from '../types';
+import { isFrozenAccount } from '../lib/user';
 
 interface UserNameProps {
   name: string;
-  user?: Pick<User, 'isVerified' | 'badge'> | null;
+  user?: Partial<Pick<User, 'displayName' | 'isFrozen' | 'isVerified' | 'badge'>> | null;
   /** "sm" fits chat bubbles and list rows, "md" fits profile headers. */
   size?: 'sm' | 'md';
   className?: string;
@@ -70,6 +72,11 @@ export function UserName({ name, user, size = 'md', className = '' }: UserNamePr
   const checkLift = size === 'sm' ? '-translate-y-[1px]' : '-translate-y-[1.5px]';
   return (
     <span className={`inline-flex min-w-0 items-center gap-1 ${className}`}>
+      {/* Замороженный аккаунт показывается как «Удалённый аккаунт» со снежинкой.
+          Удалённый — тем же текстом, но без значка. */}
+      {isFrozenAccount(user, name) && (
+        <Snowflake className={`shrink-0 text-brand ${badgeSize} ${badgeLift}`} aria-hidden="true" />
+      )}
       {user?.badge === 'yargram' && (
         <YargramBadge className={`shrink-0 text-brand ${badgeSize} ${badgeLift}`} />
       )}

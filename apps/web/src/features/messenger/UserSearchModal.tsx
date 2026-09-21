@@ -3,6 +3,7 @@ import { Search, UserPlus, X } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import { Avatar, Button, IconButton, InlineError, Spinner } from '../../components/ui';
 import { UserName } from '../../components/UserName';
+import { avatarProps } from '../../lib/user';
 import type { Conversation, User } from '../../types';
 
 interface UserSearchModalProps {
@@ -173,7 +174,7 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
               {users.map((user) => (
                 <li key={user.id}>
                   <div className="flex items-center gap-3 rounded-xl p-2.5 transition hover:bg-brand-soft/35">
-                    <Avatar name={user.displayName} src={user.avatarUrl} size="md" online={user.isOnline} />
+                    <Avatar name={user.displayName} src={user.avatarUrl} size="md" online={user.isOnline} {...avatarProps(user)} />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-bold text-ink">
                         <UserName name={user.displayName} user={user} size="sm" />

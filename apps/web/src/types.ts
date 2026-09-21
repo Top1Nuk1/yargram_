@@ -94,6 +94,7 @@ export interface Participant {
   blockedByMe?: boolean;
   isVerified?: boolean;
   badge?: 'yargram' | null;
+  isFrozen?: boolean;
 }
 
 export interface Message {

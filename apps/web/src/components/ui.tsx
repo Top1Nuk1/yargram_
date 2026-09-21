@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
-import { AlertCircle, LoaderCircle, RotateCcw } from 'lucide-react';
+import { AlertCircle, LoaderCircle, RotateCcw, UserRound } from 'lucide-react';
 import { initials } from '../lib/format';
 
 export function Spinner({ className = 'h-5 w-5' }: { className?: string }) {
@@ -43,6 +43,13 @@ interface AvatarProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
   online?: boolean;
   className?: string;
+  /**
+   * Цвет фона берётся не из имени (иначе у всех «Удалённый аккаунт» будет один цвет),
+   * а из `seed` — например, из id пользователя.
+   */
+  seed?: string | null;
+  /** Заглушка для удалённого/замороженного аккаунта: вместо инициалов — силуэт. */
+  placeholder?: boolean;
 }
 
 const avatarSizes = {
@@ -52,22 +59,33 @@ const avatarSizes = {
   xl: 'h-20 w-20 text-xl',
 };
 
-const avatarColors = ['#3988b9', '#528f80', '#c08059', '#647fa5', '#b66d7b'];
+const avatarColors = ['#3988b9', '#528f80', '#c08059', '#647fa5', '#b66d7b', '#8a6f9a', '#5f8e6d'];
 
-function avatarColor(seed: string): string {
-  const sum = Array.from(seed).reduce((value, character) => value + character.charCodeAt(0), 0);
-  return avatarColors[sum % avatarColors.length];
+export function avatarColor(seed: string): string {
+  // Хеш, а не сумма кодов: у UUID вида xxxxxxxx-xxxx-… простая сумма даёт
+  // почти один и тот же остаток, и все аккаунты красились бы в один цвет.
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) % 1_000_003;
+  }
+  return avatarColors[hash % avatarColors.length];
 }
 
-export function Avatar({ name, src, size = 'md', online, className = '' }: AvatarProps) {
+export function Avatar({ name, src, size = 'md', online, className = '', seed, placeholder = false }: AvatarProps) {
   return (
     <span className={`relative inline-flex shrink-0 ${className}`}>
       <span
         className={`grid place-items-center overflow-hidden rounded-full font-semibold text-white ${avatarSizes[size]}`}
-        style={{ backgroundColor: avatarColor(name) }}
+        style={{ backgroundColor: avatarColor(seed || name) }}
         aria-hidden="true"
       >
-        {src ? <img src={src} alt="" className="h-full w-full object-cover" /> : initials(name)}
+        {placeholder ? (
+          <UserRound className="h-1/2 w-1/2 text-white/85" />
+        ) : src ? (
+          <img src={src} alt="" className="h-full w-full object-cover" />
+        ) : (
+          initials(name)
+        )}
       </span>
       {online !== undefined && (
         <span

@@ -21,6 +21,7 @@ import { Avatar, Button } from '../../components/ui';
 import { UserName } from '../../components/UserName';
 import type { MediaSummary, ReportReason, User } from '../../types';
 import { plural } from '../../lib/format';
+import { avatarProps } from '../../lib/user';
 import { formatLastSeen } from '../messenger/messengerUtils';
 import {
   BIRTHDAY_YEARS,
@@ -329,6 +330,7 @@ export function UserProfileSheet({
             size="xl"
             online={mode !== 'own' ? online : undefined}
             className="mx-auto"
+            {...avatarProps(profile)}
           />
           <h2 className="mt-3 text-lg font-extrabold tracking-[-0.02em] text-ink">
             <UserName name={profile.displayName} user={profile} />

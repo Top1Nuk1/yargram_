@@ -69,6 +69,7 @@ import {
 import { formatConversationTime, formatMessageTime } from '../../lib/format';
 import { buildMessageGroups, groupAt, groupSpacing } from '../../lib/messageGroups';
 import { mergeUserProfile, updateUserPresence, type PresencePayload } from '../../lib/presence';
+import { avatarProps } from '../../lib/user';
 import {
   showBrowserNotification,
 } from '../../lib/notifications';
@@ -1962,6 +1963,7 @@ export function MessengerScreen({
                           src={conversationAvatar(conversation, currentUser.id)}
                           size="md"
                           online={peer && !conversation.blockedByPeer ? isUserOnline(peer) : undefined}
+                          {...avatarProps(peer, title)}
                         />}
                         <span className="min-w-0 flex-1">
                           <span className="flex items-baseline gap-2">
@@ -2027,6 +2029,7 @@ export function MessengerScreen({
                     src={conversationAvatar(selectedConversation, currentUser.id)}
                     size="sm"
                     online={selectedPeer && !selectedBlockedByPeer ? isUserOnline(selectedPeer) : undefined}
+                    {...avatarProps(selectedPeer, conversationTitle(selectedConversation, currentUser.id))}
                   />}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold sm:text-[15px]">
@@ -2242,6 +2245,7 @@ export function MessengerScreen({
                         src={conversationAvatar(selectedConversation, currentUser.id)}
                         size="xl"
                         className="justify-center"
+                        {...avatarProps(selectedPeer, conversationTitle(selectedConversation, currentUser.id))}
                       />
                       <p className="mt-4 font-semibold">Диалог создан</p>
                       <p className="mt-1 text-sm leading-6 text-muted">Напишите первое сообщение — оно появится здесь мгновенно.</p>
@@ -2289,6 +2293,7 @@ export function MessengerScreen({
                                         name={sender?.displayName ?? 'Пользователь'}
                                         src={sender?.avatarUrl ?? sender?.avatar?.url}
                                         size="sm"
+                                        {...avatarProps(sender ?? null)}
                                       />
                                     </button>
                                   )}
