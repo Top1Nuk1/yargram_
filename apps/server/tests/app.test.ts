@@ -1309,6 +1309,27 @@ describe("Yargram API", () => {
     expect(untouched.body.user.usernames).toEqual(["again"]);
   });
 
+  it("lets an owner assign extra usernames to themselves", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "self-owner@example.com", "SelfOwner");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const authorize = { Authorization: bearer(owner.accessToken) };
+    const grant = (body: Record<string, unknown>) =>
+      request(harness.app).post(`/api/admin/${owner.user.id}/grant`).set(authorize).send(body);
+
+    const granted = await grant({ targetUserId: owner.user.id, usernames: ["Kotik", "@second"] });
+    expect(granted.status).toBe(200);
+    expect(granted.body.user.usernames).toEqual(["kotik", "second"]);
+    await expect(harness.repositories.users.findByUsername("kotik")).resolves.toMatchObject({
+      id: owner.user.id,
+    });
+
+    // Права себе не выдаёт никто — эту дыру закрываем отдельно.
+    const selfAdmin = await grant({ targetUserId: owner.user.id, adminUserIds: [owner.user.id] });
+    expect(selfAdmin.status).toBe(400);
+    expect(selfAdmin.body.error.code).toBe("SELF_ADMIN");
+  });
+
   it("stores personal drafts, folders and a duplicate-free scheduled queue", async () => {
     const harness = await createHarness();
     const alice = await register(harness.app, "plan-alice@example.com", "PlanAlice");

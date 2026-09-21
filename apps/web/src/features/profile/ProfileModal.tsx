@@ -371,6 +371,13 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ badge: null }, 'Значок Yargram снят')}>Снять значок Yargram</Button>
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ usernames: [] }, 'Доп. юзернеймы очищены')}>Очистить доп. юзернеймы</Button>
               </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" variant="secondary" className="text-xs" onClick={() => {
+                  const field = document.getElementById('admin-target-id') as HTMLInputElement | null;
+                  if (field) field.value = username || profileUser.username || '';
+                }}>Подставить свой ник</Button>
+                <span className="text-xs text-muted">Себя тоже можно администрировать: доп. юзернеймы назначаются и своему аккаунту (кроме прав администратора).</span>
+              </div>
               <p className="text-xs text-muted">Поле юзернеймов нужно только для назначения: кнопка «Очистить» снимает все дополнительные ники сразу.</p>
             </div>
           </fieldset>

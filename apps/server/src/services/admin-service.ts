@@ -24,8 +24,10 @@ export class AdminService {
     if (!targetId) {
       throw new AppError(404, "USER_NOT_FOUND", input.targetUsername ? `Username @${input.targetUsername} not found` : "Target user not specified");
     }
-    if (targetId === grantorId) {
-      throw new AppError(400, "SELF_ADMIN", "You cannot administer your own account this way");
+    // Себя администрировать можно (овнеру нужно назначать юзернеймы и себе),
+    // но только не права: права администратора себе не выдаём никогда.
+    if (targetId === grantorId && (input.isOwner !== undefined || input.adminUserIds !== undefined)) {
+      throw new AppError(400, "SELF_ADMIN", "You cannot change your own administrator rights");
     }
     const target = await this.users.findById(targetId);
     if (!target) {
@@ -37,6 +39,15 @@ export class AdminService {
     }
     if (!grantor.isOwner && !grantor.adminUserIds?.includes(target.id)) {
       throw new AppError(403, "NOT_ADMIN", "You can only administer users assigned to you");
+    }
+    // Галочку и значок себе может выдать только овнер: обычный админ не должен
+    // через эту дырку подтверждать сам себя.
+    if (
+      targetId === grantorId &&
+      !grantor.isOwner &&
+      (input.badge !== undefined || input.isVerified !== undefined)
+    ) {
+      throw new AppError(400, "SELF_ADMIN", "Only the owner can badge their own account");
     }
 
     const normalizedUsernames = (input.usernames ?? [])
