@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { composeBirthday, daysInMonth, parseBirthday } from './ProfileModal';
+import { composeBirthday, daysInMonth, parseBirthday } from './birthday';
 
 /**
  * Редактор дня рождения — три списка «день / месяц / год» вместо нативного

@@ -7,6 +7,7 @@ import { AdditionalHandles } from '../../components/AdditionalHandles';
 import type { User } from '../../types';
 import { isSoundEnabled, setSoundEnabled, subscribeToSoundSetting } from '../../lib/sounds';
 import { browserNotificationPermission, requestBrowserNotificationPermission } from '../../lib/notifications';
+import { BIRTHDAY_YEARS, MONTH_NAMES, composeBirthday, daysInMonth, parseBirthday } from './birthday';
 
 const baseTabs = [
   ['account', 'Аккаунт', UserRound], ['privacy', 'Приватность', ShieldCheck],
@@ -22,41 +23,6 @@ interface ProfileModalProps {
 
 function adminErrorMessage(reason: unknown): string {
   return reason instanceof ApiError ? reason.message : 'Не удалось выполнить действие';
-}
-
-/** Годы от текущего и вниз — день рождения не бывает в будущем. */
-const BIRTHDAY_YEARS = Array.from(
-  { length: 120 },
-  (_, index) => new Date().getFullYear() - index,
-);
-
-const MONTH_NAMES = [
-  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
-];
-
-/** Разбирает сохранённую дату (YYYY-MM-DD) на части для трёх списков. */
-export function parseBirthday(value: string): { day: string; month: string; year: string } {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return { day: '', month: '', year: '' };
-  return {
-    year: String(Number(match[1])),
-    month: String(Number(match[2])),
-    day: String(Number(match[3])),
-  };
-}
-
-/** Собирает YYYY-MM-DD; если выбрано не всё — null (сервер тогда сотрёт поле). */
-export function composeBirthday(day: string, month: string, year: string): string | null {
-  if (!day || !month || !year) return null;
-  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-}
-
-export function daysInMonth(month: string, year: string): number {
-  const m = Number(month);
-  const y = Number(year || 2000);
-  if (!m) return 31;
-  return new Date(y, m, 0).getDate();
 }
 
 export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProps) {

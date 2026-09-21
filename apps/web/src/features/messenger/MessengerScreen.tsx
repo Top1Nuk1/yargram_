@@ -2700,6 +2700,7 @@ export function MessengerScreen({
             setOwnProfileOpen(false);
             setProfileOpen(true);
           }}
+          onSaved={onUserUpdated}
           onUnauthorized={() => onLogout(true)}
         />
       )}

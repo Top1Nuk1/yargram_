@@ -21,8 +21,22 @@ import { Avatar, Button } from '../../components/ui';
 import { UserName } from '../../components/UserName';
 import type { ReportReason, User } from '../../types';
 import { formatLastSeen } from '../messenger/messengerUtils';
+import {
+  BIRTHDAY_YEARS,
+  MONTH_NAMES,
+  ageFromBirthday,
+  composeBirthday,
+  daysInMonth,
+  formatBirthday,
+  parseBirthday,
+  pluralYears,
+} from './birthday';
 
 type Mode = 'own' | 'peer' | 'public';
+
+/** Списки дня/месяца/года в листе профиля. */
+const sheetSelectClass =
+  'h-10 w-full min-w-0 appearance-none rounded-xl border border-line bg-canvas px-2 text-[13px] text-ink outline-none transition focus:border-brand/60 focus:ring-2 focus:ring-brand/10 disabled:opacity-60';
 
 interface UserProfileSheetProps {
   token: string;
@@ -35,6 +49,8 @@ interface UserProfileSheetProps {
   onMore?: () => void;
   /** Для своего профиля — открывает редактирование (существующая модалка настроек). */
   onEdit?: () => void;
+  /** Свой профиль правит данные на месте — отдаём свежего пользователя наружу. */
+  onSaved?: (user: User) => void;
   onBlockedChange?: (blocked: boolean, user: User) => void;
   onUnauthorized?: () => void;
   onClose: () => void;
@@ -55,6 +71,7 @@ export function UserProfileSheet({
   onVideoCall,
   onMore,
   onEdit,
+  onSaved,
   onBlockedChange,
   onUnauthorized,
   onClose,
@@ -67,8 +84,20 @@ export function UserProfileSheet({
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState<ReportReason>('spam');
   const [reportDetails, setReportDetails] = useState('');
+  // Свой день рождения правим прямо здесь, как в Telegram: три списка и автосохранение.
+  const [bdDay, setBdDay] = useState(() => parseBirthday(user.birthday).day);
+  const [bdMonth, setBdMonth] = useState(() => parseBirthday(user.birthday).month);
+  const [bdYear, setBdYear] = useState(() => parseBirthday(user.birthday).year);
+  const [bdSaving, setBdSaving] = useState(false);
 
   useEffect(() => setProfile(user), [user]);
+
+  useEffect(() => {
+    const parts = parseBirthday(user.birthday);
+    setBdDay(parts.day);
+    setBdMonth(parts.month);
+    setBdYear(parts.year);
+  }, [user.birthday]);
 
   // Свежий профиль с сервера, но presence не перетираем — он идёт по сокету.
   useEffect(() => {
@@ -136,6 +165,53 @@ export function UserProfileSheet({
       setNotice('Юзернейм скопирован.');
     } catch {
       setError('Не удалось скопировать.');
+    }
+  }
+
+  /** Меняет часть даты и сразу сохраняет — как в Telegram, без отдельной кнопки. */
+  async function changeBirthday(part: 'day' | 'month' | 'year', value: string) {
+    const nextMonth = part === 'month' ? value : bdMonth;
+    const nextYear = part === 'year' ? value : bdYear;
+    let nextDay = part === 'day' ? value : bdDay;
+    // Поджимаем день под длину нового месяца/года.
+    const max = daysInMonth(nextMonth, nextYear);
+    if (nextDay && Number(nextDay) > max) nextDay = String(max);
+
+    setBdDay(nextDay);
+    setBdMonth(nextMonth);
+    setBdYear(nextYear);
+
+    const composed = composeBirthday(nextDay, nextMonth, nextYear);
+    if (!composed) return; // выбрано не всё — отправим, когда дополнят
+    setBdSaving(true);
+    setError('');
+    try {
+      const updated = await api.updateProfile(token, { birthday: composed });
+      setProfile((current) => ({ ...current, birthday: composed }));
+      onSaved?.(updated);
+      setNotice('День рождения сохранён.');
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : 'Не удалось сохранить день рождения.');
+    } finally {
+      setBdSaving(false);
+    }
+  }
+
+  async function clearBirthday() {
+    setBdDay('');
+    setBdMonth('');
+    setBdYear('');
+    setBdSaving(true);
+    setError('');
+    try {
+      const updated = await api.updateProfile(token, { birthday: null });
+      setProfile((current) => ({ ...current, birthday: null }));
+      onSaved?.(updated);
+      setNotice('День рождения убран.');
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : 'Не удалось убрать день рождения.');
+    } finally {
+      setBdSaving(false);
     }
   }
 
@@ -246,8 +322,76 @@ export function UserProfileSheet({
             </p>
           )}
 
-          {/* День рождения. */}
-          <InfoRow icon={<Calendar className="h-5 w-5" />} label={profile.birthday ? birthdayLabel(profile.birthday, age) : 'День рождения не указан'} hint="День рождения" />
+          {/* День рождения: в своём профиле правится на месте, в чужом — только показывается. */}
+          {mode === 'own' ? (
+            <div className="px-5 py-2.5">
+              <div className="flex items-start gap-3">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-canvas text-brand">
+                  <Calendar className="h-5 w-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <span className="block text-sm font-bold text-ink">День рождения</span>
+                  <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+                    <label className="sr-only" htmlFor="sheet-birthday-day">День</label>
+                    <select
+                      id="sheet-birthday-day"
+                      className={sheetSelectClass}
+                      value={bdDay}
+                      disabled={bdSaving}
+                      onChange={(event) => void changeBirthday('day', event.target.value)}
+                    >
+                      <option value="">День</option>
+                      {Array.from({ length: daysInMonth(bdMonth, bdYear) }, (_, index) => String(index + 1)).map((day) => (
+                        <option key={day} value={day}>{day}</option>
+                      ))}
+                    </select>
+
+                    <label className="sr-only" htmlFor="sheet-birthday-month">Месяц</label>
+                    <select
+                      id="sheet-birthday-month"
+                      className={sheetSelectClass}
+                      value={bdMonth}
+                      disabled={bdSaving}
+                      onChange={(event) => void changeBirthday('month', event.target.value)}
+                    >
+                      <option value="">Месяц</option>
+                      {MONTH_NAMES.map((name, index) => (
+                        <option key={name} value={String(index + 1)}>{name}</option>
+                      ))}
+                    </select>
+
+                    <label className="sr-only" htmlFor="sheet-birthday-year">Год</label>
+                    <select
+                      id="sheet-birthday-year"
+                      className={sheetSelectClass}
+                      value={bdYear}
+                      disabled={bdSaving}
+                      onChange={(event) => void changeBirthday('year', event.target.value)}
+                    >
+                      <option value="">Год</option>
+                      {BIRTHDAY_YEARS.map((year) => (
+                        <option key={year} value={String(year)}>{year}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
+                    <span>{bdSaving ? 'Сохраняем…' : 'Дата сохраняется сразу, как в Telegram.'}</span>
+                    {(bdDay || bdMonth || bdYear) && (
+                      <button type="button" onClick={() => void clearBirthday()} className="font-semibold text-brand transition hover:text-brand-strong">
+                        Убрать
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <InfoRow
+              icon={<Calendar className="h-5 w-5" />}
+              label={profile.birthday ? `${formatBirthday(profile.birthday)}${age !== null ? ` (${age} ${pluralYears(age)})` : ''}` : 'День рождения не указан'}
+              hint="День рождения"
+            />
+          )}
 
           {/* Публикации — для публичных аккаунтов. Подарки убраны до реализации. */}
           {mode === 'public' && (
@@ -339,31 +483,6 @@ const REPORT_REASONS: { value: ReportReason; label: string }[] = [
   { value: 'fraud', label: 'Мошенничество' },
   { value: 'other', label: 'Другое' },
 ];
-
-function ageFromBirthday(birthday: string | null | undefined): number | null {
-  if (!birthday) return null;
-  const parts = birthday.split('-').map(Number);
-  if (parts.length !== 3 || parts.some(Number.isNaN)) return null;
-  const [y, m, d] = parts;
-  const today = new Date();
-  let age = today.getFullYear() - y;
-  const monthDiff = today.getMonth() + 1 - m;
-  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < d)) age -= 1;
-  return age >= 0 ? age : null;
-}
-
-function birthdayLabel(birthday: string, age: number | null): string {
-  const date = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(birthday));
-  return age !== null ? `${date} (${age} ${pluralYears(age)})` : date;
-}
-
-function pluralYears(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return 'год';
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'года';
-  return 'лет';
-}
 
 function ActionTile({ icon, label, disabled, onClick }: { icon: ReactNode; label: string; disabled?: boolean; onClick?: () => void }) {
   return (
