@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../../api/client';
 import { Avatar, Button, IconButton, InlineError, Spinner } from '../../components/ui';
 import { UserName } from '../../components/UserName';
+import { AdditionalHandles, primaryHandle } from '../../components/AdditionalHandles';
 import { conversationTitle, getConversationPeer, messageSenderId } from '../../lib/conversation';
 import { formatMessageTime } from '../../lib/format';
 import type { Conversation, Message, ReportReason, User, FavoriteNote } from '../../types';
@@ -253,11 +254,16 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
       <div className="text-center">
         <Avatar name={profile.displayName} src={profile.avatarUrl ?? profile.avatar?.url} size="xl" online={profile.isOnline ?? profile.online} className="justify-center" />
         <h3 className="mt-4 text-xl font-black tracking-[-0.025em]">
-          <UserName name={profile.displayName} user={profile} />
+          <UserName name={primaryHandle(profile)} user={profile} />
         </h3>
         <div className="mt-1 flex items-center justify-center gap-2 text-sm font-semibold text-brand">
-          <span>@{profile.username || 'Username не указан'}</span>
+          {profile.username ? <span>@{profile.username}</span> : null}
         </div>
+        <AdditionalHandles
+          usernames={profile.usernames}
+          primaryUsername={profile.username}
+          className="mt-0.5 block text-center text-muted"
+        />
         <p className="mt-1 text-xs text-muted">{formatLastSeen(profile)}</p>
       </div>
       {profile.bio && <p className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink">{profile.bio}</p>}

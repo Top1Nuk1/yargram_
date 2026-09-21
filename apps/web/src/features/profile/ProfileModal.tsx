@@ -3,6 +3,7 @@ import { AtSign, Bell, Camera, FileText, Image, Palette, ShieldCheck, Trash2, Us
 import { api, ApiError } from '../../api/client';
 import { Avatar, Button, IconButton } from '../../components/ui';
 import { UserName } from '../../components/UserName';
+import { AdditionalHandles } from '../../components/AdditionalHandles';
 import type { User } from '../../types';
 import { isSoundEnabled, setSoundEnabled, subscribeToSoundSetting } from '../../lib/sounds';
 import { browserNotificationPermission, requestBrowserNotificationPermission } from '../../lib/notifications';
@@ -173,7 +174,12 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
               </h2>
               <div className="mt-1 flex items-center gap-2 truncate text-sm text-muted">
                 <span>@{username || 'username'}</span>
-              </div></div>
+              </div>
+              <AdditionalHandles
+                usernames={profileUser.usernames}
+                primaryUsername={profileUser.username}
+                className="mt-0.5 block text-muted"
+              /></div>
             </div>
           <IconButton label="Закрыть" onClick={onClose}>
             <X className="h-5 w-5" />
