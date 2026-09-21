@@ -79,11 +79,18 @@ HTTPS защищает web/API/Socket.IO. Сам медиапоток WebRTC и�
 ```powershell
 npm.cmd install
 npm.cmd run typecheck
+npm.cmd run lint
 npm.cmd test
+npm.cmd run verify
+npm.cmd run check:ps
 npm.cmd run build
 npm.cmd run smoke
 npm.cmd start
 ```
+
+`npm.cmd run verify` — проверка перед коммитом: типы, линтер и все тесты сразу в обоих workspace.
+
+`npm.cmd run check:ps` прогоняет все `scripts/*.ps1` через парсер Windows PowerShell 5.1 и требует UTF-8 BOM там, где встречается кириллица (без BOM PS 5.1 читает такой файл в ANSI).
 
 `npm.cmd start` использует `scripts/start-yargram.ps1`. Скрипт создаёт `.env` со случайными JWT/TLS-секретами, при необходимости собирает workspace, обновляет публичный HTTPS-архив и запускает один процесс Node.js с двумя слушателями. Один экземпляр Socket.IO прикреплён к HTTP и HTTPS, поэтому realtime работает между обоими адресами.
 

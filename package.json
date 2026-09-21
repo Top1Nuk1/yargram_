@@ -24,7 +24,8 @@
     "lint": "eslint . --max-warnings=0",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "verify": "npm run typecheck && npm run lint && npm test"
+    "verify": "npm run typecheck && npm run lint && npm test",
+    "check:ps": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/check-startup-syntax.ps1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
