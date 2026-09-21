@@ -11,8 +11,6 @@ import {
   Mic,
   MoreHorizontal,
   ShieldCheck,
-  Share2,
-  Trash2,
   UsersRound,
   Video,
   X,
@@ -44,7 +42,7 @@ interface UserProfileSheetProps {
 
 /**
  * Унифицированный лист профиля в стиле Telegram Desktop:
- * - Свой: аватар с карандашом, имя, био, юзернейм, день рождения, подарки, «+Добавить альбом».
+ * - Свой: аватар с карандашом, имя, био, юзернейм, день рождения, кнопка «Изменить профиль».
  * - Чужой / публичный: аватар, имя, статус, ряд кнопок Чат/Звук/Звонок/Ещё, био,
  *   юзернейм, день рождения, медиа-счётчики, общие группы, контекстное меню, красная кнопка «Заблокировать».
  */
@@ -205,11 +203,6 @@ export function UserProfileSheet({
         )}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {/* Био-канал/репост — у нас таких данных нет, оставляем карточку только если есть что показать. */}
-          {mode !== 'own' && profile.bio && (
-            <ChannelCard user={profile} />
-          )}
-
           {/* Биография. */}
           {profile.bio && (
             <div className="px-5 pt-3">
@@ -256,21 +249,10 @@ export function UserProfileSheet({
           {/* День рождения. */}
           <InfoRow icon={<Calendar className="h-5 w-5" />} label={profile.birthday ? birthdayLabel(profile.birthday, age) : 'День рождения не указан'} hint="День рождения" />
 
-          {/* Публикации/подарки — для публичных аккаунтов. */}
+          {/* Публикации — для публичных аккаунтов. Подарки убраны до реализации. */}
           {mode === 'public' && (
-            <>
-              <InfoRow icon={<FileText className="h-5 w-5" />} label="0 публикаций" hint="Публикации" />
-              <InfoRow icon={<Gift className="h-5 w-5" />} label="0 подарков" hint="Подарки" />
-            </>
+            <InfoRow icon={<FileText className="h-5 w-5" />} label="0 публикаций" hint="Публикации" />
           )}
-
-          {/* Подарки — для любого профиля (как в личном). */}
-          {mode !== 'public' && (
-            <InfoRow icon={<Gift className="h-5 w-5" />} label="0" hint="Подарки" />
-          )}
-
-          {/* Архив историй — для всех. */}
-          <InfoRow icon={<ImageIcon className="h-5 w-5" />} label="0" hint="Архив историй" />
 
           {/* Медиа-счётчики — для чужого профиля. Сейчас нет данных, показываем 0. */}
           {mode !== 'own' && (
@@ -284,15 +266,6 @@ export function UserProfileSheet({
               <MediaRow icon={<Mic className="h-5 w-5" />} label="0 голосовых сообщений" />
               <MediaRow icon={<Gift className="h-5 w-5" />} label="0 GIF" />
               <MediaRow icon={<UsersRound className="h-5 w-5" />} label="0 общих групп" />
-            </div>
-          )}
-
-          {/* Контекстное меню — только для чужого профиля. */}
-          {mode !== 'own' && (
-            <div className="mt-3 border-t border-line py-2">
-              <MenuAction icon={<Share2 className="h-5 w-5" />} label="Поделиться контактом" disabled />
-              <MenuAction icon={<Edit2 className="h-5 w-5" />} label="Изменить контакт" disabled />
-              <MenuAction icon={<Trash2 className="h-5 w-5" />} label="Удалить контакт" disabled />
             </div>
           )}
 
@@ -313,13 +286,12 @@ export function UserProfileSheet({
             </div>
           )}
 
-          {/* Действия своего профиля: «+Добавить альбом» и быстрый доступ к настройкам. */}
+          {/* Действие своего профиля: быстрый переход к настройкам. */}
           {mode === 'own' && (
             <div className="px-5 pb-5 pt-2">
               <Button variant="secondary" className="w-full" onClick={onEdit}>
                 <Edit2 className="h-4 w-4" /> Изменить профиль
               </Button>
-              <p className="mt-2 cursor-pointer text-center text-[13px] font-semibold text-brand transition hover:text-brand-strong">+ Добавить альбом</p>
             </div>
           )}
 
@@ -437,29 +409,4 @@ function MediaRow({ icon, label }: { icon: ReactNode; label: string }) {
   );
 }
 
-function MenuAction({ icon, label, disabled }: { icon: ReactNode; label: string; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      className="flex w-full items-center gap-3 px-5 py-2.5 text-left text-sm font-semibold text-ink transition hover:bg-canvas disabled:cursor-not-allowed disabled:text-muted"
-    >
-      <span className="grid h-5 w-9 shrink-0 place-items-center text-muted">{icon}</span>
-      {label}
-    </button>
-  );
-}
 
-function ChannelCard({ user }: { user: User }) {
-  const date = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(user.createdAt ?? Date.now()));
-  return (
-    <div className="mx-5 mt-2 rounded-xl border border-line bg-canvas px-4 py-3">
-      <div className="flex items-center gap-2 text-xs text-muted">
-        <span className="font-bold text-ink">{user.displayName}</span>
-        <span className="ml-auto">{date}</span>
-      </div>
-      <p className="mt-1 line-clamp-2 text-[13px] leading-5 text-ink">{user.bio}</p>
-      <p className="mt-1.5 text-xs text-muted">Канал • 0 подписчиков</p>
-    </div>
-  );
-}

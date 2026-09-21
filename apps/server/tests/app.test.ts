@@ -1385,6 +1385,15 @@ describe("Yargram API", () => {
     // Неверный формат — 400.
     const bad = await request(harness.app).patch("/api/users/me").set(auth).send({ birthday: "not-a-date" });
     expect(bad.status).toBe(400);
+
+    // Клиент шлёт полный набор полей сразу — день рождения не должен теряться.
+    const full = await request(harness.app)
+      .patch("/api/users/me")
+      .set(auth)
+      .send({ displayName: "BdayMe", username: "bdayme", bio: "привет", wallpaperUrl: "", showLastSeen: true, birthday: "2001-03-04" });
+    expect(full.status).toBe(200);
+    expect(full.body.user.birthday).toBe("2001-03-04");
+    await expect(harness.repositories.users.findById(me.user.id)).resolves.toMatchObject({ birthday: "2001-03-04" });
   });
 
   it("lets an owner revoke verification, the badge and extra usernames", async () => {
