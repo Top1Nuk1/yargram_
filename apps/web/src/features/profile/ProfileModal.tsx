@@ -24,6 +24,41 @@ function adminErrorMessage(reason: unknown): string {
   return reason instanceof ApiError ? reason.message : 'Не удалось выполнить действие';
 }
 
+/** Годы от текущего и вниз — день рождения не бывает в будущем. */
+const BIRTHDAY_YEARS = Array.from(
+  { length: 120 },
+  (_, index) => new Date().getFullYear() - index,
+);
+
+const MONTH_NAMES = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+];
+
+/** Разбирает сохранённую дату (YYYY-MM-DD) на части для трёх списков. */
+export function parseBirthday(value: string): { day: string; month: string; year: string } {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return { day: '', month: '', year: '' };
+  return {
+    year: String(Number(match[1])),
+    month: String(Number(match[2])),
+    day: String(Number(match[3])),
+  };
+}
+
+/** Собирает YYYY-MM-DD; если выбрано не всё — null (сервер тогда сотрёт поле). */
+export function composeBirthday(day: string, month: string, year: string): string | null {
+  if (!day || !month || !year) return null;
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
+
+export function daysInMonth(month: string, year: string): number {
+  const m = Number(month);
+  const y = Number(year || 2000);
+  if (!m) return 31;
+  return new Date(y, m, 0).getDate();
+}
+
 export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProps) {
   const adminTab = user?.isOwner ? [['admin', 'Админ', ShieldCheck] as const] : [];
   const settingsTabs = [...baseTabs, ...adminTab] as (typeof baseTabs[number] | typeof adminTab[number])[];
@@ -44,7 +79,12 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [bio, setBio] = useState(user.bio ?? '');
-  const [birthday, setBirthday] = useState(user.birthday ?? '');
+  // День рождения держим тремя частями: нативное <input type="date"> в этой вёрстке
+  // не работает, а список «день / месяц / год» выбирается без сюрпризов браузера.
+  const initialBirthday = parseBirthday(user.birthday ?? '');
+  const [bdDay, setBdDay] = useState(initialBirthday.day);
+  const [bdMonth, setBdMonth] = useState(initialBirthday.month);
+  const [bdYear, setBdYear] = useState(initialBirthday.year);
   /** Кого администрируем прямо сейчас: его состояние показывает панель ниже. */
   const [adminTarget, setAdminTarget] = useState<User | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -112,6 +152,29 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
     }
   }
 
+  /** Меняет часть даты; при смене месяца/года поджимает день под их длину. */
+  function changeBirthdayPart(part: 'day' | 'month' | 'year', value: string) {
+    if (part === 'day') {
+      setBdDay(value);
+      return;
+    }
+    if (part === 'year') {
+      setBdYear(value);
+      const max = daysInMonth(bdMonth, value);
+      if (bdDay && Number(bdDay) > max) setBdDay(String(max));
+      return;
+    }
+    setBdMonth(value);
+    const max = daysInMonth(value, bdYear);
+    if (bdDay && Number(bdDay) > max) setBdDay(String(max));
+  }
+
+  function clearBirthday() {
+    setBdDay('');
+    setBdMonth('');
+    setBdYear('');
+  }
+
   async function save(event: FormEvent) {
     event.preventDefault();
     const normalizedUsername = username.trim().replace(/^@/, '');
@@ -138,8 +201,8 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
         ...(themeColor !== (user.themeColor ?? '#3390ec') ? { themeColor } : {}),
         wallpaperUrl: wallpaperUrl.trim(),
         showLastSeen,
-        // Пустая строка → null, чтобы сервер стёр поле. Иначе — как ввёл пользователь.
-        birthday: birthday || null,
+        // Собираем дату из трёх списков; неполный выбор → null, сервер сотрёт поле.
+        birthday: composeBirthday(bdDay, bdMonth, bdYear),
       });
       setProfileUser(updated);
       onSaved(updated);
@@ -205,6 +268,9 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
 
   const fieldClass =
     'h-12 w-full rounded-xl border border-line bg-canvas pl-11 pr-4 text-[15px] text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10';
+  // Списки дня/месяца/года: без иконки слева, поэтому без pl-11.
+  const selectClass =
+    'h-12 w-full min-w-0 appearance-none rounded-xl border border-line bg-canvas px-3 text-[15px] text-ink outline-none transition focus:border-brand/60 focus:ring-4 focus:ring-brand/10';
 
   return (
     <div
@@ -346,21 +412,51 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
             </div>
 
           <div>
-            <label htmlFor="profile-birthday" className="mb-1.5 block text-sm font-semibold">День рождения</label>
-            <div className="relative">
-              <input
-                id="profile-birthday"
-                type="date"
-                className={fieldClass}
-                value={birthday}
-                onChange={(event) => setBirthday(event.target.value)}
-                max="2099-12-31"
-              />
+            <span className="mb-1.5 block text-sm font-semibold">День рождения</span>
+            <div className="grid grid-cols-3 gap-2">
+              <label className="sr-only" htmlFor="birthday-day">День</label>
+              <select
+                id="birthday-day"
+                className={selectClass}
+                value={bdDay}
+                onChange={(event) => changeBirthdayPart('day', event.target.value)}
+              >
+                <option value="">День</option>
+                {Array.from({ length: daysInMonth(bdMonth, bdYear) }, (_, index) => String(index + 1)).map((day) => (
+                  <option key={day} value={day}>{day}</option>
+                ))}
+              </select>
+
+              <label className="sr-only" htmlFor="birthday-month">Месяц</label>
+              <select
+                id="birthday-month"
+                className={selectClass}
+                value={bdMonth}
+                onChange={(event) => changeBirthdayPart('month', event.target.value)}
+              >
+                <option value="">Месяц</option>
+                {MONTH_NAMES.map((name, index) => (
+                  <option key={name} value={String(index + 1)}>{name}</option>
+                ))}
+              </select>
+
+              <label className="sr-only" htmlFor="birthday-year">Год</label>
+              <select
+                id="birthday-year"
+                className={selectClass}
+                value={bdYear}
+                onChange={(event) => changeBirthdayPart('year', event.target.value)}
+              >
+                <option value="">Год</option>
+                {BIRTHDAY_YEARS.map((year) => (
+                  <option key={year} value={String(year)}>{year}</option>
+                ))}
+              </select>
             </div>
             <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
               <span>День рождения видят другие пользователи в вашем профиле.</span>
-              {birthday && (
-                <button type="button" onClick={() => setBirthday('')} className="font-semibold text-brand transition hover:text-brand-strong">
+              {(bdDay || bdMonth || bdYear) && (
+                <button type="button" onClick={clearBirthday} className="font-semibold text-brand transition hover:text-brand-strong">
                   Убрать
                 </button>
               )}
