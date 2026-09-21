@@ -2379,11 +2379,20 @@ export function MessengerScreen({
                               {!mine && (
                                 <span className="hidden w-9 shrink-0 md:block">
                                   {isLastOfGroup && (
-                                    <Avatar
-                                      name={sender?.displayName ?? 'Пользователь'}
-                                      src={sender?.avatarUrl ?? sender?.avatar?.url}
-                                      size="sm"
-                                    />
+                                    <button
+                                      type="button"
+                                      className="block rounded-full transition hover:opacity-90"
+                                      onClick={() => selectedPeer && setPeerProfileOpen(true)}
+                                      disabled={!selectedPeer}
+                                      title={sender?.displayName ? `Открыть профиль ${sender.displayName}` : undefined}
+                                      aria-label={sender?.displayName ? `Открыть профиль ${sender.displayName}` : undefined}
+                                    >
+                                      <Avatar
+                                        name={sender?.displayName ?? 'Пользователь'}
+                                        src={sender?.avatarUrl ?? sender?.avatar?.url}
+                                        size="sm"
+                                      />
+                                    </button>
                                   )}
                                 </span>
                               )}
