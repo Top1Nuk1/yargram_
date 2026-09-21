@@ -1,2 +1,12 @@
+# В gitattributes побеждает последнее подходящее правило, поэтому общая
+# нормализация идёт первой, а уточнения для Windows — после неё.
+
+# По умолчанию всё храним в LF, чтобы diff не забивался переводами строк.
+* text=auto eol=lf
+# Yargram запускается с Windows: батники и PowerShell-скрипты должны лежать
+# в рабочей копии с CRLF, иначе Windows откажется их выполнять.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
 *.png filter=lfs diff=lfs merge=lfs -text
 *.webp filter=lfs diff=lfs merge=lfs -text
