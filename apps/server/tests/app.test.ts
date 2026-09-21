@@ -1274,6 +1274,41 @@ describe("Yargram API", () => {
       .expect(409);
   });
 
+  it("lets an owner revoke verification, the badge and extra usernames", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "revoke-owner@example.com", "RevokeOwner");
+    const target = await register(harness.app, "revoke-target@example.com", "RevokeTarget");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const authorize = { Authorization: bearer(owner.accessToken) };
+    const grant = (body: Record<string, unknown>) =>
+      request(harness.app).post(`/api/admin/${owner.user.id}/grant`).set(authorize).send(body);
+    const targetId = target.user.id;
+
+    const given = await grant({ targetUserId: targetId, isVerified: true, badge: "yargram", usernames: ["kotik", "second"] });
+    expect(given.body.user).toMatchObject({ isVerified: true, badge: "yargram", usernames: ["kotik", "second"] });
+
+    // Каждый атрибут снимается отдельно, остальное не трогаем.
+    const noCheck = await grant({ targetUserId: targetId, isVerified: false });
+    expect(noCheck.body.user).toMatchObject({ isVerified: false, badge: "yargram", usernames: ["kotik", "second"] });
+
+    const noBadge = await grant({ targetUserId: targetId, badge: null });
+    expect(noBadge.body.user).toMatchObject({ isVerified: false, badge: null, usernames: ["kotik", "second"] });
+
+    // Пустой список — это очистка, а не «ничего не передали».
+    const cleared = await grant({ targetUserId: targetId, usernames: [] });
+    expect(cleared.body.user.usernames).toEqual([]);
+    await expect(harness.repositories.users.findById(targetId)).resolves.toMatchObject({
+      isVerified: false,
+      badge: null,
+      usernames: [],
+    });
+
+    // Без явного usernames список не сбрасывается.
+    await grant({ targetUserId: targetId, usernames: ["again"] });
+    const untouched = await grant({ targetUserId: targetId, isVerified: true });
+    expect(untouched.body.user.usernames).toEqual(["again"]);
+  });
+
   it("stores personal drafts, folders and a duplicate-free scheduled queue", async () => {
     const harness = await createHarness();
     const alice = await register(harness.app, "plan-alice@example.com", "PlanAlice");

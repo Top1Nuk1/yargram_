@@ -52,7 +52,9 @@ export class AdminService {
     const update: Partial<User> = {
       ...(input.isVerified === undefined ? {} : { isVerified: input.isVerified }),
       ...(input.isOwner === undefined ? {} : { isOwner: input.isOwner }),
-      ...(normalizedUsernames.length ? { usernames: normalizedUsernames } : {}),
+      // Пустой массив — это запрос на очистку: «ничего не передали» и «передали
+      // пустой список» должны означать разное.
+      ...(input.usernames === undefined ? {} : { usernames: normalizedUsernames }),
       ...(input.adminUserIds === undefined ? {} : { adminUserIds: input.adminUserIds }),
     };
     if (input.isOwner === true) {

@@ -146,6 +146,25 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
     }
   }
 
+  /**
+   * Выдача и снятие админских атрибутов. Цель — юзернейм из поля ввода;
+   * пустой массив usernames очищает список дополнительных ников.
+   */
+  function runAdminGrant(
+    input: { isVerified?: boolean; badge?: 'yargram' | null; usernames?: string[] },
+    success: string,
+  ) {
+    const username = (document.getElementById('admin-target-id') as HTMLInputElement | null)?.value?.trim();
+    if (!username) {
+      setError('Укажите юзернейм');
+      return;
+    }
+    setError('');
+    api.adminGrant(token, profileUser.id ?? user.id, { targetUsername: username, ...input })
+      .then(() => setError(success))
+      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
+  }
+
   const fieldClass =
     'h-12 w-full rounded-xl border border-line bg-canvas pl-11 pr-4 text-[15px] text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10';
 
@@ -331,38 +350,28 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
 
           <fieldset hidden={tab !== 'admin'} className="settings-panel rounded-2xl border border-line p-4">
             <legend className="flex items-center gap-2 px-2 text-sm font-semibold"><ShieldCheck className="h-4 w-4 text-brand" />Овнер / Админ</legend>
-            <p className="text-sm text-muted">Только для владельца: галочка, значок и дополнительные юзернеймы для любого аккаунта.</p>
+            <p className="text-sm text-muted">Только для владельца: галочка, значок и дополнительные юзернеймы для любого аккаунта — выдача и снятие.</p>
             <div className="mt-3 space-y-3">
               <input id="admin-target-id" className={fieldClass} placeholder="username (например: top1nuk1)" />
               <input id="admin-usernames" className={fieldClass} placeholder="доп. юзернеймы через запятую: kotik, second_name" />
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ isVerified: true }, 'Галочка выдана')}>Подтвердить (галочка)</Button>
+                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ badge: 'yargram' }, 'Значок Yargram выдан')}>Значок Yargram</Button>
                 <Button type="button" variant="secondary" className="text-xs" onClick={() => {
-                  const username = (document.getElementById('admin-target-id') as HTMLInputElement)?.value?.trim();
-                  if (!username) { setError('Укажите юзернейм'); return; }
-                  api.adminGrant(token, profileUser.id ?? user.id, { targetUsername: username, isVerified: true })
-                    .then(() => { setError('Галочка выдана'); })
-                    .catch((reason: unknown) => setError(adminErrorMessage(reason)));
-                }}>Подтвердить (галочка)</Button>
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => {
-                  const username = (document.getElementById('admin-target-id') as HTMLInputElement)?.value?.trim();
-                  if (!username) { setError('Укажите юзернейм'); return; }
-                  api.adminGrant(token, profileUser.id ?? user.id, { targetUsername: username, badge: 'yargram' })
-                    .then(() => { setError('Значок Yargram выдан'); })
-                    .catch((reason: unknown) => setError(adminErrorMessage(reason)));
-                }}>Значок Yargram</Button>
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => {
-                  const username = (document.getElementById('admin-target-id') as HTMLInputElement)?.value?.trim();
-                  const aliases = ((document.getElementById('admin-usernames') as HTMLInputElement)?.value ?? '')
+                  const aliases = ((document.getElementById('admin-usernames') as HTMLInputElement | null)?.value ?? '')
                     .split(/[,\s]+/)
                     .map((value) => value.trim().replace(/^@/, ''))
                     .filter(Boolean);
-                  if (!username) { setError('Укажите юзернейм'); return; }
                   if (aliases.length === 0) { setError('Укажите хотя бы один доп. юзернейм'); return; }
-                  api.adminGrant(token, profileUser.id ?? user.id, { targetUsername: username, usernames: aliases })
-                    .then(() => setError(`Назначены юзернеймы: ${aliases.join(', ')}`))
-                    .catch((reason: unknown) => setError(adminErrorMessage(reason)));
+                  runAdminGrant({ usernames: aliases }, `Назначены юзернеймы: ${aliases.join(', ')}`);
                 }}>Назначить юзернеймы</Button>
               </div>
+              <div className="flex flex-wrap gap-2 border-t border-line pt-3">
+                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ isVerified: false }, 'Галочка снята')}>Снять галочку</Button>
+                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ badge: null }, 'Значок Yargram снят')}>Снять значок Yargram</Button>
+                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ usernames: [] }, 'Доп. юзернеймы очищены')}>Очистить доп. юзернеймы</Button>
+              </div>
+              <p className="text-xs text-muted">Поле юзернеймов нужно только для назначения: кнопка «Очистить» снимает все дополнительные ники сразу.</p>
             </div>
           </fieldset>
 

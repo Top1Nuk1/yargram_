@@ -296,8 +296,9 @@ export function createApiRouter(dependencies: {
       isOwner: z.boolean().optional(),
       // The enum is transformed before .optional(), so an omitted badge stays
       // undefined instead of silently turning into null and clearing it.
+      // "" and null both mean «снять значок».
       badge: z
-        .enum(["yargram", ""])
+        .union([z.enum(["yargram", ""]), z.null()])
         .transform((value) => (value === "yargram" ? "yargram" : null))
         .optional(),
       usernames: z.array(z.string().trim().min(3).max(32)).optional(),
