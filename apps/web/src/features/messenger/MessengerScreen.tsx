@@ -573,7 +573,7 @@ export function MessengerScreen({
       setSocketState('disconnected');
       // «frozen» и «no longer exists» — аккаунт заморозили или удалили прямо
       // во время сессии: сервер уже разорвал сокет, выходим и мы.
-      if (/token|auth|jwt|unauthorized|frozen|no longer exists/i.test(error.message)) onLogout(true);
+      if (/token|auth|jwt|unauthorized|frozen|deleted|no longer exists/i.test(error.message)) onLogout(true);
     });
     realtimeSocket.on('message:new', (message: Message) => {
       if (!active || !message?.id || !message.conversationId) return;
@@ -751,9 +751,6 @@ export function MessengerScreen({
       const result = applyAccountState(conversationsRef.current, messagesRef.current, payload);
       setConversations(result.conversations);
       setMessages(result.messages);
-      // После удаления сервер стёр и сообщения человека — перечитываем чаты,
-      // чтобы пропала подпись последнего сообщения и счётчики сошлись.
-      if (result.removed) void loadConversations();
     });
     realtimeSocket.on('folders:updated', (items: ChatFolder[]) => {
       if (!active || !Array.isArray(items)) return;
@@ -2668,6 +2665,7 @@ export function MessengerScreen({
             setPeerProfileOpen(false);
             void loadConversations();
           }}
+          onRestored={() => void loadConversations()}
         />
       )}
       {ownProfileOpen && (

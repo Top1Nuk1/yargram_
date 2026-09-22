@@ -61,6 +61,8 @@ export interface User {
   isOwner?: boolean;
   isBanned?: boolean;
   isFrozen?: boolean;
+  /** Аккаунт удалён владельцем (запись остаётся, почта занята). */
+  isDeleted?: boolean;
   birthday?: string | null;
 }
 
@@ -95,6 +97,7 @@ export interface Participant {
   isVerified?: boolean;
   badge?: 'yargram' | null;
   isFrozen?: boolean;
+  isDeleted?: boolean;
 }
 
 /**

@@ -284,10 +284,14 @@ export function createApiRouter(dependencies: {
       excludeUserId: request.auth.userId,
     });
     response.json({
-      users: users.map((user) => ({
-        ...toPublicUserFor(user, request.auth.userId),
-        blockedByMe: currentUser?.blockedUserIds.includes(user.id) ?? false,
-      })),
+      // Удалённые аккаунты в поиске не показываем: найти их нельзя, хотя
+      // профиль по прямой ссылке всё ещё открывается как «Удалённый аккаунт».
+      users: users
+        .filter((user) => !user.isDeleted)
+        .map((user) => ({
+          ...toPublicUserFor(user, request.auth.userId),
+          blockedByMe: currentUser?.blockedUserIds.includes(user.id) ?? false,
+        })),
     });
   });
   router.get("/users", requireAuth, listUsers);
@@ -357,6 +361,17 @@ export function createApiRouter(dependencies: {
       const { userId } = parseParams(userParamsSchema, request);
       await dependencies.adminService.deleteUser(request.auth.userId, userId);
       response.json({ ok: true, userId });
+    }),
+  );
+
+  // Возврат удалённого аккаунта («разбан»). Только владелец.
+  router.post(
+    "/admin/:userId/restore",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      const updated = await dependencies.adminService.restoreUser(request.auth.userId, userId);
+      response.json({ user: toPublicUser(updated) });
     }),
   );
 

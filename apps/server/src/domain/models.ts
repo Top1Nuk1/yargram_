@@ -45,6 +45,10 @@ export type User = {
   isOwner?: boolean; // Top1Nuk1 level ownership
   isBanned?: boolean; // account banned by admin
   isFrozen?: boolean; // account suspended by admin
+  /** Аккаунт удалён владельцем. Запись остаётся: почта и ник не освобождаются,
+   *  а владелец может вернуть аккаунт обратно. */
+  isDeleted?: boolean;
+  deletedAt?: string;
   birthday?: string; // ISO date (YYYY-MM-DD), отображается в профиле
 };
 
@@ -68,6 +72,7 @@ export type PublicUser = {
   isOwner?: boolean | undefined;
   isBanned?: boolean | undefined;
   isFrozen?: boolean | undefined;
+  isDeleted?: boolean | undefined;
   birthday?: string | undefined;
 };
 
@@ -255,8 +260,19 @@ export function toPublicUser(user: User): PublicUser {
     isOwner: user.isOwner ?? undefined,
     isBanned: user.isBanned ?? undefined,
     isFrozen: user.isFrozen ?? undefined,
+    isDeleted: user.isDeleted ?? undefined,
     birthday: user.birthday ?? undefined,
   };
+}
+
+/**
+ * Публичный вид для рассылки «что стало с аккаунтом»: удалённый и замороженный
+ * выглядят как заглушка, живой — своим профилем.
+ */
+export function publicAccountStateFor(user: User): PublicUser {
+  if (user.isDeleted) return deletedPlaceholderFor(user.id);
+  if (user.isFrozen) return frozenPlaceholderFor(user.id);
+  return toPublicUser(user);
 }
 
 /**
@@ -268,6 +284,9 @@ export function toPublicUser(user: User): PublicUser {
  * `isFrozen: true`, чтобы клиент поставил рядом снежинку.
  */
 export function toPublicUserFor(user: User, viewerId?: string | null): PublicUser {
+  // Удалённый аккаунт остаётся в базе (почта занята), но наружу выглядит
+  // заглушкой — без снежинки: её получают только замороженные.
+  if (user.isDeleted) return deletedPlaceholderFor(user.id);
   if (user.isFrozen) return frozenPlaceholderFor(user.id);
   const base = toPublicUser(user);
   if (!viewerId || !user.blockedUserIds?.includes(viewerId)) return base;
@@ -307,12 +326,14 @@ function frozenPlaceholderFor(id: string): PublicUser {
 }
 
 /**
- * Публичный вид аккаунта для рассылки в реальном времени: замороженный и
- * удалённый выглядят одинаково («Удалённый аккаунт»), но у замороженного
- * выставлен isFrozen — по нему клиент рисует снежинку.
+ * Заглушка для удалённого аккаунта, запись которого ещё жива: владельцу нужен
+ * флаг, чтобы показать кнопку возврата.
  */
-export function accountStatePlaceholder(id: string, frozen: boolean): PublicUser {
-  return frozen ? { ...removedUserPlaceholder(id), isFrozen: true } : removedUserPlaceholder(id);
+export function deletedPlaceholderFor(id: string): PublicUser {
+  return {
+    ...removedUserPlaceholder(id),
+    isDeleted: true,
+  };
 }
 
 /**

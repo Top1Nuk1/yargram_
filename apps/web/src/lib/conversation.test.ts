@@ -119,13 +119,18 @@ describe('conversation helpers', () => {
       expect(result.conversations[0].lastMessage?.sender).toMatchObject({ displayName: 'Удалённый аккаунт' });
       expect(result.messages.map((message) => message.id)).toEqual(['m1', 'm2']);
       expect(result.messages[0].sender?.displayName).toBe('Удалённый аккаунт');
-      expect(result.removed).toBe(false);
     });
 
-    it('удалённый аккаунт забирает свои сообщения из открытого чата', () => {
+    it('удалённый аккаунт оставляет историю, подписывая её заглушкой', () => {
       const result = applyAccountState([chat], history, removed);
-      expect(result.messages.map((message) => message.id)).toEqual(['m2']);
-      expect(result.removed).toBe(true);
+      // История не стирается — как в Telegram: меняется только автор.
+      expect(result.messages.map((message) => message.id)).toEqual(['m1', 'm2']);
+      expect(result.messages[0].sender).toMatchObject({
+        id: 'bob',
+        displayName: 'Удалённый аккаунт',
+        isFrozen: false,
+      });
+      expect(result.messages[1].sender?.displayName).toBe('Алиса');
       expect(getConversationPeer(result.conversations[0], 'alice')).toMatchObject({
         displayName: 'Удалённый аккаунт',
         isFrozen: false,

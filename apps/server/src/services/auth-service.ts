@@ -34,7 +34,16 @@ export class AuthService {
     const email = input.email.trim().toLowerCase();
     const username = input.username?.trim().replace(/^@/, "");
 
-    if (await this.users.findByEmail(email)) {
+    // Почта удалённого или замороженного аккаунта остаётся занятой: на неё
+    // нельзя зарегистрировать новый аккаунт.
+    const byEmail = await this.users.findByEmail(email);
+    if (byEmail) {
+      if (byEmail.isDeleted) {
+        throw new AppError(409, "EMAIL_RESERVED", "Эта почта принадлежала удалённому аккаунту");
+      }
+      if (byEmail.isFrozen) {
+        throw new AppError(409, "EMAIL_RESERVED", "Эта почта принадлежит замороженному аккаунту");
+      }
       throw new AppError(409, "EMAIL_TAKEN", "An account with this email already exists");
     }
     if (username && (await this.users.findByUsername(username))) {
@@ -74,6 +83,9 @@ export class AuthService {
     }
     if (user.isFrozen) {
       throw new AppError(403, "ACCOUNT_FROZEN", "This account is frozen by the Yargram owner");
+    }
+    if (user.isDeleted) {
+      throw new AppError(403, "ACCOUNT_DELETED", "This account was deleted by the Yargram owner");
     }
     return this.createResult(user);
   }
@@ -125,6 +137,9 @@ export class AuthService {
     // Заморозку проверяем на каждом запросе: старый токен не должен работать.
     if (user.isFrozen) {
       throw new AppError(403, "ACCOUNT_FROZEN", "This account is frozen by the Yargram owner");
+    }
+    if (user.isDeleted) {
+      throw new AppError(403, "ACCOUNT_DELETED", "This account was deleted by the Yargram owner");
     }
     return user.id;
   }

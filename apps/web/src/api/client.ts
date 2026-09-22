@@ -524,11 +524,21 @@ export const api = {
     }).then((result) => ('user' in result ? result.user : result));
   },
 
-  /** Удаление аккаунта со всеми его данными — только владелец. */
+  /**
+   * Удаление аккаунта — только владелец. История переписки остаётся у
+   * собеседников, сам аккаунт помечается удалённым (почта остаётся занятой).
+   */
   adminDeleteUser(token: string, userId: string) {
     return request<{ ok?: boolean }>(`/api/admin/${encodeURIComponent(userId)}`, {
       method: 'DELETE', token,
     }).then(() => true);
+  },
+
+  /** Возврат («разбан») удалённого аккаунта — только владелец. */
+  adminRestoreUser(token: string, userId: string) {
+    return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/restore`, {
+      method: 'POST', token, body: {},
+    }).then((result) => ('user' in result ? result.user : result));
   },
 
   adminList(token: string) {

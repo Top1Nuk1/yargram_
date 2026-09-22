@@ -255,14 +255,17 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
       .catch((reason: unknown) => setError(adminErrorMessage(reason)));
   }
 
-  /** Удаление аккаунта: сообщения, черновики, заметки и файлы человека стираются. */
+  /**
+   * Удаление аккаунта: личное стирается, а история переписки остаётся у
+   * собеседников. Почта и ник остаются занятыми, аккаунт можно вернуть.
+   */
   function deleteAccount() {
     if (!adminTarget) {
       setError('Сначала нажмите «Показать состояние»');
       return;
     }
     const handle = adminTarget.username ? `@${adminTarget.username}` : adminTarget.displayName;
-    if (!window.confirm(`Удалить аккаунт ${handle}? Его сообщения, файлы и заметки будут стёрты безвозвратно.`)) {
+    if (!window.confirm(`Удалить аккаунт ${handle}? Его почта и ник останутся занятыми, а историю переписки собеседники сохранят.`)) {
       return;
     }
     setError('');
@@ -270,6 +273,21 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
       .then(() => {
         setAdminTarget(null);
         setError(`Аккаунт ${handle} удалён.`);
+      })
+      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
+  }
+
+  /** Возврат удалённого аккаунта: профиль и история снова на месте. */
+  function restoreAccount() {
+    if (!adminTarget) {
+      setError('Сначала нажмите «Показать состояние»');
+      return;
+    }
+    setError('');
+    api.adminRestoreUser(token, adminTarget.id)
+      .then((updated) => {
+        setAdminTarget({ ...adminTarget, ...updated });
+        setError('Аккаунт возвращён.');
       })
       .catch((reason: unknown) => setError(adminErrorMessage(reason)));
   }
@@ -581,22 +599,32 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
                   type="button"
                   variant="secondary"
                   className="text-xs"
-                  disabled={!adminTarget}
+                  disabled={!adminTarget || adminTarget.isDeleted}
                   onClick={() => toggleFreeze()}
                 >
                   {adminTarget?.isFrozen ? 'Разморозить аккаунт' : 'Заморозить аккаунт'}
                 </Button>
                 <Button
                   type="button"
+                  variant="secondary"
+                  className="text-xs"
+                  disabled={!adminTarget?.isDeleted}
+                  onClick={() => restoreAccount()}
+                >
+                  Вернуть аккаунт
+                </Button>
+                <Button
+                  type="button"
                   variant="danger"
                   className="text-xs"
-                  disabled={!adminTarget}
+                  disabled={!adminTarget || adminTarget.isDeleted}
                   onClick={() => deleteAccount()}
                 >
                   Удалить аккаунт
                 </Button>
                 <span className="text-xs text-muted">
-                  Заморозка закрывает вход; удаление стирает аккаунт вместе с его сообщениями и файлами.
+                  Заморозка закрывает вход. Удаление оставляет историю переписки собеседникам, но почта и
+                  ник остаются занятыми — аккаунт можно вернуть.
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-2">

@@ -32,6 +32,9 @@ export type UpdateUserInput = {
   isOwner?: boolean;
   isBanned?: boolean;
   isFrozen?: boolean;
+  /** Аккаунт удалён владельцем: запись остаётся, чтобы почта не освободилась. */
+  isDeleted?: boolean;
+  deletedAt?: string | undefined;
   birthday?: string | null | undefined;
 };
 

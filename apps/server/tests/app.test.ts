@@ -1,5 +1,5 @@
 import { createServer, type Server as HttpServer } from "node:http";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
@@ -109,6 +109,8 @@ async function register(
   expect(response.status).toBe(201);
   return response.body as RegisteredUser;
 }
+
+const TEST_PASSWORD = "correct horse battery staple";
 
 function bearer(token: string): string {
   return "Bearer " + token;
@@ -1625,7 +1627,10 @@ describe("Yargram API", () => {
     // Удаление стирает аккаунт целиком.
     const removed = await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth);
     expect(removed.status).toBe(200);
-    await expect(harness.repositories.users.findById(bob.user.id)).resolves.toBeNull();
+    // Запись остаётся: почта занята, а владелец может вернуть аккаунт.
+    await expect(harness.repositories.users.findById(bob.user.id)).resolves.toMatchObject({
+      isDeleted: true,
+    });
 
     // Себя владельцу удалить нельзя.
     const self = await request(harness.app).delete(`/api/admin/${owner.user.id}`).set(ownerAuth);
@@ -1688,15 +1693,140 @@ describe("Yargram API", () => {
       avatarUrl: null,
     });
 
-    // Историю удалённого из чужих диалогов стираем, но сама переписка читается.
+    // История остаётся (как в Telegram): сообщение на месте, автор — заглушка.
     const history = await request(harness.app)
       .get(`/api/conversations/${conversationId}/messages?limit=50`)
       .set(aliceAuth);
     expect(history.status).toBe(200);
-    expect(history.body.messages).toHaveLength(0);
+    expect(history.body.messages).toHaveLength(1);
+    expect(history.body.messages[0]).toMatchObject({ text: 'привет, это Боб' });
+    expect(history.body.messages[0].sender).toMatchObject({
+      id: bob.user.id,
+      displayName: 'Удалённый аккаунт',
+      isFrozen: false,
+      avatarUrl: null,
+      username: null,
+    });
 
+    // Профиль не исчезает, а превращается в заглушку без снежинки.
     const profile = await request(harness.app).get(`/api/users/${bob.user.id}`).set(aliceAuth);
-    expect(profile.status).toBe(404);
+    expect(profile.status).toBe(200);
+    expect(profile.body.user).toMatchObject({
+      id: bob.user.id,
+      displayName: 'Удалённый аккаунт',
+      isFrozen: false,
+      isDeleted: true,
+      avatarUrl: null,
+      username: null,
+    });
+  });
+
+  it("reserves the email of a deleted or frozen account and lets the owner restore it", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "reserve-owner@example.com", "ReserveOwner");
+    const bob = await register(harness.app, "reserve-bob@example.com", "ReserveBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+
+    // Замороженный: почта занята.
+    await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: true })
+      .expect(200);
+    const frozenEmail = await request(harness.app)
+      .post("/api/auth/register")
+      .send({ email: "reserve-bob@example.com", password: TEST_PASSWORD, displayName: "Клон" });
+    expect(frozenEmail.status).toBe(409);
+    expect(frozenEmail.body.error.code).toBe("EMAIL_RESERVED");
+
+    // Удалённый: почта тоже остаётся занятой.
+    await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: false })
+      .expect(200);
+    await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth).expect(200);
+    const deletedEmail = await request(harness.app)
+      .post("/api/auth/register")
+      .send({ email: "reserve-bob@example.com", password: TEST_PASSWORD, displayName: "Клон" });
+    expect(deletedEmail.status).toBe(409);
+    expect(deletedEmail.body.error.code).toBe("EMAIL_RESERVED");
+
+    // Удалённый не может войти даже со старым паролем.
+    const login = await request(harness.app)
+      .post("/api/auth/login")
+      .send({ email: "reserve-bob@example.com", password: TEST_PASSWORD });
+    expect(login.status).toBe(403);
+    expect(login.body.error.code).toBe("ACCOUNT_DELETED");
+
+    // Владелец возвращает аккаунт — профиль снова настоящий.
+    const restored = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/restore`)
+      .set(ownerAuth)
+      .send({});
+    expect(restored.status).toBe(200);
+    expect(restored.body.user).toMatchObject({ displayName: "ReserveBob", isDeleted: false });
+
+    const relogin = await request(harness.app)
+      .post("/api/auth/login")
+      .send({ email: "reserve-bob@example.com", password: TEST_PASSWORD });
+    expect(relogin.status).toBe(200);
+
+    // Повторный возврат не имеет смысла.
+    const again = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/restore`)
+      .set(ownerAuth)
+      .send({});
+    expect(again.status).toBe(400);
+    expect(again.body.error.code).toBe("NOT_DELETED");
+  });
+
+  it("keeps the files of a deleted account so the history stays readable", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "files-owner@example.com", "FilesOwner");
+    const alice = await register(harness.app, "files-alice@example.com", "FilesAlice");
+    const bob = await register(harness.app, "files-bob@example.com", "FilesBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+    const bobAuth = { Authorization: bearer(bob.accessToken) };
+
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set(aliceAuth)
+      .send({ userId: bob.user.id })
+      .expect(201);
+    const conversationId = direct.body.conversation.id as string;
+
+    const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(32)]);
+    const image = await request(harness.app)
+      .post("/api/uploads?kind=image")
+      .set(bobAuth)
+      .attach("file", png, { filename: "photo.png", contentType: "image/png" })
+      .expect(201);
+    const attachmentId = image.body.attachment.id as string;
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set(bobAuth)
+      .send({ text: "держи фото", attachmentIds: [attachmentId] })
+      .expect(201);
+
+    await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth).expect(200);
+
+    // Сообщение и вложение остаются: чужую историю удаление не портит.
+    const history = await request(harness.app)
+      .get(`/api/conversations/${conversationId}/messages?limit=50`)
+      .set(aliceAuth);
+    expect(history.body.messages).toHaveLength(1);
+    expect(history.body.messages[0].attachments).toHaveLength(1);
+    expect(history.body.messages[0].attachments[0].id).toBe(attachmentId);
+
+    const stored = await harness.repositories.attachments.findById(attachmentId);
+    expect(stored).not.toBeNull();
+    await expect(stat(join(harness.config.uploadDirectory, stored!.storedFileName))).resolves.toMatchObject({
+      size: expect.any(Number),
+    });
   });
 
   it("tells everyone in realtime that an account was frozen or deleted", async () => {

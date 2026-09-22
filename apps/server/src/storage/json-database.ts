@@ -44,6 +44,8 @@ const userSchema = z
     isOwner: z.boolean().optional(),
     isBanned: z.boolean().optional(),
     isFrozen: z.boolean().optional(),
+    isDeleted: z.boolean().optional(),
+    deletedAt: z.string().optional(),
     birthday: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Birthday must be a YYYY-MM-DD date").optional(),
     createdAt: z.string(),
   })

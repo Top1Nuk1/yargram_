@@ -2,8 +2,8 @@ import { AppError } from "../lib/errors.js";
 import type { RealtimeEvents } from "../realtime/events.js";
 import type { Repositories, UserRepository } from "../repositories/types.js";
 import {
-  accountStatePlaceholder,
-  toPublicUser,
+  deletedPlaceholderFor,
+  publicAccountStateFor,
   type User,
 } from "../domain/models.js";
 
@@ -37,19 +37,16 @@ function normalizeHandles(values: string[]): string[] {
   return handles;
 }
 
-/** При удалении аккаунта историю не перебираем целиком — достаточно последних сообщений. */
-const DELETE_SCAN_PAGE_SIZE = 200;
-const DELETE_SCAN_PAGES = 50;
-
 export class AdminService {
   private readonly repositories: Repositories;
   private readonly users: UserRepository;
   private readonly events: RealtimeEvents;
   /**
-   * Стирание файлов с диска живёт в UploadService, а он создаётся позже —
-   * поэтому подключаем его отдельно, чтобы удаление аккаунта было полным.
+   * Стирание аватара с диска живёт в UploadService, а он создаётся позже —
+   * поэтому подключаем его отдельно. Файлы из переписки не трогаем: история
+   * остаётся у собеседников, значит вложения должны открываться и дальше.
    */
-  private removeUserFiles: ((userId: string) => Promise<void>) | undefined;
+  private removeUserAvatars: ((userId: string) => Promise<void>) | undefined;
 
   constructor(repositories: Repositories, events: RealtimeEvents) {
     this.repositories = repositories;
@@ -57,8 +54,8 @@ export class AdminService {
     this.events = events;
   }
 
-  setFileCleanup(removeUserFiles: ((userId: string) => Promise<void>) | undefined): void {
-    this.removeUserFiles = removeUserFiles;
+  setAvatarCleanup(removeUserAvatars: ((userId: string) => Promise<void>) | undefined): void {
+    this.removeUserAvatars = removeUserAvatars;
   }
 
   async grant(grantorId: string, input: AdminGrantInput): Promise<User> {
@@ -153,15 +150,46 @@ export class AdminService {
       userId: targetUserId,
       frozen,
       removed: false,
-      user: frozen ? accountStatePlaceholder(targetUserId, true) : toPublicUser(updated),
+      user: publicAccountStateFor(updated),
     });
     return updated;
   }
 
   /**
-   * Удаление аккаунта: стираем всё, что принадлежало человеку, — сообщения,
-   * черновики, отложенные, заметки и загруженные файлы. Чужие сообщения в
-   * общих чатах остаются.
+   * Возврат удалённого аккаунта («разбан»): запись никуда не девалась, поэтому
+   * достаточно снять флаг — профиль, диалоги и история снова на месте.
+   */
+  async restoreUser(grantorId: string, targetUserId: string): Promise<User> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can restore accounts");
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
+    if (!target.isDeleted) {
+      throw new AppError(400, "NOT_DELETED", "This account is not deleted");
+    }
+    const updated = await this.users.update(targetUserId, { isDeleted: false, deletedAt: undefined });
+    if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    this.events.publishAccountState({
+      userId: targetUserId,
+      frozen: false,
+      removed: false,
+      user: publicAccountStateFor(updated),
+    });
+    return updated;
+  }
+
+  /**
+   * Удаление аккаунта: стираем личное — черновики, отложенные, заметки и
+   * аватар. Сообщения остаются, как в Telegram: чужую историю мы не портим,
+   * а автор подменяется заглушкой «Удалённый аккаунт» на лету (см.
+   * `ChatService.toMessageSnapshot`). Вложения из переписки тоже остаются —
+   * иначе в сохранённых сообщениях ссылки на файлы стали бы битыми.
+   *
+   * Саму запись не стираем, а помечаем `isDeleted`: так почта и ник остаются
+   * занятыми (на них нельзя зарегистрировать новый аккаунт), а владелец может
+   * вернуть аккаунт через `restoreUser`.
    */
   async deleteUser(grantorId: string, targetUserId: string): Promise<void> {
     const grantor = await this.users.findById(grantorId);
@@ -177,26 +205,6 @@ export class AdminService {
       throw new AppError(400, "OWNER_PROTECTED", "Another owner's account cannot be deleted");
     }
 
-    const conversations = await this.repositories.conversations.listForUser(targetUserId);
-    for (const conversation of conversations) {
-      let before: string | undefined;
-      for (let page = 0; page < DELETE_SCAN_PAGES; page += 1) {
-        const batch = await this.repositories.messages.listForConversation(conversation.id, {
-          limit: DELETE_SCAN_PAGE_SIZE,
-          ...(before === undefined ? {} : { before }),
-        });
-        if (batch.length === 0) break;
-        for (const message of batch) {
-          if (message.senderId !== targetUserId) continue;
-          await this.repositories.messages.deleteFromConversation(conversation.id, message.id);
-        }
-        if (batch.length < DELETE_SCAN_PAGE_SIZE) break;
-        const cursor = batch[0]?.createdAt;
-        if (!cursor || cursor === before) break;
-        before = cursor;
-      }
-    }
-
     for (const draft of await this.repositories.drafts.listForUser(targetUserId)) {
       await this.repositories.drafts.delete(targetUserId, draft.conversationId);
     }
@@ -206,8 +214,8 @@ export class AdminService {
     for (const note of await this.repositories.favoriteNotes.list(targetUserId)) {
       await this.repositories.favoriteNotes.delete(note.id, targetUserId);
     }
-    // Файлы с диска и записи о них — аватар и всё, что человек загружал.
-    await this.removeUserFiles?.(targetUserId);
+    // Аватар с диска и запись о нём. Файлы из переписки остаются.
+    await this.removeUserAvatars?.(targetUserId);
 
     // Вычёркиваем удалённого из чужих списков блокировок и администрирования.
     for (const user of await this.repositories.users.list({ limit: 10_000 })) {
@@ -222,15 +230,17 @@ export class AdminService {
       await this.users.update(user.id, cleanup);
     }
 
-    const deleted = await this.users.delete(targetUserId);
+    const deleted = await this.users.update(targetUserId, {
+      isDeleted: true,
+      deletedAt: new Date().toISOString(),
+    });
     if (!deleted) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
-    // Рассылаем последним: клиенты подменяют профиль заглушкой и выкидывают
-    // из открытого чата сообщения, которых на сервере уже нет.
+    // Рассылаем последним: клиенты подменяют профиль заглушкой прямо в открытом чате.
     this.events.publishAccountState({
       userId: targetUserId,
       frozen: false,
       removed: true,
-      user: accountStatePlaceholder(targetUserId, false),
+      user: deletedPlaceholderFor(targetUserId),
     });
   }
 

@@ -126,9 +126,14 @@ export class UploadService {
     return this.crypto.decryptBuffer(stored);
   }
 
-  /** Стирает все файлы человека — и с диска, и из базы. Нужно при удалении аккаунта. */
-  async deleteUserFiles(userId: string): Promise<void> {
+  /**
+   * Стирает аватары человека — и с диска, и из базы. Нужно при удалении аккаунта.
+   * Файлы из переписки не трогаем: история остаётся у собеседников (как в
+   * Telegram), поэтому вложения должны продолжать открываться.
+   */
+  async deleteUserAvatars(userId: string): Promise<void> {
     for (const attachment of await this.repositories.attachments.listByOwner(userId)) {
+      if (attachment.kind !== "avatar") continue;
       await this.deleteStoredAttachment(attachment.id);
     }
   }

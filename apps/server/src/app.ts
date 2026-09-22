@@ -38,7 +38,7 @@ export function createApp(dependencies: {
     dependencies.crypto,
   );
   // Удаление аккаунта должно стирать и файлы с диска — этим занимается UploadService.
-  dependencies.adminService.setFileCleanup((userId) => uploadService.deleteUserFiles(userId));
+  dependencies.adminService.setAvatarCleanup((userId) => uploadService.deleteUserAvatars(userId));
   app.disable("x-powered-by");
   app.use(
     helmet({

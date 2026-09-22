@@ -48,13 +48,13 @@ export function updateConversationProfile(conversation: Conversation, user: User
 export type AccountStateResult = {
   conversations: Conversation[];
   messages: Message[];
-  /** Аккаунт удалён: сервер стёр его сообщения, список чатов нужно перечитать. */
-  removed: boolean;
 };
 
 /**
  * Применяет событие «аккаунт заморозили / разморозили / удалили» к уже
  * загруженным данным, чтобы «Удалённый аккаунт» появлялся без перезагрузки.
+ * История при удалении не стирается — как в Telegram: сообщения остаются,
+ * меняется только подпись автора.
  */
 export function applyAccountState(
   conversations: Conversation[],
@@ -62,20 +62,9 @@ export function applyAccountState(
   payload: AccountStatePayload,
 ): AccountStateResult {
   const user: User = { ...payload.user, id: payload.userId };
-  const nextConversations = conversations.map((conversation) =>
-    updateConversationProfile(conversation, user),
-  );
-  if (payload.removed) {
-    return {
-      conversations: nextConversations,
-      messages: messages.filter((message) => messageSenderId(message) !== payload.userId),
-      removed: true,
-    };
-  }
   return {
-    conversations: nextConversations,
+    conversations: conversations.map((conversation) => updateConversationProfile(conversation, user)),
     messages: messages.map((message) => updateMessageProfile(message, user) as Message),
-    removed: false,
   };
 }
 
@@ -103,6 +92,8 @@ function participantUser(participant: Participant): User | null {
     // Заморозку тоже нужно перенести: иначе у замороженного собеседника
     // пропадала снежинка, хотя сервер её присылает.
     isFrozen: participant.isFrozen,
+    // Флаг удалённого нужен владельцу, чтобы показать «Вернуть аккаунт»: без него профиль удалённого в листе выглядел бы как живой.
+    isDeleted: participant.isDeleted,
   };
 }
 

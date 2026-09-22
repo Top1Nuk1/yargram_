@@ -120,6 +120,8 @@ class JsonUserRepository implements UserRepository {
       if (input.isOwner !== undefined) user.isOwner = input.isOwner;
       if (input.isBanned !== undefined) user.isBanned = input.isBanned;
       if (input.isFrozen !== undefined) user.isFrozen = input.isFrozen;
+      if (input.isDeleted !== undefined) user.isDeleted = input.isDeleted;
+      if (input.deletedAt !== undefined) user.deletedAt = input.deletedAt;
       if (input.birthday !== undefined) {
         if (input.birthday === null) delete user.birthday;
         else user.birthday = input.birthday;

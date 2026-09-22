@@ -793,7 +793,9 @@ export class ChatService {
     }
     return {
       ...safeMessage,
-      sender: toPublicUser(sender),
+      // Удалённый и замороженный аккаунты остаются в базе, но наружу всё равно
+      // выглядят заглушкой — поэтому toPublicUserFor, а не toPublicUser.
+      sender: toPublicUserFor(sender, currentUserId),
       attachments: attachments.map((attachment) => toAttachmentView(attachment, currentUserId)),
       reactions: [...groupedReactions].map(([emoji, userIds]) => ({
         emoji,

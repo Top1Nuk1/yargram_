@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Snowflake,
   Trash2,
+  Undo2,
   Video,
   X,
 } from 'lucide-react';
@@ -59,6 +60,8 @@ interface UserProfileSheetProps {
   viewerIsOwner?: boolean;
   /** Аккаунт удалён — лист надо закрыть и обновить списки. */
   onDeleted?: (userId: string) => void;
+  /** Аккаунт вернули — списки тоже надо обновить. */
+  onRestored?: (userId: string) => void;
   onClose: () => void;
 }
 
@@ -82,6 +85,7 @@ export function UserProfileSheet({
   onUnauthorized,
   viewerIsOwner = false,
   onDeleted,
+  onRestored,
   onClose,
 }: UserProfileSheetProps) {
   const [profile, setProfile] = useState(user);
@@ -201,10 +205,30 @@ export function UserProfileSheet({
     }
   }
 
-  /** Удаление аккаунта владельцем: сообщения, файлы и заметки стираются. */
+  /** Возврат удалённого аккаунта: профиль и история снова на месте. */
+  async function restoreAccount() {
+    setBusy(true);
+    setError('');
+    try {
+      const restored = await api.adminRestoreUser(token, profile.id);
+      setProfile((current) => ({ ...current, ...restored }));
+      setNotice('Аккаунт возвращён.');
+      onRestored?.(profile.id);
+    } catch (reasonError) {
+      if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
+      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось вернуть аккаунт.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Удаление аккаунта владельцем: личное стирается, а история переписки
+   * остаётся у собеседников — как в Telegram. Почта остаётся занятой.
+   */
   async function deleteAccount() {
     const handle = profile.username ? `@${profile.username}` : profile.displayName;
-    if (!window.confirm(`Удалить аккаунт ${handle}? Его сообщения, файлы и заметки будут стёрты безвозвратно.`)) return;
+    if (!window.confirm(`Удалить аккаунт ${handle}? Его почта и ник останутся занятыми, а историю переписки собеседники сохранят.`)) return;
     setBusy(true);
     setError('');
     try {
@@ -480,18 +504,27 @@ export function UserProfileSheet({
             </div>
           )}
 
-          {/* Владелец Yargram может заморозить или удалить чужой аккаунт. */}
+          {/* Владелец Yargram может заморозить, удалить и вернуть чужой аккаунт. */}
           {mode !== 'own' && viewerIsOwner && (
             <div className="mt-3 space-y-2 border-t border-line px-4 pt-3">
               <p className="text-xs font-bold uppercase tracking-wide text-muted">Владелец</p>
-              <Button variant="secondary" className="w-full" loading={busy} onClick={() => void toggleFreeze()}>
-                <Snowflake className="h-4 w-4" />
-                {profile.isFrozen ? 'Разморозить аккаунт' : 'Заморозить аккаунт'}
-              </Button>
-              <Button variant="danger" className="w-full" loading={busy} onClick={() => void deleteAccount()}>
-                <Trash2 className="h-4 w-4" />
-                Удалить аккаунт
-              </Button>
+              {profile.isDeleted ? (
+                <Button variant="secondary" className="w-full" loading={busy} onClick={() => void restoreAccount()}>
+                  <Undo2 className="h-4 w-4" />
+                  Вернуть аккаунт
+                </Button>
+              ) : (
+                <Button variant="secondary" className="w-full" loading={busy} onClick={() => void toggleFreeze()}>
+                  <Snowflake className="h-4 w-4" />
+                  {profile.isFrozen ? 'Разморозить аккаунт' : 'Заморозить аккаунт'}
+                </Button>
+              )}
+              {!profile.isDeleted && (
+                <Button variant="danger" className="w-full" loading={busy} onClick={() => void deleteAccount()}>
+                  <Trash2 className="h-4 w-4" />
+                  Удалить аккаунт
+                </Button>
+              )}
             </div>
           )}
 
