@@ -628,7 +628,11 @@ export class ChatService {
     conversation: Conversation,
   ): Promise<void> {
     const otherId = conversation.memberIds.find((id) => id !== currentUserId);
-    if (otherId) await this.assertNotBlockedByMe(currentUserId, otherId);
+    if (!otherId) return;
+    await this.assertNotBlockedByMe(currentUserId, otherId);
+    // Удалённый аккаунт историю не обнуляет, но новых сообщений не принимает:
+    // клиент вместо поля ввода показывает заглушку, а сервер дублирует запрет.
+    await this.assertAccountAlive(otherId, "Аккаунт собеседника удалён. Отправка недоступна.");
   }
 
   /** Звонок запрещён в обе стороны: звонить заблокировавшему нельзя. */
@@ -652,6 +656,16 @@ export class ChatService {
     ) {
       throw new AppError(403, "USER_BLOCKED", "Communication with this user is blocked");
     }
+    // Удалённый аккаунт нельзя ни открыть заново, ни вызвать.
+    await this.assertAccountAlive(firstUserId, "Аккаунт собеседника удалён.");
+    await this.assertAccountAlive(secondUserId, "Аккаунт собеседника удалён. Звонок и переписка недоступны.");
+  }
+
+  /** Удалённый аккаунт остаётся в базе, но общение с ним закрыто. */
+  private async assertAccountAlive(userId: string, message: string): Promise<void> {
+    const user = await this.repositories.users.findById(userId);
+    if (!user) throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+    if (user.isDeleted) throw new AppError(403, "ACCOUNT_DELETED", message);
   }
 
   /**

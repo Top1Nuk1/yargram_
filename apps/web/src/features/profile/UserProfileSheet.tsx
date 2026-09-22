@@ -90,6 +90,8 @@ export function UserProfileSheet({
 }: UserProfileSheetProps) {
   const [profile, setProfile] = useState(user);
   const [isBlocked, setIsBlocked] = useState(Boolean(user.blockedByMe));
+  // Удалённый аккаунт: профиль и история читаются, но писать и звонить нельзя.
+  const isDeleted = Boolean(profile.isDeleted);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -373,9 +375,9 @@ export function UserProfileSheet({
         {/* Ряд быстрых действий — только для чужого профиля. */}
         {mode !== 'own' && (
           <div className="grid grid-cols-4 gap-2 px-4">
-            <ActionTile icon={<FileText className="h-5 w-5" />} label="Чат" onClick={onMessage} />
-            <ActionTile icon={isBlocked ? <MicOff /> : <Mic className="h-5 w-5" />} label="Звук" disabled={isBlocked} onClick={onAudioCall} />
-            <ActionTile icon={<Video className="h-5 w-5" />} label="Звонок" disabled={isBlocked} onClick={onVideoCall} />
+            <ActionTile icon={<FileText className="h-5 w-5" />} label="Чат" disabled={isDeleted} onClick={onMessage} />
+            <ActionTile icon={isBlocked ? <MicOff /> : <Mic className="h-5 w-5" />} label="Звук" disabled={isBlocked || isDeleted} onClick={onAudioCall} />
+            <ActionTile icon={<Video className="h-5 w-5" />} label="Звонок" disabled={isBlocked || isDeleted} onClick={onVideoCall} />
             <ActionTile icon={<MoreHorizontal className="h-5 w-5" />} label="Ещё" onClick={onMore} />
           </div>
         )}

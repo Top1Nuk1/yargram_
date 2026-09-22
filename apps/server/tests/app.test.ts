@@ -1721,6 +1721,77 @@ describe("Yargram API", () => {
     });
   });
 
+  it("closes writing to a deleted account but keeps a frozen one reachable", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "composer-owner@example.com", "ComposerOwner");
+    const alice = await register(harness.app, "composer-alice@example.com", "ComposerAlice");
+    const bob = await register(harness.app, "composer-bob@example.com", "ComposerBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set(aliceAuth)
+      .send({ userId: bob.user.id })
+      .expect(201);
+    const conversationId = direct.body.conversation.id as string;
+
+    // Заморозка — мера временная: сообщение уходит и дождётся разморозки.
+    await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: true })
+      .expect(200);
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set(aliceAuth)
+      .send({ text: "Боб, ты как?" })
+      .expect(201);
+
+    await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: false })
+      .expect(200);
+    await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth).expect(200);
+
+    // Удалённый собеседник не принимает сообщения: история есть, ввода нет.
+    const send = await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set(aliceAuth)
+      .send({ text: "привет?" });
+    expect(send.status).toBe(403);
+    expect(send.body.error.code).toBe("ACCOUNT_DELETED");
+
+    // И новый диалог с удалённым аккаунтом не открыть.
+    const reopen = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set(aliceAuth)
+      .send({ userId: bob.user.id });
+    expect(reopen.status).toBe(403);
+    expect(reopen.body.error.code).toBe("ACCOUNT_DELETED");
+
+    const history = await request(harness.app)
+      .get(`/api/conversations/${conversationId}/messages?limit=50`)
+      .set(aliceAuth);
+    expect(history.status).toBe(200);
+    expect(history.body.messages).toHaveLength(1);
+    expect(history.body.messages[0].text).toBe("Боб, ты как?");
+
+    // После возврата аккаунта писать снова можно.
+    await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/restore`)
+      .set(ownerAuth)
+      .send({})
+      .expect(200);
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set(aliceAuth)
+      .send({ text: "с возвращением" })
+      .expect(201);
+  });
+
   it("reserves the email of a deleted or frozen account and lets the owner restore it", async () => {
     const harness = await createHarness();
     const owner = await register(harness.app, "reserve-owner@example.com", "ReserveOwner");

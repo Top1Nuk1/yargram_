@@ -190,6 +190,8 @@ interface PeerProfileModalProps {
 export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onAudioCall, onVideoCall, onBlockedChange, onUnauthorized }: PeerProfileModalProps) {
   const [profile, setProfile] = useState(user);
   const [isBlocked, setIsBlocked] = useState(blocked || Boolean(user.blockedByMe));
+  // Удалённый аккаунт: историю можно читать, но писать и звонить нельзя.
+  const isDeleted = Boolean(profile.isDeleted);
   const [busy, setBusy] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [reason, setReason] = useState<ReportReason>('spam');
@@ -273,9 +275,9 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
         <div><dt className="text-muted">В Yargram с</dt><dd className="mt-0.5 font-bold text-ink">{profile.createdAt ? new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(profile.createdAt)) : 'Дата неизвестна'}</dd></div>
       </dl>
       <div className="mt-4 grid grid-cols-3 gap-2">
-        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" onClick={onMessage}><MessageCircle className="h-4 w-4" />Написать</Button>
-        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isBlocked} onClick={onAudioCall}><Phone className="h-4 w-4" />Позвонить</Button>
-        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isBlocked} onClick={onVideoCall}><Video className="h-4 w-4" />Видео</Button>
+        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isDeleted} onClick={onMessage}><MessageCircle className="h-4 w-4" />Написать</Button>
+        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isBlocked || isDeleted} onClick={onAudioCall}><Phone className="h-4 w-4" />Позвонить</Button>
+        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isBlocked || isDeleted} onClick={onVideoCall}><Video className="h-4 w-4" />Видео</Button>
       </div>
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
         <Button variant={isBlocked ? 'secondary' : 'danger'} loading={busy && !reportOpen} onClick={() => void toggleBlock()}>{isBlocked ? <ShieldCheck className="h-4 w-4" /> : <Ban className="h-4 w-4" />}{isBlocked ? 'Разблокировать' : 'Заблокировать'}</Button>

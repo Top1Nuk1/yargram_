@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyAccountState,
+  conversationPeerDeleted,
   conversationTitle,
   getConversationPeer,
   sortMessages,
@@ -108,7 +109,7 @@ describe('conversation helpers', () => {
       userId: 'bob',
       frozen: false,
       removed: true,
-      user: { id: 'bob', displayName: 'Удалённый аккаунт', isFrozen: false, avatarUrl: null, username: null },
+      user: { id: 'bob', displayName: 'Удалённый аккаунт', isFrozen: false, isDeleted: true, avatarUrl: null, username: null },
     };
 
     it('заморозку показывает заглушкой сразу, без перезагрузки', () => {
@@ -134,7 +135,18 @@ describe('conversation helpers', () => {
       expect(getConversationPeer(result.conversations[0], 'alice')).toMatchObject({
         displayName: 'Удалённый аккаунт',
         isFrozen: false,
+        isDeleted: true,
       });
+    });
+
+    it('после удаления поле ввода закрывается, а после заморозки — нет', () => {
+      // Удалённый собеседник не принимает сообщения: история остаётся, ввода нет.
+      expect(conversationPeerDeleted(applyAccountState([chat], history, removed).conversations[0], 'alice')).toBe(true);
+      // Заморозка — временная мера: писать можно, собеседник прочитает после разморозки.
+      expect(conversationPeerDeleted(applyAccountState([chat], history, frozen).conversations[0], 'alice')).toBe(false);
+      expect(conversationPeerDeleted(chat, 'alice')).toBe(false);
+      // Избранное — диалог с собой: ввод всегда доступен.
+      expect(conversationPeerDeleted({ id: 'saved', type: 'saved' }, 'alice')).toBe(false);
     });
 
     it('разморозка возвращает настоящий профиль', () => {

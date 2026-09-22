@@ -59,6 +59,7 @@ import {
 import {
   applyAccountState,
   conversationAvatar,
+  conversationPeerDeleted,
   conversationTimestamp,
   conversationTitle,
   getConversationPeer,
@@ -367,6 +368,10 @@ export function MessengerScreen({
   );
   const selectedBlockedByPeer = Boolean(selectedConversation?.blockedByPeer ?? false);
   const selectedBlocked = selectedBlockedByMe || selectedBlockedByPeer;
+  // Удалённый аккаунт не принимает сообщения: история переписки остаётся,
+  // а поле ввода прячем — как в Telegram. Заморозка отправку не закрывает.
+  const selectedPeerDeleted = conversationPeerDeleted(selectedConversation, currentUser.id);
+  const selectedUnavailable = selectedBlockedByMe || selectedPeerDeleted;
   const peerTyping = Boolean(selectedPeer && typingUserIds.has(selectedPeer.id));
   const pendingScheduled = useMemo(
     () =>
@@ -1420,7 +1425,7 @@ export function MessengerScreen({
   }
 
   function openSchedulePicker() {
-    if (!selectedId || selectedBlockedByMe || sending) return;
+    if (!selectedId || selectedUnavailable || sending) return;
     if (editingMessage) {
       setNotice('Отложить можно только новое сообщение.');
       return;
@@ -2039,7 +2044,7 @@ export function MessengerScreen({
                 </IconButton>
                 <IconButton
                   label="Видеозвонок"
-                  disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked}
+                  disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked || selectedPeerDeleted}
                   onClick={() =>
                     selectedPeer &&
                     void webRtc.startCall(selectedConversation.id, selectedPeer, 'video')
@@ -2490,6 +2495,12 @@ export function MessengerScreen({
                     </IconButton>
                   </div>
                 )}
+                {selectedPeerDeleted ? (
+                  <p className="mx-auto flex max-w-[920px] items-center justify-center gap-2 rounded-[1.2rem] border border-line bg-canvas px-4 py-3 text-center text-xs text-muted">
+                    <UserRound className="h-4 w-4 shrink-0 text-muted" />
+                    Аккаунт удалён — поле ввода закрыто. Сообщения из истории остаются доступными.
+                  </p>
+                ) : (
                 <form className="mx-auto flex max-w-[920px] items-end gap-2" onSubmit={(event) => void sendMessage(event)}>
                   <input
                     ref={fileInputRef}
@@ -2610,6 +2621,7 @@ export function MessengerScreen({
                     {sending ? <Spinner className="h-5 w-5" /> : <SendHorizontal className="h-5 w-5" />}
                   </IconButton>
                 </form>
+                )}
               </footer>
             </>
           )}

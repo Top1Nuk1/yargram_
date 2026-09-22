@@ -109,6 +109,19 @@ export function getConversationPeer(conversation: Conversation, currentUserId: s
   return people.find((user) => user.id !== currentUserId) ?? people[0] ?? null;
 }
 
+/**
+ * Собеседник удалил аккаунт: история переписки остаётся, но поле ввода
+ * закрывается — как в Telegram. Замороженный аккаунт writable: он просто
+ * временно недоступен и всё прочитает после разморозки.
+ */
+export function conversationPeerDeleted(
+  conversation: Conversation | null | undefined,
+  currentUserId: string,
+): boolean {
+  if (!conversation || conversation.type === 'saved') return false;
+  return Boolean(getConversationPeer(conversation, currentUserId)?.isDeleted);
+}
+
 export function conversationTitle(conversation: Conversation, currentUserId: string): string {
   if (conversation.type === 'saved') return 'Избранное';
   return (
