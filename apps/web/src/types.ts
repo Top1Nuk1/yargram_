@@ -139,12 +139,85 @@ export interface Message {
   favoritedByMe?: boolean;
 }
 
+/**
+ * Права группы включаются по отдельности: владелец собирает из них любую
+ * комбинацию для администраторов и участников.
+ */
+export const groupPermissionKeys = [
+  'send_messages',
+  'send_media',
+  'send_links',
+  'send_polls',
+  'add_members',
+  'pin_messages',
+  'change_info',
+  'delete_messages',
+] as const;
+
+export type GroupPermission = (typeof groupPermissionKeys)[number];
+export type GroupPermissions = Partial<Record<GroupPermission, boolean>>;
+/** Права после вычисления: у каждого пункта есть конкретный ответ. */
+export type EffectiveGroupPermissions = Record<GroupPermission, boolean>;
+
+export type GroupRole = 'owner' | 'admin' | 'member' | 'restricted';
+
+export type GroupEventKind =
+  | 'created'
+  | 'renamed'
+  | 'description_changed'
+  | 'avatar_changed'
+  | 'member_added'
+  | 'member_removed'
+  | 'member_left'
+  | 'admin_added'
+  | 'admin_removed'
+  | 'permissions_changed'
+  | 'member_restricted'
+  | 'member_muted'
+  | 'member_unmuted';
+
+/** Запись истории изменений группы: кто и что сделал. */
+export interface GroupEvent {
+  id: string;
+  at: string;
+  actorId: string;
+  kind: GroupEventKind;
+  targetId?: string;
+  detail?: string;
+}
+
+/** Строка списка участников группы вместе с ролью и правами. */
+export interface GroupMember {
+  user: User;
+  role: GroupRole;
+  permissions: EffectiveGroupPermissions;
+  /** Поля нет, когда мьюта нет; null — бессрочный мьют. */
+  mutedUntil?: string | null;
+  addedByOwner: boolean;
+}
+
 export interface Conversation {
   id: string;
   type?: string;
   title?: string | null;
   name?: string | null;
   avatarUrl?: string | null;
+  // ---- Группы ----
+  description?: string | null;
+  ownerId?: string | null;
+  adminIds?: string[];
+  adminPermissions?: Record<string, GroupPermissions>;
+  adminDefaults?: GroupPermissions;
+  inviteCode?: string | null;
+  permissions?: GroupPermissions;
+  restrictions?: Record<string, GroupPermissions>;
+  mutedMembers?: Record<string, string | null>;
+  history?: GroupEvent[];
+  /** Роль смотрящего в группе; у личного диалога и «Избранного» — нет. */
+  role?: GroupRole | null;
+  /** Эффективные права смотрящего: по ним клиент гасит кнопки. */
+  myPermissions?: EffectiveGroupPermissions;
+  memberCount?: number;
   participants?: Participant[];
   members?: Participant[];
   users?: User[];

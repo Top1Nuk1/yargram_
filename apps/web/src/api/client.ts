@@ -5,6 +5,9 @@ import type {
   ChatFolder,
   Conversation,
   ConversationDraft,
+  GroupEvent,
+  GroupMember,
+  GroupPermissions,
   LoginInput,
   Message,
   PaginatedItems,
@@ -285,6 +288,118 @@ export const api = {
       method: 'POST',
       token,
       body: { userId },
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  // ---- Группы ----
+
+  createGroup(
+    token: string,
+    input: { title: string; description?: string; avatarUrl?: string | null; memberIds?: string[] },
+  ) {
+    return request<RawConversationResult>('/api/groups', { method: 'POST', token, body: input }).then(
+      (result) => result.conversation ?? (result as Conversation),
+    );
+  },
+
+  joinGroup(token: string, code: string) {
+    return request<RawConversationResult>('/api/groups/join', {
+      method: 'POST',
+      token,
+      body: { code },
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  groupMembers(token: string, groupId: string, query?: string, signal?: AbortSignal) {
+    const params = new URLSearchParams();
+    if (query?.trim()) params.set('q', query.trim());
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return request<{ members?: GroupMember[] }>(
+      `/api/groups/${encodeURIComponent(groupId)}/members${suffix}`,
+      { token, signal },
+    ).then((result): GroupMember[] => result.members ?? []);
+  },
+
+  groupHistory(token: string, groupId: string, signal?: AbortSignal) {
+    return request<{ events?: GroupEvent[] }>(
+      `/api/groups/${encodeURIComponent(groupId)}/history`,
+      { token, signal },
+    ).then((result): GroupEvent[] => result.events ?? []);
+  },
+
+  updateGroup(
+    token: string,
+    groupId: string,
+    input: { title?: string; description?: string; avatarUrl?: string | null },
+  ) {
+    return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}`, {
+      method: 'PATCH',
+      token,
+      body: input,
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  addGroupMembers(token: string, groupId: string, userIds: string[]) {
+    return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}/members`, {
+      method: 'POST',
+      token,
+      body: { userIds },
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  removeGroupMember(token: string, groupId: string, userId: string) {
+    return request<RawConversationResult>(
+      `/api/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE', token },
+    ).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  leaveGroup(token: string, groupId: string) {
+    return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}/leave`, {
+      method: 'POST',
+      token,
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  setGroupAdmin(
+    token: string,
+    groupId: string,
+    userId: string,
+    admin: boolean,
+    permissions?: GroupPermissions,
+  ) {
+    return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}/admins`, {
+      method: 'POST',
+      token,
+      body: { userId, admin, ...(permissions ? { permissions } : {}) },
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  setGroupPermissions(token: string, groupId: string, permissions: GroupPermissions) {
+    return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}/permissions`, {
+      method: 'PUT',
+      token,
+      body: { permissions },
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  restrictGroupMember(
+    token: string,
+    groupId: string,
+    userId: string,
+    input: { permissions?: GroupPermissions; mutedUntil?: string | null },
+  ) {
+    return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}/restrict`, {
+      method: 'POST',
+      token,
+      body: { userId, ...input },
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  regenerateGroupInvite(token: string, groupId: string) {
+    return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}/invite`, {
+      method: 'POST',
+      token,
     }).then((result) => result.conversation ?? (result as Conversation));
   },
 

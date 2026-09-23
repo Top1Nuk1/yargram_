@@ -128,7 +128,8 @@ export type GroupEvent = {
     | "admin_removed"
     | "permissions_changed"
     | "member_restricted"
-    | "member_muted";
+    | "member_muted"
+    | "member_unmuted";
   targetId?: string | undefined;
   detail?: string | undefined;
 };

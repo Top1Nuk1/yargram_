@@ -2342,6 +2342,49 @@ describe("Yargram API", () => {
       .send({ text: "Из-под мьюта" });
     expect(mutedWrite.status).toBe(403);
 
+    // Состав отдаёт мьют отдельно от его отсутствия: у владельца поля нет вовсе.
+    const mutedList = await request(harness.app)
+      .get(`/api/groups/${groupId}/members`)
+      .set("Authorization", bearer(alice.accessToken));
+    const byId = new Map(
+      mutedList.body.members.map((item: { user: { id: string } }) => [item.user.id, item]),
+    );
+    expect(byId.get(bob.user.id)).toMatchObject({ mutedUntil });
+    expect(byId.get(alice.user.id)).not.toHaveProperty("mutedUntil");
+
+    // Бессрочный мьют приходит словом: null в запросе означает снятие мьюта.
+    const forever = await request(harness.app)
+      .post(`/api/groups/${groupId}/restrict`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id, mutedUntil: "forever" });
+    expect(forever.status).toBe(200);
+    const foreverList = await request(harness.app)
+      .get(`/api/groups/${groupId}/members`)
+      .set("Authorization", bearer(alice.accessToken));
+    const foreverBob = foreverList.body.members.find(
+      (item: { user: { id: string } }) => item.user.id === bob.user.id,
+    );
+    expect(foreverBob.mutedUntil).toBeNull();
+    const foreverWrite = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ text: "Из бессрочного мьюта" });
+    expect(foreverWrite.status).toBe(403);
+
+    // Снятие мьюта возвращает право писать.
+    const unmuted = await request(harness.app)
+      .post(`/api/groups/${groupId}/restrict`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id, mutedUntil: null });
+    expect(unmuted.status).toBe(200);
+    const unmutedList = await request(harness.app)
+      .get(`/api/groups/${groupId}/members`)
+      .set("Authorization", bearer(alice.accessToken));
+    const unmutedBob = unmutedList.body.members.find(
+      (item: { user: { id: string } }) => item.user.id === bob.user.id,
+    );
+    expect(unmutedBob).not.toHaveProperty("mutedUntil");
+
     // Прошедший мьют отправку не закрывает.
     const past = await request(harness.app)
       .post(`/api/groups/${groupId}/restrict`)

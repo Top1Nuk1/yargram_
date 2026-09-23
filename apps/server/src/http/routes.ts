@@ -9,7 +9,7 @@ import type { RealtimeEvents } from "../realtime/events.js";
 import type { AuthService } from "../services/auth-service.js";
 import type { AdminService } from "../services/admin-service.js";
 import type { ChatService } from "../services/chat-service.js";
-import type { GroupService } from "../services/group-service.js";
+import { MUTE_FOREVER, type GroupService } from "../services/group-service.js";
 import type { DraftService } from "../services/draft-service.js";
 import type { FolderService } from "../services/folder-service.js";
 import type { ScheduledMessageService } from "../services/scheduled-message-service.js";
@@ -165,8 +165,10 @@ const groupPermissionsBodySchema = z.object({ permissions: groupPermissionsSchem
 const restrictMemberSchema = z.object({
   userId: z.string().uuid(),
   permissions: groupPermissionsSchema.optional(),
-  /** ISO-время окончания мьюта; null — снять мьют. */
-  mutedUntil: z.string().datetime({ offset: true }).nullable().optional(),
+  /** ISO-время окончания мьюта, «forever» — бессрочно, null — снять мьют. */
+  mutedUntil: z
+    .union([z.literal(MUTE_FOREVER), z.string().datetime({ offset: true }), z.null()])
+    .optional(),
 });
 const conversationSettingsSchema = z
   .object({

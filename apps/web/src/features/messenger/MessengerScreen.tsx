@@ -2,6 +2,7 @@ import {
   Archive,
   ArchiveRestore,
   ArrowLeft,
+  Ban,
   Bell,
   BellOff,
   Bookmark,
@@ -71,6 +72,13 @@ import {
   updateMessageProfile,
 } from '../../lib/conversation';
 import { formatConversationTime, formatMessageTime } from '../../lib/format';
+import {
+  containsLink,
+  groupMemberCountLabel,
+  groupTitle,
+  isGroup,
+  viewerCan,
+} from '../../lib/group';
 import { buildMessageGroups, groupAt, groupSpacing } from '../../lib/messageGroups';
 import { updateUserPresence, type PresencePayload } from '../../lib/presence';
 import { avatarProps } from '../../lib/user';
@@ -81,6 +89,8 @@ import { playSound } from '../../lib/sounds';
 import type { AccountStatePayload, Attachment, ChatFolder, Conversation, ConversationDraft, Message, MessageReaction, ReadReceipt, ScheduledMessage, ThemeMode, User } from '../../types';
 import { CallOverlay } from '../calls/CallOverlay';
 import { useWebRtcCall } from '../calls/useWebRtcCall';
+import { GroupCreateModal } from '../groups/GroupCreateModal';
+import { GroupInfoPanel } from '../groups/GroupInfoPanel';
 import { ProfileModal } from '../profile/ProfileModal';
 import { UserProfileSheet } from '../profile/UserProfileSheet';
 import { AppSidebar, type SidebarAction } from '../sidebar/AppSidebar';
@@ -270,6 +280,8 @@ export function MessengerScreen({
   const [scheduleAt, setScheduleAt] = useState('');
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [groupCreateOpen, setGroupCreateOpen] = useState(false);
+  const [groupInfoOpen, setGroupInfoOpen] = useState(false);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
   const [profileOpen, setProfileOpen] = useState(false);
@@ -373,6 +385,15 @@ export function MessengerScreen({
   const selectedPeerDeleted = conversationPeerDeleted(selectedConversation, currentUser.id);
   const selectedUnavailable = selectedBlockedByMe || selectedPeerDeleted;
   const peerTyping = Boolean(selectedPeer && typingUserIds.has(selectedPeer.id));
+  // Группа: своя шапка, свои запреты на отправку — права важнее блокировок.
+  const selectedIsGroup = isGroup(selectedConversation);
+  const canWriteInGroup = !selectedIsGroup || viewerCan(selectedConversation, 'send_messages');
+  const canSendMedia = !selectedIsGroup || viewerCan(selectedConversation, 'send_media');
+  const canSendLinks = !selectedIsGroup || viewerCan(selectedConversation, 'send_links');
+  const composeBlocked = selectedUnavailable || !canWriteInGroup;
+  // Запрет ссылок виден сразу: текст со ссылкой отправить нельзя, пока право не выдадут.
+  const draftLinkBlocked = selectedIsGroup && !canSendLinks && containsLink(draft);
+  const canAttach = !selectedIsGroup || canSendMedia;
   const pendingScheduled = useMemo(
     () =>
       scheduledMessages.filter(
@@ -938,6 +959,47 @@ export function MessengerScreen({
     setConversations((current) => uniqueConversations([conversation, ...current]));
     setSelectedId(conversation.id);
     setSearchOpen(false);
+    setGroupCreateOpen(false);
+  }
+
+  /** Обновлённая группа пришла с сервера: заменяем запись, не трогая порядок. */
+  function handleGroupUpdated(conversation: Conversation) {
+    setConversations((current) =>
+      uniqueConversations(current.map((item) => (item.id === conversation.id ? { ...item, ...conversation } : item))),
+    );
+  }
+
+  // Ссылка-приглашение вида /join/<код>: вступаем в группу и сразу её открываем.
+  useEffect(() => {
+    const match = /^\/join\/([^/?#]+)\/?$/.exec(window.location.pathname);
+    if (!match) return undefined;
+    let cancelled = false;
+    // Адрес чистим сразу: перезагрузка не должна вступать повторно.
+    window.history.replaceState(null, '', '/');
+    api
+      .joinGroup(token, decodeURIComponent(match[1] ?? ''))
+      .then((conversation) => {
+        if (cancelled) return;
+        setConversations((current) =>
+          uniqueConversations([conversation, ...current.filter((item) => item.id !== conversation.id)]),
+        );
+        setSelectedId(conversation.id);
+        setNotice(`Вы вступили в группу «${groupTitle(conversation)}».`);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setNotice(readableError(reason, 'Ссылка-приглашение недействительна.'));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  /** Я вышел из группы: беседа исчезает из списка, как и у остальных участников. */
+  function handleGroupLeft(conversationId: string) {
+    setGroupInfoOpen(false);
+    setConversations((current) => current.filter((item) => item.id !== conversationId));
+    setSelectedId((current) => (current === conversationId ? null : current));
+    setNotice('Вы вышли из группы.');
   }
 
   // Маршрутизация действий из боковой панели в стиле Telegram Desktop.
@@ -948,9 +1010,11 @@ export function MessengerScreen({
         setOwnProfileOpen(true);
         return;
       case 'create-group':
+        setGroupCreateOpen(true);
+        return;
       case 'create-channel':
       case 'calls':
-        // В Yargram пока нет этих разделов — даём мягкую подсказку.
+        // Каналы и звонки — следующие в очереди, пока мягкая подсказка.
         setNotice('Этот раздел появится позже.');
         return;
       case 'blocked':
@@ -1929,8 +1993,9 @@ export function MessengerScreen({
             {conversationState === 'ready' && visibleConversations.length > 0 && (
               <ul>
                 {visibleConversations.map((conversation) => {
-                  const title = conversationTitle(conversation, currentUser.id);
-                  const peer = getConversationPeer(conversation, currentUser.id);
+                  const group = isGroup(conversation);
+                  const title = group ? groupTitle(conversation) : conversationTitle(conversation, currentUser.id);
+                  const peer = group ? null : getConversationPeer(conversation, currentUser.id);
                   const active = selectedId === conversation.id;
                   return (
                     <li key={conversation.id}>
@@ -1945,7 +2010,7 @@ export function MessengerScreen({
                           src={conversationAvatar(conversation, currentUser.id)}
                           size="md"
                           online={peer && !conversation.blockedByPeer ? isUserOnline(peer) : undefined}
-                          {...avatarProps(peer, title)}
+                          {...(group ? { seed: conversation.id } : avatarProps(peer, title))}
                         />}
                         <span className="min-w-0 flex-1">
                           <span className="flex items-baseline gap-2">
@@ -2002,26 +2067,46 @@ export function MessengerScreen({
                 <button
                   type="button"
                   className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                  onClick={() => selectedPeer && setPeerProfileOpen(true)}
-                  disabled={!selectedPeer}
-                  title={selectedPeer ? 'Открыть профиль собеседника' : 'Ваше личное пространство'}
+                  onClick={() => (selectedIsGroup ? setGroupInfoOpen(true) : selectedPeer && setPeerProfileOpen(true))}
+                  disabled={!selectedPeer && !selectedIsGroup}
+                  title={
+                    selectedIsGroup
+                      ? 'Информация о группе'
+                      : selectedPeer
+                        ? 'Открыть профиль собеседника'
+                        : 'Ваше личное пространство'
+                  }
                 >
                   {selectedConversation.type === 'saved' ? <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brand-soft text-brand"><Bookmark className="h-5 w-5" /></span> : <Avatar
-                    name={conversationTitle(selectedConversation, currentUser.id)}
+                    name={selectedIsGroup ? groupTitle(selectedConversation) : conversationTitle(selectedConversation, currentUser.id)}
                     src={conversationAvatar(selectedConversation, currentUser.id)}
                     size="sm"
-                    online={selectedPeer && !selectedBlockedByPeer ? isUserOnline(selectedPeer) : undefined}
-                    {...avatarProps(selectedPeer, conversationTitle(selectedConversation, currentUser.id))}
+                    online={!selectedIsGroup && selectedPeer && !selectedBlockedByPeer ? isUserOnline(selectedPeer) : undefined}
+                    {...(selectedIsGroup
+                      ? { seed: selectedConversation.id }
+                      : avatarProps(selectedPeer, conversationTitle(selectedConversation, currentUser.id)))}
                   />}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold sm:text-[15px]">
-                      <UserName
-                        name={conversationTitle(selectedConversation, currentUser.id)}
-                        user={selectedPeer}
-                      />
+                      {selectedIsGroup ? (
+                        groupTitle(selectedConversation)
+                      ) : (
+                        <UserName
+                          name={conversationTitle(selectedConversation, currentUser.id)}
+                          user={selectedPeer}
+                        />
+                      )}
                     </span>
                     <span className={`mt-0.5 block truncate text-xs ${peerTyping ? 'font-semibold text-brand' : 'text-muted'}`}>
-                      {peerTyping ? 'Печатает…' : selectedPeer ? formatLastSeen(selectedPeer) : selectedConversation.type === 'saved' ? 'Сообщения и файлы для себя' : 'Личный диалог'}
+                      {selectedIsGroup
+                        ? `${groupMemberCountLabel(selectedConversation.memberCount)}${selectedConversation.description ? ` · ${selectedConversation.description}` : ''}`
+                        : peerTyping
+                          ? 'Печатает…'
+                          : selectedPeer
+                            ? formatLastSeen(selectedPeer)
+                            : selectedConversation.type === 'saved'
+                              ? 'Сообщения и файлы для себя'
+                              : 'Личный диалог'}
                     </span>
                   </span>
                 </button>
@@ -2032,7 +2117,8 @@ export function MessengerScreen({
                 >
                   <Search className="h-5 w-5" />
                 </IconButton>
-                {selectedPeer && <><IconButton
+                {/* В группах звонков пока нет: они остаются личными, как в планах. */}
+                {selectedPeer && !selectedIsGroup && <><IconButton
                   label="Аудиозвонок"
                   disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked}
                   onClick={() =>
@@ -2062,9 +2148,15 @@ export function MessengerScreen({
                   </IconButton>
                   {chatMenuOpen && (
                     <div className="absolute right-0 top-12 z-40 w-64 animate-fade-in rounded-2xl border border-line bg-elevated p-2 shadow-float">
-                      <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setChatMenuOpen(false); setPeerProfileOpen(true); }}>
-                        <UserRound className="h-4 w-4 text-brand" /> Профиль собеседника
-                      </button>
+                      {selectedIsGroup ? (
+                        <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setChatMenuOpen(false); setGroupInfoOpen(true); }}>
+                          <UsersRound className="h-4 w-4 text-brand" /> Информация о группе
+                        </button>
+                      ) : (
+                        <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setChatMenuOpen(false); setPeerProfileOpen(true); }}>
+                          <UserRound className="h-4 w-4 text-brand" /> Профиль собеседника
+                        </button>
+                      )}
                       <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void updateSelectedConversationSettings({ archived: !selectedConversation.archived }, selectedConversation.archived ? 'Диалог возвращён из архива.' : 'Диалог перемещён в архив.')}>
                         {selectedConversation.archived ? <ArchiveRestore className="h-4 w-4 text-brand" /> : <Archive className="h-4 w-4 text-brand" />}
                         {selectedConversation.archived ? 'Вернуть из архива' : 'Архивировать'}
@@ -2495,10 +2587,19 @@ export function MessengerScreen({
                     </IconButton>
                   </div>
                 )}
-                {selectedPeerDeleted ? (
+                {composeBlocked ? (
                   <p className="mx-auto flex max-w-[920px] items-center justify-center gap-2 rounded-[1.2rem] border border-line bg-canvas px-4 py-3 text-center text-xs text-muted">
-                    <UserRound className="h-4 w-4 shrink-0 text-muted" />
-                    Аккаунт удалён — поле ввода закрыто. Сообщения из истории остаются доступными.
+                    {selectedPeerDeleted ? (
+                      <>
+                        <UserRound className="h-4 w-4 shrink-0 text-muted" />
+                        Аккаунт удалён — поле ввода закрыто. Сообщения из истории остаются доступными.
+                      </>
+                    ) : (
+                      <>
+                        <Ban className="h-4 w-4 shrink-0 text-muted" />
+                        В этой группе вам запрещено писать. Права выдаёт владелец группы.
+                      </>
+                    )}
                   </p>
                 ) : (
                 <form className="mx-auto flex max-w-[920px] items-end gap-2" onSubmit={(event) => void sendMessage(event)}>
@@ -2508,12 +2609,12 @@ export function MessengerScreen({
                     className="sr-only"
                     multiple
                     onChange={handleSelectedFiles}
-                    disabled={sending || selectedBlockedByMe || Boolean(editingMessage)}
+                    disabled={sending || selectedBlockedByMe || !canAttach || Boolean(editingMessage)}
                   />
                   <IconButton
-                    label="Прикрепить фото или файл"
+                    label={canAttach ? 'Прикрепить фото или файл' : 'В этой группе запрещены медиа'}
                     type="button"
-                    disabled={sending || selectedBlockedByMe || Boolean(editingMessage)}
+                    disabled={sending || selectedBlockedByMe || !canAttach || Boolean(editingMessage)}
                     className="h-11 w-11 shrink-0"
                     onClick={() => fileInputRef.current?.click()}
                   >
@@ -2522,7 +2623,7 @@ export function MessengerScreen({
                   <IconButton
                     label={recording ? 'Остановить запись' : recordPending ? 'Ожидание доступа к устройству' : recordMode === 'video_circle' ? 'Записать видеокружок' : 'Голосовое сообщение'}
                     type="button"
-                    disabled={sending || selectedBlockedByMe || Boolean(editingMessage) || recordPending}
+                    disabled={sending || selectedBlockedByMe || !canAttach || Boolean(editingMessage) || recordPending}
                     className={`h-11 w-11 shrink-0 ${recording ? 'bg-danger text-white hover:bg-danger/85' : ''}`}
                     onClick={() => {
                       if (recording) stopVoiceRecording();
@@ -2603,7 +2704,17 @@ export function MessengerScreen({
                       onKeyDown={handleComposerKeyDown}
                       rows={1}
                       className="max-h-32 min-h-11 w-full resize-none rounded-[1.2rem] border border-line bg-canvas px-4 py-2.5 text-[15px] leading-6 outline-none transition placeholder:text-muted/65 focus:border-brand/50 focus:ring-4 focus:ring-brand/10"
-                      placeholder={selectedBlockedByMe ? 'Отправка недоступна' : editingMessage ? 'Измените сообщение…' : replyingTo ? 'Напишите ответ…' : 'Сообщение…'}
+                      placeholder={
+                        draftLinkBlocked
+                          ? 'В этой группе запрещены ссылки'
+                          : selectedBlockedByMe
+                            ? 'Отправка недоступна'
+                            : editingMessage
+                              ? 'Измените сообщение…'
+                              : replyingTo
+                                ? 'Напишите ответ…'
+                                : 'Сообщение…'
+                      }
                       disabled={sending || selectedBlockedByMe}
                     />
                   </label>
@@ -2613,6 +2724,7 @@ export function MessengerScreen({
                     disabled={
                       sending ||
                       selectedBlockedByMe ||
+                      draftLinkBlocked ||
                       draftAttachments.some((item) => item.status !== 'uploaded') ||
                       (!draft.trim() && !draftAttachments.some((item) => item.status === 'uploaded'))
                     }
@@ -2634,6 +2746,24 @@ export function MessengerScreen({
           currentUserId={currentUser.id}
           onClose={() => setSearchOpen(false)}
           onConversation={handleCreatedConversation}
+        />
+      )}
+      {groupCreateOpen && (
+        <GroupCreateModal
+          token={token}
+          currentUserId={currentUser.id}
+          onClose={() => setGroupCreateOpen(false)}
+          onCreated={handleCreatedConversation}
+        />
+      )}
+      {groupInfoOpen && selectedIsGroup && selectedConversation && (
+        <GroupInfoPanel
+          token={token}
+          currentUserId={currentUser.id}
+          conversation={selectedConversation}
+          onClose={() => setGroupInfoOpen(false)}
+          onUpdated={handleGroupUpdated}
+          onLeft={handleGroupLeft}
         />
       )}
       {profileOpen && (

@@ -20,6 +20,8 @@ import type { ChatService, ConversationView } from "./chat-service.js";
 
 const TITLE_MAX = 128;
 const DESCRIPTION_MAX = 2_000;
+/** Бессрочный мьют: в записи группы это null, в запросе — слово «forever». */
+export const MUTE_FOREVER = "forever";
 
 /** Ссылка-приглашение: короткий код в URL вида /join/<код>. */
 function newInviteCode(): string {
@@ -30,7 +32,11 @@ export type GroupMemberView = {
   user: PublicUser;
   role: GroupRole;
   permissions: EffectiveGroupPermissions;
-  mutedUntil: string | null;
+  /**
+   * Поля нет, когда мьюта нет вовсе; null — бессрочный мьют. Так «нет мьюта» и
+   * «заглушён навсегда» не смешиваются в одно значение.
+   */
+  mutedUntil?: string | null | undefined;
   addedByOwner: boolean;
 };
 
@@ -142,13 +148,17 @@ export class GroupService {
           (user.username ?? "").toLowerCase().includes(needle)
         );
       })
-      .map((user) => ({
-        user: toPublicUserFor(user, currentUserId),
-        role: groupRoleFor(group, user.id) ?? "member",
-        permissions: effectiveGroupPermissions(group, user.id),
-        mutedUntil: group.mutedMembers?.[user.id] ?? null,
-        addedByOwner: group.ownerId === user.id,
-      }))
+      .map((user) => {
+        const mutedUntil = group.mutedMembers?.[user.id];
+        return {
+          user: toPublicUserFor(user, currentUserId),
+          role: groupRoleFor(group, user.id) ?? "member",
+          permissions: effectiveGroupPermissions(group, user.id),
+          // Мьют без срока приходит как null, отсутствие записи — как пропуск поля.
+          ...(mutedUntil === undefined ? {} : { mutedUntil }),
+          addedByOwner: group.ownerId === user.id,
+        };
+      })
       // Владелец всегда первый, затем администраторы, остальные по имени.
       .sort((a, b) => rank(a.role) - rank(b.role) || a.user.displayName.localeCompare(b.user.displayName, "ru"));
 
@@ -370,14 +380,15 @@ export class GroupService {
       history.push(this.event(currentUserId, timestamp, "member_restricted", targetUserId));
     }
     if (input.mutedUntil !== undefined) {
-      if (input.mutedUntil === null && mutedMembers[targetUserId] === undefined) {
-        // Снятие мьюта того, кто и не был заглушён: просто ничего не делаем.
-      } else if (input.mutedUntil === null) {
-        delete mutedMembers[targetUserId];
+      if (input.mutedUntil === null) {
+        // null — снять мьют; «навсегда» приходит словом, иначе эти два случая
+        // было бы не различить.
+        if (mutedMembers[targetUserId] !== undefined) delete mutedMembers[targetUserId];
+        history.push(this.event(currentUserId, timestamp, "member_unmuted", targetUserId));
       } else {
-        mutedMembers[targetUserId] = input.mutedUntil;
+        mutedMembers[targetUserId] = input.mutedUntil === MUTE_FOREVER ? null : input.mutedUntil;
+        history.push(this.event(currentUserId, timestamp, "member_muted", targetUserId, input.mutedUntil));
       }
-      history.push(this.event(currentUserId, timestamp, "member_muted", targetUserId, input.mutedUntil ?? "forever"));
     }
 
     const updated = await this.repositories.conversations.update(group.id, {

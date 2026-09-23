@@ -133,6 +133,9 @@ export function conversationTitle(conversation: Conversation, currentUserId: str
 }
 
 export function conversationAvatar(conversation: Conversation, currentUserId: string): string | null {
+  // У группы нет «собеседника»: без своего фото показываем инициалы названия,
+  // а не аватар случайного участника.
+  if (conversation.type === 'group') return conversation.avatarUrl ?? null;
   return conversation.avatarUrl ?? getConversationPeer(conversation, currentUserId)?.avatarUrl ?? null;
 }
 
