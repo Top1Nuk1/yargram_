@@ -9,7 +9,17 @@ import type {
   User,
   UserReport,
 } from "../domain/models.js";
-import { toAttachmentView, toPublicUser, toPublicUserFor, ensurePublicUser, removedUserPlaceholder } from "../domain/models.js";
+import {
+  effectiveGroupPermissions,
+  ensurePublicUser,
+  groupCan,
+  groupRoleFor,
+  removedUserPlaceholder,
+  toAttachmentView,
+  toPublicUser,
+  toPublicUserFor,
+} from "../domain/models.js";
+import type { EffectiveGroupPermissions, GroupRole } from "../domain/models.js";
 import { AppError } from "../lib/errors.js";
 import type { Repositories } from "../repositories/types.js";
 
@@ -52,6 +62,11 @@ export type ConversationView = Omit<
   blockedByMe: boolean;
   /** Собеседник заблокировал меня: писать можно, но ему это не доставляется. */
   blockedByPeer: boolean;
+  /** Роль смотрящего в группе; у личного диалога и «Избранного» — null. */
+  role?: GroupRole | null;
+  /** Эффективные права смотрящего: клиент по ним включает или гасит кнопки. */
+  myPermissions?: EffectiveGroupPermissions;
+  memberCount?: number;
 };
 
 /** Сколько чего лежит в переписке с человеком — для разделов медиа в профиле. */
@@ -196,6 +211,8 @@ export class ChatService {
   ): Promise<{ message: MessageView; memberIds: string[] }> {
     const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
     await this.assertConversationInteractionAllowed(currentUserId, conversation);
+    // В группе права важнее блокировок: запреты участников и общие правила группы.
+    await this.assertGroupSendingAllowed(currentUserId, conversation, text, options.attachmentIds ?? []);
     if (replyToId !== undefined) {
       const replyTarget = await this.repositories.messages.findById(replyToId);
       if (!replyTarget || replyTarget.conversationId !== conversationId) {
@@ -573,6 +590,36 @@ export class ChatService {
     return conversations.map((conversation) => conversation.id);
   }
 
+  /** Публичный просмотр беседы: нужен сервису групп, чтобы разослать обновление. */
+  async viewConversation(currentUserId: string, conversationId: string): Promise<ConversationView> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    return this.toConversationView(conversation, currentUserId);
+  }
+
+  /**
+   * Служебное сообщение группы («Алиса добавила Боба»). Пишется от имени того,
+   * кто совершил действие, чтобы в истории было видно, кто именно.
+   */
+  async createGroupEventMessage(
+    conversationId: string,
+    actorId: string,
+    text: string,
+    systemEvent: "user_joined" | "user_left",
+  ): Promise<{ message: MessageView; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(actorId, conversationId);
+    const message = await this.repositories.messages.create({
+      conversationId,
+      senderId: actorId,
+      text,
+      kind: "system",
+      systemEvent,
+    });
+    return {
+      message: await this.toMessageView(message),
+      memberIds: conversation.memberIds,
+    };
+  }
+
   async memberIdsForConversation(userId: string, conversationId: string): Promise<string[]> {
     const conversation = await this.getAuthorizedConversation(userId, conversationId);
     await this.assertConversationInteractionAllowed(userId, conversation);
@@ -627,6 +674,8 @@ export class ChatService {
     currentUserId: string,
     conversation: Conversation,
   ): Promise<void> {
+    // В группе личные блокировки не закрывают общий чат: там решают права группы.
+    if (conversation.type === "group") return;
     const otherId = conversation.memberIds.find((id) => id !== currentUserId);
     if (!otherId) return;
     await this.assertNotBlockedByMe(currentUserId, otherId);
@@ -659,6 +708,25 @@ export class ChatService {
     // Удалённый аккаунт нельзя ни открыть заново, ни вызвать.
     await this.assertAccountAlive(firstUserId, "Аккаунт собеседника удалён.");
     await this.assertAccountAlive(secondUserId, "Аккаунт собеседника удалён. Звонок и переписка недоступны.");
+  }
+
+  /** Права группы: писать, отправлять медиа и ссылки — три независимых запрета. */
+  private async assertGroupSendingAllowed(
+    currentUserId: string,
+    conversation: Conversation,
+    text: string,
+    attachmentIds: string[],
+  ): Promise<void> {
+    if (conversation.type !== "group") return;
+    if (!groupCan(conversation, currentUserId, "send_messages")) {
+      throw new AppError(403, "GROUP_SENDING_DENIED", "В этой группе вам запрещено писать");
+    }
+    if (attachmentIds.length > 0 && !groupCan(conversation, currentUserId, "send_media")) {
+      throw new AppError(403, "GROUP_MEDIA_DENIED", "В этой группе запрещено отправлять медиа");
+    }
+    if (LINK_PATTERN.test(text) && !groupCan(conversation, currentUserId, "send_links")) {
+      throw new AppError(403, "GROUP_LINKS_DENIED", "В этой группе запрещено отправлять ссылки");
+    }
   }
 
   /** Удалённый аккаунт остаётся в базе, но общение с ним закрыто. */
@@ -748,6 +816,7 @@ export class ChatService {
       currentUserId,
     );
 
+    const isGroup = conversation.type === "group";
     return {
       id: conversation.id,
       type: conversation.type,
@@ -763,6 +832,28 @@ export class ChatService {
       blocked: blockedByMe || blockedByPeer,
       blockedByMe,
       blockedByPeer,
+      ...(isGroup
+        ? {
+            // Название, аватар и описание группы: у личного диалога их нет.
+            title: conversation.title ?? "",
+            description: conversation.description ?? "",
+            avatarUrl: conversation.avatarUrl ?? null,
+            // Пустая строка — «владельца нет»: поле обязательное в записи группы.
+            ownerId: conversation.ownerId ?? "",
+            adminIds: conversation.adminIds ?? [],
+            adminPermissions: conversation.adminPermissions ?? {},
+            adminDefaults: conversation.adminDefaults ?? {},
+            inviteCode: conversation.inviteCode ?? "",
+            // Права участников и личные ограничения: клиент рисует по ним галочки.
+            permissions: conversation.permissions ?? {},
+            restrictions: conversation.restrictions ?? {},
+            mutedMembers: conversation.mutedMembers ?? {},
+            history: conversation.history ?? [],
+            role: groupRoleFor(conversation, currentUserId),
+            myPermissions: effectiveGroupPermissions(conversation, currentUserId),
+            memberCount: conversation.memberIds.length,
+          }
+        : {}),
     };
   }
 

@@ -84,10 +84,60 @@ export type CurrentUser = PublicUser & {
   wallpaperUrl?: string;
 };
 
+/**
+ * Отдельные права группы. Включаются независимо друг от друга: владелец
+ * собирает из них любую комбинацию для администраторов и участников.
+ */
+export const groupPermissions = [
+  "send_messages",
+  "send_media",
+  "send_links",
+  "send_polls",
+  "add_members",
+  "pin_messages",
+  "change_info",
+  "delete_messages",
+] as const;
+
+export type GroupPermission = (typeof groupPermissions)[number];
+/**
+ * `| undefined` в значении нужен из-за exactOptionalPropertyTypes: схема запроса
+ * присылает объект, где ключ может присутствовать со значением undefined.
+ */
+export type GroupPermissions = Partial<Record<GroupPermission, boolean | undefined>>;
+/** Права после вычисления: у каждого пункта есть конкретный ответ «да» или «нет». */
+export type EffectiveGroupPermissions = Record<GroupPermission, boolean>;
+
+/** Роль считается из записи группы, отдельного поля «роль» нет. */
+export type GroupRole = "owner" | "admin" | "member" | "restricted";
+
+/** Запись истории изменений группы: кто и что сделал. */
+export type GroupEvent = {
+  id: string;
+  at: string;
+  actorId: string;
+  kind:
+    | "created"
+    | "renamed"
+    | "description_changed"
+    | "avatar_changed"
+    | "member_added"
+    | "member_removed"
+    | "member_left"
+    | "admin_added"
+    | "admin_removed"
+    | "permissions_changed"
+    | "member_restricted"
+    | "member_muted";
+  targetId?: string | undefined;
+  detail?: string | undefined;
+};
+
 export type Conversation = {
   id: string;
-  type: "direct" | "saved";
+  type: "direct" | "saved" | "group";
   memberIds: string[];
+  /** Пара участников личного диалога; у групп и «Избранного» пустая строка. */
   directKey: string;
   createdAt: string;
   updatedAt: string;
@@ -97,7 +147,96 @@ export type Conversation = {
   pinnedMessageIds: string[];
   archivedBy: string[];
   mutedUntilBy: Record<string, string | null>;
+  // ---- Группы ----
+  title?: string | undefined;
+  description?: string | undefined;
+  avatarUrl?: string | null | undefined;
+  /** Владелец группы: единственный, кто может удалить группу и сменить владельца. */
+  ownerId?: string | undefined;
+  adminIds?: string[] | undefined;
+  /** Права конкретного администратора; отсутствующие берутся из adminDefaults. */
+  adminPermissions?: Record<string, GroupPermissions> | undefined;
+  /** Права администраторов по умолчанию. */
+  adminDefaults?: GroupPermissions | undefined;
+  /** Код из ссылки-приглашения t.me-подобного вида. */
+  inviteCode?: string | undefined;
+  /** Права обычных участников; отсутствующие считаются разрешёнными. */
+  permissions?: GroupPermissions | undefined;
+  /** Личные ограничения участника поверх общих прав. */
+  restrictions?: Record<string, GroupPermissions> | undefined;
+  /** Мьют участника до указанного времени (ISO) или бессрочно при null. */
+  mutedMembers?: Record<string, string | null> | undefined;
+  /** Кто вышел из группы: чат у него в списке не показывается. */
+  leftIds?: string[] | undefined;
+  history?: GroupEvent[] | undefined;
 };
+
+/** Права администратора по умолчанию: всё, кроме смены владельца. */
+export const defaultAdminPermissions = (): GroupPermissions =>
+  Object.fromEntries(groupPermissions.map((permission) => [permission, true])) as GroupPermissions;
+
+/**
+ * Роль участника считается из записи группы: отдельного поля «роль» нет,
+ * чтобы не пришлось синхронизировать два источника правды.
+ */
+export function groupRoleFor(conversation: Conversation, userId: string): GroupRole | null {
+  if (conversation.type !== "group") return null;
+  if (!conversation.memberIds.includes(userId)) return null;
+  if (conversation.ownerId === userId) return "owner";
+  if ((conversation.adminIds ?? []).includes(userId)) return "admin";
+  const personal = conversation.restrictions?.[userId];
+  if (personal && Object.values(personal).some((allowed) => allowed === false)) return "restricted";
+  if (isGroupMemberMuted(conversation, userId)) return "restricted";
+  return "member";
+}
+
+/** Мьют участника: до времени или бессрочно (null). Прошедший мьют не считается. */
+export function isGroupMemberMuted(
+  conversation: Conversation,
+  userId: string,
+  now: number = Date.now(),
+): boolean {
+  const until = conversation.mutedMembers?.[userId];
+  if (until === undefined) return false;
+  if (until === null) return true;
+  return Date.parse(until) > now;
+}
+
+/**
+ * Проверка одного права. Порядок: владелец → всё; администратор → свои права;
+ * участник → общие права группы, поверх них личные ограничения и мьют.
+ */
+export function groupCan(
+  conversation: Conversation,
+  userId: string,
+  permission: GroupPermission,
+  now: number = Date.now(),
+): boolean {
+  const role = groupRoleFor(conversation, userId);
+  if (!role) return false;
+  if (role === "owner") return true;
+  if (role === "admin") {
+    const own = conversation.adminPermissions?.[userId]?.[permission];
+    if (own !== undefined) return own;
+    return conversation.adminDefaults?.[permission] ?? true;
+  }
+  const groupDefault = conversation.permissions?.[permission] ?? true;
+  const personal = conversation.restrictions?.[userId]?.[permission];
+  if (personal !== undefined) return personal && groupDefault;
+  if (permission === "send_messages" && isGroupMemberMuted(conversation, userId, now)) return false;
+  return groupDefault;
+}
+
+/** Все права сразу: клиент показывает по ним доступные кнопки. */
+export function effectiveGroupPermissions(
+  conversation: Conversation,
+  userId: string,
+  now: number = Date.now(),
+): EffectiveGroupPermissions {
+  return Object.fromEntries(
+    groupPermissions.map((permission) => [permission, groupCan(conversation, userId, permission, now)]),
+  ) as EffectiveGroupPermissions;
+}
 
 export type MessageReaction = {
   userId: string;

@@ -17,6 +17,7 @@ import { AuthService } from "../src/services/auth-service.js";
 import { AdminService } from "../src/services/admin-service.js";
 import { DraftService } from "../src/services/draft-service.js";
 import { FolderService } from "../src/services/folder-service.js";
+import { GroupService } from "../src/services/group-service.js";
 import { ScheduledMessageService } from "../src/services/scheduled-message-service.js";
 import { ChatService, type MessageView } from "../src/services/chat-service.js";
 import { JsonDatabase } from "../src/storage/json-database.js";
@@ -54,6 +55,7 @@ async function createHarness(seedState?: unknown) {
   const chatService = new ChatService(repositories);
   const events = new RealtimeEvents();
   const adminService = new AdminService(repositories, events);
+  const groupService = new GroupService(repositories, events, chatService);
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);
   const scheduledMessageService = new ScheduledMessageService(repositories, chatService, events);
@@ -62,6 +64,7 @@ async function createHarness(seedState?: unknown) {
     repositories,
     authService,
     chatService,
+    groupService,
     adminService,
     draftService,
     folderService,
@@ -76,6 +79,7 @@ async function createHarness(seedState?: unknown) {
     repositories,
     authService,
     chatService,
+    groupService,
     draftService,
     folderService,
     scheduledMessageService,
@@ -2114,6 +2118,360 @@ describe("Yargram API", () => {
       bobClient.close();
       await closeRealtimeServer(socketServer);
     }
+  });
+
+  it("creates a group, invites by link and shows it to every member", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "group-alice@example.com", "GroupAlice");
+    const bob = await register(harness.app, "group-bob@example.com", "GroupBob");
+    const carol = await register(harness.app, "group-carol@example.com", "GroupCarol");
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "  Поход в горы  ", description: "Снаряжение и маршрут", memberIds: [bob.user.id] });
+    expect(created.status).toBe(201);
+    const group = created.body.conversation;
+    const groupId = group.id as string;
+    expect(group).toMatchObject({
+      type: "group",
+      title: "Поход в горы",
+      description: "Снаряжение и маршрут",
+      ownerId: alice.user.id,
+      role: "owner",
+      memberCount: 2,
+    });
+    // Владелец всегда первый, название обрезано по краям.
+    expect(group.members.map((member: { id: string }) => member.id)).toEqual([
+      alice.user.id,
+      bob.user.id,
+    ]);
+    expect(group.myPermissions.send_messages).toBe(true);
+    expect(group.inviteCode).toBeTruthy();
+
+    // Группа видна в списке у обоих участников.
+    for (const member of [alice, bob]) {
+      const list = await request(harness.app)
+        .get("/api/conversations")
+        .set("Authorization", bearer(member.accessToken));
+      expect(list.body.conversations.map((item: { id: string }) => item.id)).toContain(groupId);
+    }
+    // Посторонний не видит ни группу, ни её состав.
+    const outsiderMembers = await request(harness.app)
+      .get(`/api/groups/${groupId}/members`)
+      .set("Authorization", bearer(carol.accessToken));
+    expect(outsiderMembers.status).toBe(403);
+
+    // Ссылка-приглашение работает и впускает нового участника.
+    const joined = await request(harness.app)
+      .post("/api/groups/join")
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ code: group.inviteCode });
+    expect(joined.status).toBe(200);
+    expect(joined.body.conversation.memberCount).toBe(3);
+    expect(joined.body.conversation.role).toBe("member");
+
+    // Системное сообщение о вступлении видно участникам.
+    const history = await request(harness.app)
+      .get(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(history.body.messages.at(-1)).toMatchObject({
+      kind: "system",
+      systemEvent: "user_joined",
+    });
+
+    // Повторный вход по той же ссылке ничего не ломает.
+    const again = await request(harness.app)
+      .post("/api/groups/join")
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ code: group.inviteCode });
+    expect(again.status).toBe(200);
+    expect(again.body.conversation.memberCount).toBe(3);
+
+    // Старая ссылка перестаёт работать после перевыпуска.
+    const regenerated = await request(harness.app)
+      .post(`/api/groups/${groupId}/invite`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(regenerated.body.conversation.inviteCode).not.toBe(group.inviteCode);
+    const stale = await request(harness.app)
+      .post("/api/groups/join")
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ code: group.inviteCode });
+    expect(stale.status).toBe(404);
+
+    // Без названия группу не создать.
+    const untitled = await request(harness.app)
+      .post("/api/groups")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "   " });
+    expect(untitled.status).toBe(400);
+  });
+
+  it("keeps owner, admin and member rights apart inside a group", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "rights-alice@example.com", "RightsAlice");
+    const bob = await register(harness.app, "rights-bob@example.com", "RightsBob");
+    const carol = await register(harness.app, "rights-carol@example.com", "RightsCarol");
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "Права", memberIds: [bob.user.id, carol.user.id] });
+    const groupId = created.body.conversation.id as string;
+
+    // Администратор с урезанными правами не может менять информацию о группе.
+    const promoted = await request(harness.app)
+      .post(`/api/groups/${groupId}/admins`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id, admin: true, permissions: { change_info: false } });
+    expect(promoted.status).toBe(200);
+    const bobRename = await request(harness.app)
+      .patch(`/api/groups/${groupId}`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ title: "Захват" });
+    expect(bobRename.status).toBe(403);
+    // Но право, которое ему оставили по умолчанию, работает.
+    const bobAdds = await request(harness.app)
+      .post(`/api/groups/${groupId}/members`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ userIds: [carol.user.id] });
+    expect(bobAdds.status).toBe(200);
+
+    // Назначать администраторов может только владелец.
+    const bobPromotes = await request(harness.app)
+      .post(`/api/groups/${groupId}/admins`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ userId: carol.user.id, admin: true });
+    expect(bobPromotes.status).toBe(403);
+
+    // Владелец может всё и запрещает обычным участникам отправку сообщений.
+    const renamed = await request(harness.app)
+      .patch(`/api/groups/${groupId}`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "Права и роли" });
+    expect(renamed.body.conversation.title).toBe("Права и роли");
+    await request(harness.app)
+      .put(`/api/groups/${groupId}/permissions`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ permissions: { send_messages: false } });
+
+    const carolWrite = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ text: "Мне запрещено" });
+    expect(carolWrite.status).toBe(403);
+    expect(carolWrite.body.error.code).toBe("GROUP_SENDING_DENIED");
+    // Владелец пишет всегда, даже когда участникам запрещено.
+    const ownerWrite = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ text: "Слово владельца" });
+    expect(ownerWrite.status).toBe(201);
+
+    // Медиа и ссылки — отдельные запреты, а не один общий.
+    await request(harness.app)
+      .put(`/api/groups/${groupId}/permissions`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ permissions: { send_messages: true, send_links: false } });
+    const link = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ text: "Смотри https://example.com" });
+    expect(link.status).toBe(403);
+    expect(link.body.error.code).toBe("GROUP_LINKS_DENIED");
+    const plain = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ text: "Обычный текст без ссылки" });
+    expect(plain.status).toBe(201);
+
+    // Личное ограничение участника перебивает общие права группы.
+    const restricted = await request(harness.app)
+      .post(`/api/groups/${groupId}/restrict`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: carol.user.id, permissions: { send_messages: false } });
+    expect(restricted.status).toBe(200);
+    const restrictedWrite = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ text: "Ещё попытка" });
+    expect(restrictedWrite.status).toBe(403);
+    // Роль участника стала «ограниченный».
+    const members = await request(harness.app)
+      .get(`/api/groups/${groupId}/members`)
+      .set("Authorization", bearer(alice.accessToken));
+    const roles = Object.fromEntries(
+      members.body.members.map((member: { user: { id: string }; role: string }) => [
+        member.user.id,
+        member.role,
+      ]),
+    );
+    expect(roles[alice.user.id]).toBe("owner");
+    expect(roles[bob.user.id]).toBe("admin");
+    expect(roles[carol.user.id]).toBe("restricted");
+    // Поиск по составу работает.
+    const searched = await request(harness.app)
+      .get(`/api/groups/${groupId}/members?q=carol`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(searched.body.members).toHaveLength(1);
+  });
+
+  it("mutes a member, removes them, and records the group change history", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "history-alice@example.com", "HistoryAlice");
+    const bob = await register(harness.app, "history-bob@example.com", "HistoryBob");
+    const carol = await register(harness.app, "history-carol@example.com", "HistoryCarol");
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "История", memberIds: [bob.user.id] });
+    const groupId = created.body.conversation.id as string;
+    const code = created.body.conversation.inviteCode as string;
+
+    // Мьют закрывает отправку, даже когда группа в целом писать разрешает.
+    const mutedUntil = new Date(Date.now() + 60 * 60 * 1_000).toISOString();
+    const muted = await request(harness.app)
+      .post(`/api/groups/${groupId}/restrict`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id, mutedUntil });
+    expect(muted.status).toBe(200);
+    const mutedWrite = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ text: "Из-под мьюта" });
+    expect(mutedWrite.status).toBe(403);
+
+    // Прошедший мьют отправку не закрывает.
+    const past = await request(harness.app)
+      .post(`/api/groups/${groupId}/restrict`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id, mutedUntil: new Date(Date.now() - 1_000).toISOString() });
+    expect(past.status).toBe(200);
+    const afterMute = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ text: "Мьют кончился" });
+    expect(afterMute.status).toBe(201);
+
+    // Владельца нельзя ни удалить, ни ограничить.
+    const ownerRemoval = await request(harness.app)
+      .delete(`/api/groups/${groupId}/members/${alice.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(ownerRemoval.status).toBe(400);
+    const ownerRestriction = await request(harness.app)
+      .post(`/api/groups/${groupId}/restrict`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: alice.user.id, permissions: { send_messages: false } });
+    expect(ownerRestriction.status).toBe(400);
+
+    // Владелец не может выйти, не передав группу.
+    const ownerLeave = await request(harness.app)
+      .post(`/api/groups/${groupId}/leave`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(ownerLeave.status).toBe(400);
+
+    // Удалённый участник теряет группу: её нет в списке и писать нельзя.
+    const removed = await request(harness.app)
+      .delete(`/api/groups/${groupId}/members/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(removed.status).toBe(200);
+    expect(removed.body.conversation.memberCount).toBe(1);
+    const bobList = await request(harness.app)
+      .get("/api/conversations")
+      .set("Authorization", bearer(bob.accessToken));
+    expect(bobList.body.conversations.map((item: { id: string }) => item.id)).not.toContain(groupId);
+    const bobWrite = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ text: "Я тут больше не участник" });
+    expect(bobWrite.status).toBe(403);
+
+    // Выйти самому можно, а вернуться — по ссылке.
+    await request(harness.app)
+      .post("/api/groups/join")
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ code });
+    const carolLeave = await request(harness.app)
+      .post(`/api/groups/${groupId}/leave`)
+      .set("Authorization", bearer(carol.accessToken));
+    expect(carolLeave.status).toBe(200);
+    const carolBack = await request(harness.app)
+      .post("/api/groups/join")
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ code });
+    expect(carolBack.status).toBe(200);
+    expect(carolBack.body.conversation.memberCount).toBe(2);
+
+    // История изменений: новые события идут первыми и подписаны автором.
+    const history = await request(harness.app)
+      .get(`/api/groups/${groupId}/history`)
+      .set("Authorization", bearer(alice.accessToken));
+    const kinds = history.body.events.map((item: { kind: string }) => item.kind);
+    expect(kinds[0]).toBe("member_added");
+    for (const expected of [
+      "created",
+      "member_muted",
+      "member_removed",
+      "member_left",
+      "member_added",
+    ]) {
+      expect(kinds).toContain(expected);
+    }
+    expect(history.body.events.at(-1)).toMatchObject({
+      kind: "created",
+      actorId: alice.user.id,
+      detail: "История",
+    });
+  });
+
+  it("refuses deleted accounts and closes groups to strangers", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "closed-alice@example.com", "ClosedAlice");
+    const bob = await register(harness.app, "closed-bob@example.com", "ClosedBob");
+    await harness.repositories.users.update(alice.user.id, { isOwner: true });
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set(aliceAuth)
+      .send({ title: "Закрытая", memberIds: [bob.user.id] });
+    const groupId = created.body.conversation.id as string;
+
+    // Сначала убираем Боба из группы, потом удаляем аккаунт: вернуть его нельзя.
+    await request(harness.app).delete(`/api/groups/${groupId}/members/${bob.user.id}`).set(aliceAuth);
+    const removed = await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(aliceAuth);
+    expect(removed.status).toBe(200);
+    const addDeleted = await request(harness.app)
+      .post(`/api/groups/${groupId}/members`)
+      .set(aliceAuth)
+      .send({ userIds: [bob.user.id] });
+    expect(addDeleted.status).toBe(400);
+    expect(addDeleted.body.error.code).toBe("ACCOUNT_DELETED");
+
+    const third = await register(harness.app, "closed-third@example.com", "ClosedThird");
+    const addMissing = await request(harness.app)
+      .post(`/api/groups/${groupId}/members`)
+      .set(aliceAuth)
+      .send({ userIds: ["6b1f0a3e-3a4c-4d5e-8f90-1a2b3c4d5e6f"] });
+    expect(addMissing.status).toBe(404);
+    expect(addMissing.body.error.code).toBe("USER_NOT_FOUND");
+
+    // Личный диалог группой не считается: группы по нему не находится.
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: third.user.id });
+    const directId = direct.body.conversation.id as string;
+    const members = await request(harness.app)
+      .get(`/api/groups/${directId}/members`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(members.status).toBe(404);
+    // И несуществующая группа тоже.
+    const missing = await request(harness.app)
+      .get("/api/groups/8f14e45f-ceea-467a-9f5b-1c1e2f3a4b5c/members")
+      .set("Authorization", bearer(alice.accessToken));
+    expect(missing.status).toBe(404);
   });
 });
 

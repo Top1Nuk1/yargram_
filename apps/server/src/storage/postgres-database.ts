@@ -22,6 +22,7 @@ const columns: Record<(typeof entityTables)[number][0], string> = {
     favorite_ids jsonb GENERATED ALWAYS AS (payload->'favoriteMessageIds') STORED`,
   conversations: `direct_key text GENERATED ALWAYS AS (payload->>'directKey') STORED NOT NULL,
     member_ids jsonb GENERATED ALWAYS AS (payload->'memberIds') STORED,
+    invite_code text GENERATED ALWAYS AS (payload->>'inviteCode') STORED,
     updated_at text GENERATED ALWAYS AS (payload->>'updatedAt') STORED`,
   messages: `conversation_id text GENERATED ALWAYS AS (payload->>'conversationId') STORED NOT NULL,
     created_at text GENERATED ALWAYS AS (payload->>'createdAt') STORED NOT NULL,
@@ -51,7 +52,10 @@ export const postgresSchemaSql = `${entityTables.map(([table]) => `
   CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users (email_key);
   CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username_key);
   CREATE INDEX IF NOT EXISTS users_favorites_idx ON users USING gin (favorite_ids);
+  ALTER TABLE conversations ADD COLUMN IF NOT EXISTS invite_code text GENERATED ALWAYS AS (payload->>'inviteCode') STORED;
   CREATE UNIQUE INDEX IF NOT EXISTS conversations_direct_key_unique ON conversations (direct_key);
+  -- У личных диалогов и «Избранного» кода нет: пустые значения в индекс не попадают.
+  CREATE UNIQUE INDEX IF NOT EXISTS conversations_invite_code_unique ON conversations (invite_code) WHERE invite_code IS NOT NULL AND invite_code <> '';
   CREATE INDEX IF NOT EXISTS conversations_members_idx ON conversations USING gin (member_ids);
   CREATE INDEX IF NOT EXISTS conversations_updated_idx ON conversations (updated_at DESC, sequence);
   CREATE INDEX IF NOT EXISTS messages_conversation_created_idx ON messages (conversation_id, created_at DESC, sequence);

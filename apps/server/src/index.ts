@@ -11,6 +11,7 @@ import { attachSocketServer } from "./realtime/socket-server.js";
 import { AuthService } from "./services/auth-service.js";
 import { AdminService } from "./services/admin-service.js";
 import { ChatService } from "./services/chat-service.js";
+import { GroupService } from "./services/group-service.js";
 import { DraftService } from "./services/draft-service.js";
 import { FolderService } from "./services/folder-service.js";
 import { ScheduledMessageService } from "./services/scheduled-message-service.js";
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
   const chatService = new ChatService(repositories);
   const events = new RealtimeEvents();
   const adminService = new AdminService(repositories, events);
+  const groupService = new GroupService(repositories, events, chatService);
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);
   const scheduledMessageService = new ScheduledMessageService(repositories, chatService, events);
@@ -60,6 +62,7 @@ async function main(): Promise<void> {
     repositories,
     authService,
     chatService,
+    groupService,
     adminService,
     draftService,
     folderService,

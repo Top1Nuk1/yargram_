@@ -4,6 +4,8 @@ import type {
   CallMessage,
   CallRecord,
   Conversation,
+  GroupEvent,
+  GroupPermissions,
   ConversationDraft,
   ConversationFolder,
   Message,
@@ -60,12 +62,42 @@ export interface UserRepository {
   delete(id: string): Promise<User | null>;
 }
 
+export type CreateGroupInput = {
+  ownerId: string;
+  title: string;
+  description?: string | undefined;
+  avatarUrl?: string | null | undefined;
+  memberIds: string[];
+  inviteCode?: string | undefined;
+};
+
+export type UpdateConversationInput = {
+  title?: string | undefined;
+  description?: string | undefined;
+  avatarUrl?: string | null | undefined;
+  memberIds?: string[] | undefined;
+  ownerId?: string | undefined;
+  adminIds?: string[] | undefined;
+  adminPermissions?: Record<string, GroupPermissions> | undefined;
+  adminDefaults?: GroupPermissions | undefined;
+  inviteCode?: string | undefined;
+  permissions?: GroupPermissions | undefined;
+  restrictions?: Record<string, GroupPermissions> | undefined;
+  mutedMembers?: Record<string, string | null> | undefined;
+  leftIds?: string[] | undefined;
+  history?: GroupEvent[] | undefined;
+};
+
 export interface ConversationRepository {
   findOrCreateSaved(userId: string): Promise<{ conversation: Conversation; created: boolean }>;
   findOrCreateDirect(firstUserId: string, secondUserId: string): Promise<{
     conversation: Conversation;
     created: boolean;
   }>;
+  /** Группа: владелец всегда первый участник, права по умолчанию разрешают всё. */
+  createGroup(input: CreateGroupInput): Promise<Conversation>;
+  findByInviteCode(code: string): Promise<Conversation | null>;
+  update(id: string, input: UpdateConversationInput): Promise<Conversation>;
   findById(id: string): Promise<Conversation | null>;
   listForUser(userId: string): Promise<Conversation[]>;
   /** Yargram 0.1 compatibility: null clears every pin. */

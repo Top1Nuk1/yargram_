@@ -12,6 +12,7 @@ import type {
   User,
   UserReport,
 } from "../domain/models.js";
+import { defaultAdminPermissions } from "../domain/models.js";
 import { AppError } from "../lib/errors.js";
 import type { PostgresDatabase } from "../storage/postgres-database.js";
 import { RepositoryConflictError, type Repositories } from "./types.js";
@@ -186,8 +187,47 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
           return { conversation: existing, created: false };
         });
       },
+      async createGroup(input) {
+        const timestamp = now();
+        const memberIds = [input.ownerId, ...input.memberIds.filter((id) => id !== input.ownerId)];
+        const conversation: Conversation = {
+          id: randomUUID(), type: "group", memberIds, directKey: "",
+          createdAt: timestamp, updatedAt: timestamp, pinnedMessageIds: [], archivedBy: [], mutedUntilBy: {},
+          title: input.title, description: input.description ?? "", avatarUrl: input.avatarUrl ?? null,
+          ownerId: input.ownerId, adminIds: [], adminDefaults: defaultAdminPermissions(),
+          inviteCode: input.inviteCode ?? "", permissions: {}, restrictions: {}, mutedMembers: {}, leftIds: [],
+          history: [{ id: randomUUID(), at: timestamp, actorId: input.ownerId, kind: "created", detail: input.title }],
+        };
+        return database.transaction(async (client) => {
+          await insert(client, "conversations", conversation);
+          return conversation;
+        });
+      },
+      findByInviteCode: async (code) => {
+        if (!code) return null;
+        return (await select<Conversation>(pool, "conversations", "payload->>'inviteCode' = $1", [code]))[0] ?? null;
+      },
+      update: (id, input) => mutate<Conversation>("conversations", id, "Conversation", (conversation) => {
+        if (input.title !== undefined) conversation.title = input.title;
+        if (input.description !== undefined) conversation.description = input.description;
+        if (input.avatarUrl !== undefined) conversation.avatarUrl = input.avatarUrl;
+        if (input.memberIds !== undefined) conversation.memberIds = input.memberIds;
+        if (input.ownerId !== undefined) conversation.ownerId = input.ownerId;
+        if (input.adminIds !== undefined) conversation.adminIds = input.adminIds;
+        if (input.adminPermissions !== undefined) conversation.adminPermissions = input.adminPermissions;
+        if (input.adminDefaults !== undefined) conversation.adminDefaults = input.adminDefaults;
+        if (input.inviteCode !== undefined) conversation.inviteCode = input.inviteCode;
+        if (input.permissions !== undefined) conversation.permissions = input.permissions;
+        if (input.restrictions !== undefined) conversation.restrictions = input.restrictions;
+        if (input.mutedMembers !== undefined) conversation.mutedMembers = input.mutedMembers;
+        if (input.leftIds !== undefined) conversation.leftIds = input.leftIds;
+        if (input.history !== undefined) conversation.history = input.history;
+        conversation.updatedAt = now();
+      }),
       findById: (id) => find<Conversation>(pool, "conversations", id),
-      listForUser: (id) => select<Conversation>(pool, "conversations", "member_ids ? $1", [id], "ORDER BY updated_at DESC, sequence"),
+      // Вышедший участник остаётся в memberIds, но не видит группу в своём списке.
+      listForUser: (id) => select<Conversation>(pool, "conversations",
+        "member_ids ? $1 AND NOT COALESCE(payload->'leftIds' ? $1, false)", [id], "ORDER BY updated_at DESC, sequence"),
       setPinnedMessage: (id, messageId) => mutate<Conversation>("conversations", id, "Conversation", (conversation) => {
         conversation.pinnedMessageIds = messageId === null ? [] : [...conversation.pinnedMessageIds.filter((item) => item !== messageId), messageId];
         latestPin(conversation);

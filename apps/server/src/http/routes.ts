@@ -9,6 +9,7 @@ import type { RealtimeEvents } from "../realtime/events.js";
 import type { AuthService } from "../services/auth-service.js";
 import type { AdminService } from "../services/admin-service.js";
 import type { ChatService } from "../services/chat-service.js";
+import type { GroupService } from "../services/group-service.js";
 import type { DraftService } from "../services/draft-service.js";
 import type { FolderService } from "../services/folder-service.js";
 import type { ScheduledMessageService } from "../services/scheduled-message-service.js";
@@ -119,6 +120,54 @@ const editMessageSchema = z.object({ text: z.string().trim().max(4_000) });
 const pinMessageSchema = z.object({ messageId: z.string().uuid() });
 const reactionSchema = z.object({ emoji: z.enum(allowedReactionEmojis) });
 const forwardSchema = z.object({ targetConversationId: z.string().uuid() });
+
+// ---- Группы ----
+const groupPermissionsSchema = z.object({
+  send_messages: z.boolean().optional(),
+  send_media: z.boolean().optional(),
+  send_links: z.boolean().optional(),
+  send_polls: z.boolean().optional(),
+  add_members: z.boolean().optional(),
+  pin_messages: z.boolean().optional(),
+  change_info: z.boolean().optional(),
+  delete_messages: z.boolean().optional(),
+});
+const createGroupSchema = z.object({
+  title: z.string().trim().min(1).max(128),
+  description: z.string().trim().max(2_000).optional(),
+  avatarUrl: z.string().trim().max(2_000).nullable().optional(),
+  memberIds: z.array(z.string().uuid()).max(200).optional(),
+  // Клиент может прислать любое из двух именований.
+  userIds: z.array(z.string().uuid()).max(200).optional(),
+});
+const updateGroupSchema = z.object({
+  title: z.string().trim().min(1).max(128).optional(),
+  description: z.string().trim().max(2_000).optional(),
+  avatarUrl: z.string().trim().max(2_000).nullable().optional(),
+});
+const groupParamsSchema = z.object({ groupId: z.string().uuid() });
+const groupMemberParamsSchema = groupParamsSchema.extend({ userId: z.string().uuid() });
+const membersQuerySchema = z.object({ q: z.string().trim().max(100).optional() });
+const addMembersSchema = z.object({
+  userIds: z.array(z.string().uuid()).min(1).max(50).optional(),
+  memberIds: z.array(z.string().uuid()).min(1).max(50).optional(),
+});
+const joinGroupSchema = z.object({
+  code: z.string().trim().min(1).max(64).optional(),
+  inviteCode: z.string().trim().min(1).max(64).optional(),
+});
+const setAdminSchema = z.object({
+  userId: z.string().uuid(),
+  admin: z.boolean().default(true),
+  permissions: groupPermissionsSchema.optional(),
+});
+const groupPermissionsBodySchema = z.object({ permissions: groupPermissionsSchema });
+const restrictMemberSchema = z.object({
+  userId: z.string().uuid(),
+  permissions: groupPermissionsSchema.optional(),
+  /** ISO-время окончания мьюта; null — снять мьют. */
+  mutedUntil: z.string().datetime({ offset: true }).nullable().optional(),
+});
 const conversationSettingsSchema = z
   .object({
     archived: z.boolean().optional(),
@@ -171,6 +220,7 @@ export function createApiRouter(dependencies: {
   authService: AuthService;
   adminService: AdminService;
   chatService: ChatService;
+  groupService: GroupService;
   draftService: DraftService;
   folderService: FolderService;
   scheduledMessageService: ScheduledMessageService;
@@ -997,6 +1047,153 @@ export function createApiRouter(dependencies: {
     response.status(201).json({ ok: true, reportId: report.id });
   }),
 );
+
+  // ---- Группы ----
+  router.post(
+    "/groups",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(createGroupSchema, request);
+      const result = await dependencies.groupService.createGroup(request.auth.userId, {
+        title: input.title,
+        ...(input.description === undefined ? {} : { description: input.description }),
+        ...(input.avatarUrl === undefined ? {} : { avatarUrl: input.avatarUrl }),
+        memberIds: input.memberIds ?? input.userIds ?? [],
+      });
+      response.status(201).json(result);
+    }),
+  );
+
+  router.post(
+    "/groups/join",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(joinGroupSchema, request);
+      const result = await dependencies.groupService.joinByInvite(
+        request.auth.userId,
+        input.code ?? input.inviteCode ?? "",
+      );
+      response.json(result);
+    }),
+  );
+
+  router.get(
+    "/groups/:groupId/members",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      const query = parseQuery(membersQuerySchema, request);
+      const result = await dependencies.groupService.listMembers(request.auth.userId, groupId, query.q);
+      response.json(result);
+    }),
+  );
+
+  router.get(
+    "/groups/:groupId/history",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      response.json(await dependencies.groupService.history(request.auth.userId, groupId));
+    }),
+  );
+
+  router.patch(
+    "/groups/:groupId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      const input = parseBody(updateGroupSchema, request);
+      response.json(await dependencies.groupService.updateInfo(request.auth.userId, groupId, input));
+    }),
+  );
+
+  router.post(
+    "/groups/:groupId/members",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      const input = parseBody(addMembersSchema, request);
+      response.json(
+        await dependencies.groupService.addMembers(
+          request.auth.userId,
+          groupId,
+          input.userIds ?? input.memberIds ?? [],
+        ),
+      );
+    }),
+  );
+
+  router.delete(
+    "/groups/:groupId/members/:userId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId, userId } = parseParams(groupMemberParamsSchema, request);
+      response.json(await dependencies.groupService.removeMember(request.auth.userId, groupId, userId));
+    }),
+  );
+
+  router.post(
+    "/groups/:groupId/leave",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      response.json(await dependencies.groupService.leaveGroup(request.auth.userId, groupId));
+    }),
+  );
+
+  router.post(
+    "/groups/:groupId/admins",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      const input = parseBody(setAdminSchema, request);
+      response.json(
+        await dependencies.groupService.setAdmin(
+          request.auth.userId,
+          groupId,
+          input.userId,
+          input.admin,
+          input.permissions,
+        ),
+      );
+    }),
+  );
+
+  router.put(
+    "/groups/:groupId/permissions",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      const input = parseBody(groupPermissionsBodySchema, request);
+      response.json(
+        await dependencies.groupService.setPermissions(request.auth.userId, groupId, input.permissions),
+      );
+    }),
+  );
+
+  router.post(
+    "/groups/:groupId/restrict",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      const input = parseBody(restrictMemberSchema, request);
+      response.json(
+        await dependencies.groupService.restrictMember(request.auth.userId, groupId, input.userId, {
+          ...(input.permissions ? { permissions: input.permissions } : {}),
+          ...(input.mutedUntil === undefined ? {} : { mutedUntil: input.mutedUntil }),
+        }),
+      );
+    }),
+  );
+
+  router.post(
+    "/groups/:groupId/invite",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      response.json(await dependencies.groupService.regenerateInvite(request.auth.userId, groupId));
+    }),
+  );
 
   return router;
 }

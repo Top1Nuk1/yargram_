@@ -56,10 +56,32 @@ const userSchema = z
     favoriteMessageIds: [...new Set(user.favoriteMessageIds)],
   }));
 
+const groupPermissionsSchema = z
+  .object({
+    send_messages: z.boolean().optional(),
+    send_media: z.boolean().optional(),
+    send_links: z.boolean().optional(),
+    send_polls: z.boolean().optional(),
+    add_members: z.boolean().optional(),
+    pin_messages: z.boolean().optional(),
+    change_info: z.boolean().optional(),
+    delete_messages: z.boolean().optional(),
+  })
+  .optional();
+
+const groupEventSchema = z.object({
+  id: z.string(),
+  at: z.string(),
+  actorId: z.string(),
+  kind: z.string(),
+  targetId: z.string().optional(),
+  detail: z.string().optional(),
+});
+
 const conversationSchema = z
   .object({
     id: z.string(),
-    type: z.enum(["direct", "saved"]),
+    type: z.enum(["direct", "saved", "group"]),
     memberIds: z.array(z.string()),
     directKey: z.string(),
     createdAt: z.string(),
@@ -69,6 +91,19 @@ const conversationSchema = z
     pinnedMessageIds: z.array(z.string()).optional(),
     archivedBy: z.array(z.string()).default([]),
     mutedUntilBy: z.record(z.string(), z.string().nullable()).default({}),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    avatarUrl: z.string().nullable().optional(),
+    ownerId: z.string().optional(),
+    adminIds: z.array(z.string()).optional(),
+    adminPermissions: z.record(z.string(), groupPermissionsSchema).optional(),
+    adminDefaults: groupPermissionsSchema,
+    inviteCode: z.string().optional(),
+    permissions: groupPermissionsSchema,
+    restrictions: z.record(z.string(), groupPermissionsSchema).optional(),
+    mutedMembers: z.record(z.string(), z.string().nullable()).optional(),
+    leftIds: z.array(z.string()).optional(),
+    history: z.array(groupEventSchema).optional(),
   })
   .transform((conversation) => {
     const pinnedMessageIds = [...new Set(conversation.pinnedMessageIds ?? [])];

@@ -13,6 +13,7 @@ import type { RealtimeEvents } from "./realtime/events.js";
 import type { AuthService } from "./services/auth-service.js";
 import type { AdminService } from "./services/admin-service.js";
 import type { ChatService } from "./services/chat-service.js";
+import type { GroupService } from "./services/group-service.js";
 import type { FolderService } from "./services/folder-service.js";
 import type { DraftService } from "./services/draft-service.js";
 import type { ScheduledMessageService } from "./services/scheduled-message-service.js";
@@ -23,6 +24,7 @@ export function createApp(dependencies: {
   authService: AuthService;
   adminService: AdminService;
   chatService: ChatService;
+  groupService: GroupService;
   draftService: DraftService;
   folderService: FolderService;
   scheduledMessageService: ScheduledMessageService;
@@ -75,6 +77,7 @@ export function createApp(dependencies: {
       authService: dependencies.authService,
       adminService: dependencies.adminService,
       chatService: dependencies.chatService,
+      groupService: dependencies.groupService,
       draftService: dependencies.draftService,
       folderService: dependencies.folderService,
       scheduledMessageService: dependencies.scheduledMessageService,

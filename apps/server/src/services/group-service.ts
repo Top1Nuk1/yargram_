@@ -1,0 +1,525 @@
+import { randomBytes } from "node:crypto";
+import {
+  effectiveGroupPermissions,
+  groupCan,
+  groupRoleFor,
+  toPublicUserFor,
+} from "../domain/models.js";
+import type {
+  Conversation,
+  EffectiveGroupPermissions,
+  GroupEvent,
+  GroupPermissions,
+  GroupRole,
+  PublicUser,
+} from "../domain/models.js";
+import { AppError } from "../lib/errors.js";
+import type { Repositories, UpdateConversationInput } from "../repositories/types.js";
+import type { RealtimeEvents } from "../realtime/events.js";
+import type { ChatService, ConversationView } from "./chat-service.js";
+
+const TITLE_MAX = 128;
+const DESCRIPTION_MAX = 2_000;
+
+/** Ссылка-приглашение: короткий код в URL вида /join/<код>. */
+function newInviteCode(): string {
+  return randomBytes(9).toString("base64url");
+}
+
+export type GroupMemberView = {
+  user: PublicUser;
+  role: GroupRole;
+  permissions: EffectiveGroupPermissions;
+  mutedUntil: string | null;
+  addedByOwner: boolean;
+};
+
+/** История изменений группы — та же запись, что лежит в самой группе. */
+export type GroupHistoryView = GroupEvent;
+
+/**
+ * Группы: состав, роли и права. Права проверяются здесь же, а не в маршрутах,
+ * чтобы запрет действовал и на отправку сообщений, и на вложения, и на звонок.
+ */
+export class GroupService {
+  constructor(
+    private readonly repositories: Repositories,
+    private readonly events: RealtimeEvents,
+    private readonly chat: ChatService,
+  ) {}
+
+  async createGroup(
+    currentUserId: string,
+    input: {
+      title: string;
+      description?: string | undefined;
+      avatarUrl?: string | null | undefined;
+      memberIds?: string[] | undefined;
+    },
+  ): Promise<{ conversation: ConversationView }> {
+    const title = (input.title ?? "").trim();
+    if (!title) throw new AppError(400, "TITLE_REQUIRED", "У группы должно быть название");
+    if (title.length > TITLE_MAX) {
+      throw new AppError(400, "TITLE_TOO_LONG", `Название длиннее ${TITLE_MAX} символов`);
+    }
+    const description = (input.description ?? "").trim().slice(0, DESCRIPTION_MAX);
+    const invited = [...new Set((input.memberIds ?? []).filter((id) => id !== currentUserId))];
+    await this.assertAliveUsers(invited);
+
+    const conversation = await this.repositories.conversations.createGroup({
+      ownerId: currentUserId,
+      title,
+      description,
+      avatarUrl: input.avatarUrl ?? null,
+      memberIds: invited,
+      inviteCode: newInviteCode(),
+    });
+    await this.broadcast(conversation);
+    return { conversation: await this.chat.viewConversation(currentUserId, conversation.id) };
+  }
+
+  async updateInfo(
+    currentUserId: string,
+    groupId: string,
+    input: {
+      title?: string | undefined;
+      description?: string | undefined;
+      avatarUrl?: string | null | undefined;
+    },
+  ): Promise<{ conversation: ConversationView }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    this.assertCan(currentUserId, group, "change_info");
+
+    const patch: UpdateConversationInput = {};
+    const history = [...(group.history ?? [])];
+    const timestamp = new Date().toISOString();
+
+    if (input.title !== undefined) {
+      const title = input.title.trim();
+      if (!title) throw new AppError(400, "TITLE_REQUIRED", "У группы должно быть название");
+      if (title.length > TITLE_MAX) {
+        throw new AppError(400, "TITLE_TOO_LONG", `Название длиннее ${TITLE_MAX} символов`);
+      }
+      if (title !== group.title) {
+        patch.title = title;
+        history.push(this.event(currentUserId, timestamp, "renamed", undefined, title));
+      }
+    }
+    if (input.description !== undefined) {
+      patch.description = input.description.trim().slice(0, DESCRIPTION_MAX);
+      if (patch.description !== group.description) {
+        history.push(this.event(currentUserId, timestamp, "description_changed"));
+      }
+    }
+    if (input.avatarUrl !== undefined) {
+      patch.avatarUrl = input.avatarUrl;
+      history.push(this.event(currentUserId, timestamp, "avatar_changed"));
+    }
+    patch.history = history;
+
+    const updated = await this.repositories.conversations.update(group.id, patch);
+    await this.broadcast(updated);
+    return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+  }
+
+  async listMembers(
+    currentUserId: string,
+    groupId: string,
+    query?: string,
+  ): Promise<{ members: GroupMemberView[] }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    const users = await this.repositories.users.findManyByIds(group.memberIds);
+    const byId = new Map(users.map((user) => [user.id, user]));
+    const needle = (query ?? "").trim().toLowerCase();
+
+    const members = group.memberIds
+      .map((id) => byId.get(id))
+      .filter((user): user is NonNullable<typeof user> => Boolean(user))
+      .filter((user) => {
+        if (!needle) return true;
+        return (
+          user.displayName.toLowerCase().includes(needle) ||
+          (user.username ?? "").toLowerCase().includes(needle)
+        );
+      })
+      .map((user) => ({
+        user: toPublicUserFor(user, currentUserId),
+        role: groupRoleFor(group, user.id) ?? "member",
+        permissions: effectiveGroupPermissions(group, user.id),
+        mutedUntil: group.mutedMembers?.[user.id] ?? null,
+        addedByOwner: group.ownerId === user.id,
+      }))
+      // Владелец всегда первый, затем администраторы, остальные по имени.
+      .sort((a, b) => rank(a.role) - rank(b.role) || a.user.displayName.localeCompare(b.user.displayName, "ru"));
+
+    return { members };
+  }
+
+  async addMembers(
+    currentUserId: string,
+    groupId: string,
+    memberIds: string[],
+  ): Promise<{ conversation: ConversationView }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    this.assertCan(currentUserId, group, "add_members");
+
+    const candidates = [...new Set(memberIds.filter((id) => id !== currentUserId))];
+    if (candidates.length === 0) {
+      throw new AppError(400, "MEMBERS_REQUIRED", "Кого добавляем в группу?");
+    }
+    await this.assertAliveUsers(candidates);
+    const fresh = candidates.filter((id) => !group.memberIds.includes(id));
+    if (fresh.length === 0) {
+      return { conversation: await this.chat.viewConversation(currentUserId, group.id) };
+    }
+
+    const timestamp = new Date().toISOString();
+    const history = [...(group.history ?? [])];
+    for (const id of fresh) {
+      history.push(this.event(currentUserId, timestamp, "member_added", id));
+    }
+    const updated = await this.repositories.conversations.update(group.id, {
+      memberIds: [...group.memberIds, ...fresh],
+      // Если человек раньше выходил, возвращаем его в список.
+      leftIds: (group.leftIds ?? []).filter((id) => !fresh.includes(id)),
+      history,
+    });
+
+    await this.broadcast(updated);
+    await this.announce(updated, currentUserId, `${await this.nameOf(currentUserId)} добавил(а) ${await this.namesOf(fresh)}`, "user_joined");
+    return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+  }
+
+  async removeMember(
+    currentUserId: string,
+    groupId: string,
+    targetUserId: string,
+  ): Promise<{ conversation: ConversationView }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    this.assertCan(currentUserId, group, "delete_messages");
+    if (targetUserId === group.ownerId) {
+      throw new AppError(400, "OWNER_PROTECTED", "Владельца группы удалить нельзя");
+    }
+    // Администратор не выгоняет другого администратора — только владелец.
+    if (
+      group.ownerId !== currentUserId &&
+      (group.adminIds ?? []).includes(targetUserId)
+    ) {
+      throw new AppError(403, "NO_RIGHTS", "Только владелец может снять администратора");
+    }
+    if (!group.memberIds.includes(targetUserId)) {
+      throw new AppError(404, "MEMBER_NOT_FOUND", "Этого человека нет в группе");
+    }
+
+    const updated = await this.applyRemoval(group, targetUserId, currentUserId, "member_removed");
+    await this.announce(
+      updated,
+      currentUserId,
+      `${await this.nameOf(currentUserId)} удалил(а) ${await this.nameOf(targetUserId)}`,
+      "user_left",
+    );
+    return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+  }
+
+  async leaveGroup(currentUserId: string, groupId: string): Promise<{ conversation: ConversationView }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    if (group.ownerId === currentUserId) {
+      throw new AppError(400, "OWNER_CANNOT_LEAVE", "Владелец не может выйти: сначала передайте группу");
+    }
+    // Сообщение пишется до выхода: после удаления из состава автор уже не участник.
+    await this.announce(group, currentUserId, `${await this.nameOf(currentUserId)} вышел(а) из группы`, "user_left");
+    // Ответ собираем тоже до выхода: после удаления группа для него закрыта.
+    const view = await this.chat.viewConversation(currentUserId, group.id);
+    await this.applyRemoval(group, currentUserId, currentUserId, "member_left");
+    return { conversation: view };
+  }
+
+  async joinByInvite(currentUserId: string, code: string): Promise<{ conversation: ConversationView }> {
+    const trimmed = (code ?? "").trim();
+    if (!trimmed) throw new AppError(400, "INVITE_REQUIRED", "Нужен код приглашения");
+    const group = await this.repositories.conversations.findByInviteCode(trimmed);
+    if (!group || group.type !== "group") {
+      throw new AppError(404, "INVITE_NOT_FOUND", "Ссылка-приглашение недействительна");
+    }
+    const me = await this.repositories.users.findById(currentUserId);
+    if (!me || me.isDeleted) throw new AppError(403, "ACCOUNT_DELETED", "Аккаунт недоступен");
+
+    const already = group.memberIds.includes(currentUserId);
+    const left = (group.leftIds ?? []).includes(currentUserId);
+    if (already && !left) {
+      return { conversation: await this.chat.viewConversation(currentUserId, group.id) };
+    }
+
+    const timestamp = new Date().toISOString();
+    const updated = await this.repositories.conversations.update(group.id, {
+      memberIds: already ? group.memberIds : [...group.memberIds, currentUserId],
+      leftIds: (group.leftIds ?? []).filter((id) => id !== currentUserId),
+      history: [...(group.history ?? []), this.event(currentUserId, timestamp, "member_added", currentUserId)],
+    });
+
+    await this.broadcast(updated);
+    await this.announce(updated, currentUserId, `${await this.nameOf(currentUserId)} вступил(а) в группу по ссылке`, "user_joined");
+    return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+  }
+
+  async regenerateInvite(currentUserId: string, groupId: string): Promise<{ conversation: ConversationView }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    this.assertCan(currentUserId, group, "add_members");
+    const updated = await this.repositories.conversations.update(group.id, {
+      inviteCode: newInviteCode(),
+    });
+    await this.broadcast(updated);
+    return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+  }
+
+  async setAdmin(
+    currentUserId: string,
+    groupId: string,
+    targetUserId: string,
+    admin: boolean,
+    permissions?: GroupPermissions,
+  ): Promise<{ conversation: ConversationView }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    // Назначать администраторов может только владелец: иначе администратор
+    // сможет раздать права выше своих.
+    if (group.ownerId !== currentUserId) {
+      throw new AppError(403, "NO_RIGHTS", "Только владелец группы назначает администраторов");
+    }
+    if (targetUserId === group.ownerId) {
+      throw new AppError(400, "OWNER_PROTECTED", "Владелец и так управляет группой");
+    }
+    if (!group.memberIds.includes(targetUserId)) {
+      throw new AppError(404, "MEMBER_NOT_FOUND", "Этого человека нет в группе");
+    }
+
+    const adminIds = [...new Set(group.adminIds ?? [])];
+    const adminPermissions = { ...(group.adminPermissions ?? {}) };
+    const timestamp = new Date().toISOString();
+    const history = [...(group.history ?? [])];
+
+    if (admin) {
+      if (!adminIds.includes(targetUserId)) adminIds.push(targetUserId);
+      if (permissions) adminPermissions[targetUserId] = { ...adminPermissions[targetUserId], ...permissions };
+      history.push(this.event(currentUserId, timestamp, "admin_added", targetUserId));
+    } else {
+      const next = adminIds.filter((id) => id !== targetUserId);
+      adminIds.length = 0;
+      adminIds.push(...next);
+      delete adminPermissions[targetUserId];
+      history.push(this.event(currentUserId, timestamp, "admin_removed", targetUserId));
+    }
+
+    const updated = await this.repositories.conversations.update(group.id, {
+      adminIds,
+      adminPermissions,
+      history,
+    });
+    await this.broadcast(updated);
+    return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+  }
+
+  /** Общие права группы: что разрешено обычным участникам. */
+  async setPermissions(
+    currentUserId: string,
+    groupId: string,
+    permissions: GroupPermissions,
+  ): Promise<{ conversation: ConversationView }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    this.assertCan(currentUserId, group, "change_info");
+    const updated = await this.repositories.conversations.update(group.id, {
+      permissions: { ...(group.permissions ?? {}), ...permissions },
+      history: [
+        ...(group.history ?? []),
+        this.event(currentUserId, new Date().toISOString(), "permissions_changed", undefined,
+          Object.entries(permissions).map(([key, value]) => `${key}=${value}`).join(",")),
+      ],
+    });
+    await this.broadcast(updated);
+    return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+  }
+
+  /** Личные ограничения участника: запреты и мьют до времени (null — бессрочно). */
+  async restrictMember(
+    currentUserId: string,
+    groupId: string,
+    targetUserId: string,
+    input: {
+      permissions?: GroupPermissions | undefined;
+      mutedUntil?: string | null | undefined;
+    },
+  ): Promise<{ conversation: ConversationView }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    this.assertCan(currentUserId, group, "delete_messages");
+    if (targetUserId === group.ownerId) {
+      throw new AppError(400, "OWNER_PROTECTED", "Владельца ограничить нельзя");
+    }
+    if (group.ownerId !== currentUserId && (group.adminIds ?? []).includes(targetUserId)) {
+      throw new AppError(403, "NO_RIGHTS", "Только владелец ограничивает администратора");
+    }
+    if (!group.memberIds.includes(targetUserId)) {
+      throw new AppError(404, "MEMBER_NOT_FOUND", "Этого человека нет в группе");
+    }
+
+    const restrictions = { ...(group.restrictions ?? {}) };
+    const mutedMembers = { ...(group.mutedMembers ?? {}) };
+    const history = [...(group.history ?? [])];
+    const timestamp = new Date().toISOString();
+
+    if (input.permissions) {
+      restrictions[targetUserId] = { ...restrictions[targetUserId], ...input.permissions };
+      history.push(this.event(currentUserId, timestamp, "member_restricted", targetUserId));
+    }
+    if (input.mutedUntil !== undefined) {
+      if (input.mutedUntil === null && mutedMembers[targetUserId] === undefined) {
+        // Снятие мьюта того, кто и не был заглушён: просто ничего не делаем.
+      } else if (input.mutedUntil === null) {
+        delete mutedMembers[targetUserId];
+      } else {
+        mutedMembers[targetUserId] = input.mutedUntil;
+      }
+      history.push(this.event(currentUserId, timestamp, "member_muted", targetUserId, input.mutedUntil ?? "forever"));
+    }
+
+    const updated = await this.repositories.conversations.update(group.id, {
+      restrictions,
+      mutedMembers,
+      history,
+    });
+    await this.broadcast(updated);
+    return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+  }
+
+  async history(currentUserId: string, groupId: string): Promise<{ events: GroupHistoryView[] }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    return { events: [...(group.history ?? [])].reverse() };
+  }
+
+  // ---- внутреннее ----
+
+  private async getGroup(groupId: string, currentUserId: string): Promise<Conversation> {
+    const conversation = await this.repositories.conversations.findById(groupId);
+    if (!conversation || conversation.type !== "group") {
+      throw new AppError(404, "GROUP_NOT_FOUND", "Группа не найдена");
+    }
+    // Вышедший участник больше не считается членом группы.
+    if (
+      !conversation.memberIds.includes(currentUserId) ||
+      (conversation.leftIds ?? []).includes(currentUserId)
+    ) {
+      throw new AppError(403, "GROUP_FORBIDDEN", "Вы не участник этой группы");
+    }
+    return conversation;
+  }
+
+  private assertCan(
+    currentUserId: string,
+    group: Conversation,
+    permission: Parameters<typeof groupCan>[2],
+  ): void {
+    if (!groupCan(group, currentUserId, permission)) {
+      throw new AppError(403, "NO_RIGHTS", "Недостаточно прав в группе");
+    }
+  }
+
+  private async assertAliveUsers(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const users = await this.repositories.users.findManyByIds(ids);
+    const byId = new Map(users.map((user) => [user.id, user]));
+    for (const id of ids) {
+      const user = byId.get(id);
+      if (!user) throw new AppError(404, "USER_NOT_FOUND", "Пользователь не найден");
+      if (user.isDeleted) {
+        throw new AppError(400, "ACCOUNT_DELETED", "Удалённый аккаунт нельзя добавить в группу");
+      }
+    }
+  }
+
+  private async applyRemoval(
+    group: Conversation,
+    targetUserId: string,
+    actorId: string,
+    kind: "member_removed" | "member_left",
+  ): Promise<Conversation> {
+    const adminIds = (group.adminIds ?? []).filter((id) => id !== targetUserId);
+    const adminPermissions = { ...(group.adminPermissions ?? {}) };
+    delete adminPermissions[targetUserId];
+    const restrictions = { ...(group.restrictions ?? {}) };
+    delete restrictions[targetUserId];
+    const mutedMembers = { ...(group.mutedMembers ?? {}) };
+    delete mutedMembers[targetUserId];
+
+    const updated = await this.repositories.conversations.update(group.id, {
+      memberIds: group.memberIds.filter((id) => id !== targetUserId),
+      adminIds,
+      adminPermissions,
+      restrictions,
+      mutedMembers,
+      leftIds: [...new Set([...(group.leftIds ?? []), targetUserId])],
+      history: [
+        ...(group.history ?? []),
+        this.event(actorId, new Date().toISOString(), kind, targetUserId),
+      ],
+    });
+    // Оставшиеся видят новый состав сразу, вышедшего рассылка пропускает.
+    await this.broadcast(updated);
+    return updated;
+  }
+
+  /** Служебное сообщение в историю группы: видно всем участникам. */
+  private async announce(
+    group: Conversation,
+    actorId: string,
+    text: string,
+    systemEvent: "user_joined" | "user_left",
+  ): Promise<void> {
+    const result = await this.chat.createGroupEventMessage(group.id, actorId, text, systemEvent);
+    this.events.publishNewMessage({ message: result.message, memberIds: result.memberIds });
+  }
+
+  /** Рассылает обновлённую группу всем её участникам. */
+  private async broadcast(group: Conversation): Promise<void> {
+    for (const memberId of group.memberIds) {
+      if ((group.leftIds ?? []).includes(memberId)) continue;
+      try {
+        const view = await this.chat.viewConversation(memberId, group.id);
+        this.events.publishConversationSettings({ userId: memberId, conversation: view });
+      } catch {
+        // Вышедший мог остаться в memberIds — его просто пропускаем.
+      }
+    }
+  }
+
+  private event(
+    actorId: string,
+    at: string,
+    kind: GroupEvent["kind"],
+    targetId?: string,
+    detail?: string,
+  ): GroupEvent {
+    return {
+      id: randomBytes(8).toString("hex"),
+      at,
+      actorId,
+      kind,
+      ...(targetId ? { targetId } : {}),
+      ...(detail ? { detail } : {}),
+    };
+  }
+
+  private async nameOf(userId: string): Promise<string> {
+    const user = await this.repositories.users.findById(userId);
+    return user?.displayName ?? "Пользователь";
+  }
+
+  private async namesOf(ids: string[]): Promise<string> {
+    const users = await this.repositories.users.findManyByIds(ids);
+    const names = ids.map((id) => users.find((user) => user.id === id)?.displayName ?? "Пользователь");
+    if (names.length <= 1) return names[0] ?? "Пользователь";
+    if (names.length === 2) return `${names[0]} и ${names[1]}`;
+    return `${names.slice(0, -1).join(", ")} и ${names.at(-1)}`;
+  }
+}
+
+function rank(role: GroupRole): number {
+  return role === "owner" ? 0 : role === "admin" ? 1 : role === "restricted" ? 3 : 2;
+}

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { defaultAdminPermissions } from "../domain/models.js";
 import type {
   Attachment,
   CallRecord,
@@ -18,6 +19,7 @@ import type {
   AttachmentRepository,
   CallRepository,
   ConversationRepository,
+  CreateGroupInput,
   CreateMessageInput,
   CreateUserInput,
   DraftRepository,
@@ -26,6 +28,7 @@ import type {
   Repositories,
   ReportRepository,
   ScheduledMessageRepository,
+  UpdateConversationInput,
   UpdateUserInput,
   UserRepository,
 } from "./types.js";
@@ -243,6 +246,71 @@ class JsonConversationRepository implements ConversationRepository {
     });
   }
 
+  async createGroup(input: CreateGroupInput): Promise<Conversation> {
+    return this.database.transaction((state) => {
+      const now = new Date().toISOString();
+      const memberIds = [input.ownerId, ...input.memberIds.filter((id) => id !== input.ownerId)];
+      const conversation: Conversation = {
+        id: randomUUID(),
+        type: "group",
+        memberIds,
+        // Ключ личного диалога группе не нужен, но поле обязательное.
+        directKey: "",
+        createdAt: now,
+        updatedAt: now,
+        pinnedMessageIds: [],
+        archivedBy: [],
+        mutedUntilBy: {},
+        title: input.title,
+        description: input.description ?? "",
+        avatarUrl: input.avatarUrl ?? null,
+        ownerId: input.ownerId,
+        adminIds: [],
+        adminDefaults: defaultAdminPermissions(),
+        inviteCode: input.inviteCode ?? "",
+        permissions: {},
+        restrictions: {},
+        mutedMembers: {},
+        leftIds: [],
+        history: [
+          { id: randomUUID(), at: now, actorId: input.ownerId, kind: "created", detail: input.title },
+        ],
+      };
+      state.conversations.push(conversation);
+      return conversation;
+    });
+  }
+
+  async findByInviteCode(code: string): Promise<Conversation | null> {
+    if (!code) return null;
+    return this.database.read(
+      (state) => state.conversations.find((conversation) => conversation.inviteCode === code) ?? null,
+    );
+  }
+
+  async update(id: string, input: UpdateConversationInput): Promise<Conversation> {
+    return this.database.transaction((state) => {
+      const conversation = state.conversations.find((candidate) => candidate.id === id);
+      if (!conversation) throw new Error("Conversation was not found");
+      if (input.title !== undefined) conversation.title = input.title;
+      if (input.description !== undefined) conversation.description = input.description;
+      if (input.avatarUrl !== undefined) conversation.avatarUrl = input.avatarUrl;
+      if (input.memberIds !== undefined) conversation.memberIds = input.memberIds;
+      if (input.ownerId !== undefined) conversation.ownerId = input.ownerId;
+      if (input.adminIds !== undefined) conversation.adminIds = input.adminIds;
+      if (input.adminPermissions !== undefined) conversation.adminPermissions = input.adminPermissions;
+      if (input.adminDefaults !== undefined) conversation.adminDefaults = input.adminDefaults;
+      if (input.inviteCode !== undefined) conversation.inviteCode = input.inviteCode;
+      if (input.permissions !== undefined) conversation.permissions = input.permissions;
+      if (input.restrictions !== undefined) conversation.restrictions = input.restrictions;
+      if (input.mutedMembers !== undefined) conversation.mutedMembers = input.mutedMembers;
+      if (input.leftIds !== undefined) conversation.leftIds = input.leftIds;
+      if (input.history !== undefined) conversation.history = input.history;
+      conversation.updatedAt = new Date().toISOString();
+      return conversation;
+    });
+  }
+
   async findById(id: string): Promise<Conversation | null> {
     return this.database.read(
       (state) => state.conversations.find((conversation) => conversation.id === id) ?? null,
@@ -253,6 +321,8 @@ class JsonConversationRepository implements ConversationRepository {
     return this.database.read((state) =>
       state.conversations
         .filter((conversation) => conversation.memberIds.includes(userId))
+        // Вышедший не видит группу, даже пока остаётся в memberIds.
+        .filter((conversation) => !(conversation.leftIds ?? []).includes(userId))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     );
   }

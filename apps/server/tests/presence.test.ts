@@ -17,6 +17,7 @@ import { AuthService } from "../src/services/auth-service.js";
 import { AdminService } from "../src/services/admin-service.js";
 import { DraftService } from "../src/services/draft-service.js";
 import { FolderService } from "../src/services/folder-service.js";
+import { GroupService } from "../src/services/group-service.js";
 import { ScheduledMessageService } from "../src/services/scheduled-message-service.js";
 import { ChatService } from "../src/services/chat-service.js";
 import { databaseSchema, JsonDatabase } from "../src/storage/json-database.js";
@@ -35,6 +36,7 @@ async function harness() {
   const chatService = new ChatService(repositories);
   const events = new RealtimeEvents();
   const adminService = new AdminService(repositories, events);
+  const groupService = new GroupService(repositories, events, chatService);
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);
   const scheduledMessageService = new ScheduledMessageService(repositories, chatService, events);
@@ -43,6 +45,7 @@ async function harness() {
     repositories,
     authService,
     chatService,
+    groupService,
     adminService,
     draftService,
     folderService,
