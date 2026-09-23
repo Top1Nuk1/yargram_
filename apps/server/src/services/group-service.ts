@@ -9,6 +9,7 @@ import type {
   Conversation,
   EffectiveGroupPermissions,
   GroupEvent,
+  GroupPermission,
   GroupPermissions,
   GroupRole,
   PublicUser,
@@ -20,6 +21,8 @@ import type { ChatService, ConversationView } from "./chat-service.js";
 
 const TITLE_MAX = 128;
 const DESCRIPTION_MAX = 2_000;
+/** Тег участника — короткая подпись рядом с именем. */
+const TAG_MAX = 24;
 /** Бессрочный мьют: в записи группы это null, в запросе — слово «forever». */
 export const MUTE_FOREVER = "forever";
 
@@ -32,6 +35,8 @@ export type GroupMemberView = {
   user: PublicUser;
   role: GroupRole;
   permissions: EffectiveGroupPermissions;
+  /** Подпись рядом с именем; поля нет, если тег не задан. */
+  tag?: string | undefined;
   /**
    * Поля нет, когда мьюта нет вовсе; null — бессрочный мьют. Так «нет мьюта» и
    * «заглушён навсегда» не смешиваются в одно значение.
@@ -150,12 +155,14 @@ export class GroupService {
       })
       .map((user) => {
         const mutedUntil = group.mutedMembers?.[user.id];
+        const tag = group.memberTags?.[user.id];
         return {
           user: toPublicUserFor(user, currentUserId),
           role: groupRoleFor(group, user.id) ?? "member",
           permissions: effectiveGroupPermissions(group, user.id),
           // Мьют без срока приходит как null, отсутствие записи — как пропуск поля.
           ...(mutedUntil === undefined ? {} : { mutedUntil }),
+          ...(tag ? { tag } : {}),
           addedByOwner: group.ownerId === user.id,
         };
       })
@@ -206,7 +213,7 @@ export class GroupService {
     targetUserId: string,
   ): Promise<{ conversation: ConversationView }> {
     const group = await this.getGroup(groupId, currentUserId);
-    this.assertCan(currentUserId, group, "delete_messages");
+    this.assertCan(currentUserId, group, "remove_members");
     if (targetUserId === group.ownerId) {
       throw new AppError(400, "OWNER_PROTECTED", "Владельца группы удалить нельзя");
     }
@@ -290,16 +297,23 @@ export class GroupService {
     permissions?: GroupPermissions,
   ): Promise<{ conversation: ConversationView }> {
     const group = await this.getGroup(groupId, currentUserId);
-    // Назначать администраторов может только владелец: иначе администратор
-    // сможет раздать права выше своих.
-    if (group.ownerId !== currentUserId) {
-      throw new AppError(403, "NO_RIGHTS", "Только владелец группы назначает администраторов");
-    }
+    const isOwner = group.ownerId === currentUserId;
+    // Назначать администраторов может владелец и администратор с правом
+    // add_admins — но раздать больше, чем есть у себя, нельзя.
+    if (!isOwner) this.assertCan(currentUserId, group, "add_admins");
     if (targetUserId === group.ownerId) {
       throw new AppError(400, "OWNER_PROTECTED", "Владелец и так управляет группой");
     }
     if (!group.memberIds.includes(targetUserId)) {
       throw new AppError(404, "MEMBER_NOT_FOUND", "Этого человека нет в группе");
+    }
+    if (!isOwner && permissions) {
+      for (const [permission, allowed] of Object.entries(permissions)) {
+        if (allowed !== true) continue;
+        if (!groupCan(group, currentUserId, permission as GroupPermission)) {
+          throw new AppError(403, "NO_RIGHTS", "Нельзя выдать право, которого нет у вас");
+        }
+      }
     }
 
     const adminIds = [...new Set(group.adminIds ?? [])];
@@ -359,7 +373,7 @@ export class GroupService {
     },
   ): Promise<{ conversation: ConversationView }> {
     const group = await this.getGroup(groupId, currentUserId);
-    this.assertCan(currentUserId, group, "delete_messages");
+    this.assertCan(currentUserId, group, "restrict_members");
     if (targetUserId === group.ownerId) {
       throw new AppError(400, "OWNER_PROTECTED", "Владельца ограничить нельзя");
     }
@@ -395,6 +409,47 @@ export class GroupService {
       restrictions,
       mutedMembers,
       history,
+    });
+    await this.broadcast(updated);
+    return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+  }
+
+  /**
+   * Тег участника: короткая подпись рядом с именем. Свой тег ставит сам
+   * участник, чужие — тот, у кого есть право manage_tags.
+   */
+  async setMemberTag(
+    currentUserId: string,
+    groupId: string,
+    targetUserId: string,
+    tag: string,
+  ): Promise<{ conversation: ConversationView }> {
+    const group = await this.getGroup(groupId, currentUserId);
+    if (!group.memberIds.includes(targetUserId)) {
+      throw new AppError(404, "MEMBER_NOT_FOUND", "Этого человека нет в группе");
+    }
+    // Тег владельца трогает только сам владелец: иначе его подпись подменит админ.
+    if (targetUserId !== currentUserId) {
+      if (targetUserId === group.ownerId) {
+        throw new AppError(403, "OWNER_PROTECTED", "Тег владельца меняет только владелец");
+      }
+      this.assertCan(currentUserId, group, "manage_tags");
+    }
+
+    const cleaned = tag.trim().slice(0, TAG_MAX);
+    const memberTags = { ...(group.memberTags ?? {}) };
+    if (cleaned) {
+      memberTags[targetUserId] = cleaned;
+    } else {
+      delete memberTags[targetUserId];
+    }
+
+    const updated = await this.repositories.conversations.update(group.id, {
+      memberTags,
+      history: [
+        ...(group.history ?? []),
+        this.event(currentUserId, new Date().toISOString(), "member_tag_changed", targetUserId, cleaned),
+      ],
     });
     await this.broadcast(updated);
     return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
@@ -458,6 +513,8 @@ export class GroupService {
     delete restrictions[targetUserId];
     const mutedMembers = { ...(group.mutedMembers ?? {}) };
     delete mutedMembers[targetUserId];
+    const memberTags = { ...(group.memberTags ?? {}) };
+    delete memberTags[targetUserId];
 
     const updated = await this.repositories.conversations.update(group.id, {
       memberIds: group.memberIds.filter((id) => id !== targetUserId),
@@ -465,6 +522,7 @@ export class GroupService {
       adminPermissions,
       restrictions,
       mutedMembers,
+      memberTags,
       leftIds: [...new Set([...(group.leftIds ?? []), targetUserId])],
       history: [
         ...(group.history ?? []),

@@ -1,7 +1,12 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { allowedReactionEmojis, toPublicUser, toPublicUserFor } from "../domain/models.js";
+import {
+  allowedReactionEmojis,
+  groupPermissions,
+  toPublicUser,
+  toPublicUserFor,
+} from "../domain/models.js";
 import { asyncHandler } from "../lib/errors.js";
 import { parseBody, parseParams, parseQuery } from "../lib/validation.js";
 import type { Repositories } from "../repositories/types.js";
@@ -122,16 +127,10 @@ const reactionSchema = z.object({ emoji: z.enum(allowedReactionEmojis) });
 const forwardSchema = z.object({ targetConversationId: z.string().uuid() });
 
 // ---- Группы ----
-const groupPermissionsSchema = z.object({
-  send_messages: z.boolean().optional(),
-  send_media: z.boolean().optional(),
-  send_links: z.boolean().optional(),
-  send_polls: z.boolean().optional(),
-  add_members: z.boolean().optional(),
-  pin_messages: z.boolean().optional(),
-  change_info: z.boolean().optional(),
-  delete_messages: z.boolean().optional(),
-});
+// Ключи прав берём из домена: отдельный список рано или поздно разъедется с ним.
+const groupPermissionsSchema = z.object(
+  Object.fromEntries(groupPermissions.map((permission) => [permission, z.boolean().optional()])),
+);
 const createGroupSchema = z.object({
   title: z.string().trim().min(1).max(128),
   description: z.string().trim().max(2_000).optional(),
@@ -162,6 +161,11 @@ const setAdminSchema = z.object({
   permissions: groupPermissionsSchema.optional(),
 });
 const groupPermissionsBodySchema = z.object({ permissions: groupPermissionsSchema });
+const memberTagSchema = z.object({
+  userId: z.string().uuid(),
+  /** Пустая строка снимает тег. */
+  tag: z.string().trim().max(24),
+});
 const restrictMemberSchema = z.object({
   userId: z.string().uuid(),
   permissions: groupPermissionsSchema.optional(),
@@ -1184,6 +1188,23 @@ export function createApiRouter(dependencies: {
           ...(input.permissions ? { permissions: input.permissions } : {}),
           ...(input.mutedUntil === undefined ? {} : { mutedUntil: input.mutedUntil }),
         }),
+      );
+    }),
+  );
+
+  router.put(
+    "/groups/:groupId/tag",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      const input = parseBody(memberTagSchema, request);
+      response.json(
+        await dependencies.groupService.setMemberTag(
+          request.auth.userId,
+          groupId,
+          input.userId,
+          input.tag,
+        ),
       );
     }),
   );

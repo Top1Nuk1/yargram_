@@ -304,6 +304,7 @@ class JsonConversationRepository implements ConversationRepository {
       if (input.permissions !== undefined) conversation.permissions = input.permissions;
       if (input.restrictions !== undefined) conversation.restrictions = input.restrictions;
       if (input.mutedMembers !== undefined) conversation.mutedMembers = input.mutedMembers;
+      if (input.memberTags !== undefined) conversation.memberTags = input.memberTags;
       if (input.leftIds !== undefined) conversation.leftIds = input.leftIds;
       if (input.history !== undefined) conversation.history = input.history;
       conversation.updatedAt = new Date().toISOString();

@@ -88,7 +88,8 @@ export type CurrentUser = PublicUser & {
  * Отдельные права группы. Включаются независимо друг от друга: владелец
  * собирает из них любую комбинацию для администраторов и участников.
  */
-export const groupPermissions = [
+/** Права, которые владелец выдаёт обычным участникам. */
+export const memberPermissions = [
   "send_messages",
   "send_media",
   "send_links",
@@ -98,6 +99,22 @@ export const groupPermissions = [
   "change_info",
   "delete_messages",
 ] as const;
+
+/**
+ * Управляющие права: они есть только у владельца и администраторов и обычным
+ * участникам не выдаются — иначе любой смог бы выгонять людей из группы.
+ */
+export const adminOnlyPermissions = [
+  "remove_members",
+  "restrict_members",
+  "manage_tags",
+  "add_admins",
+] as const;
+
+export const groupPermissions = [...memberPermissions, ...adminOnlyPermissions] as const;
+
+export type MemberPermission = (typeof memberPermissions)[number];
+export type AdminOnlyPermission = (typeof adminOnlyPermissions)[number];
 
 export type GroupPermission = (typeof groupPermissions)[number];
 /**
@@ -129,7 +146,8 @@ export type GroupEvent = {
     | "permissions_changed"
     | "member_restricted"
     | "member_muted"
-    | "member_unmuted";
+    | "member_unmuted"
+    | "member_tag_changed";
   targetId?: string | undefined;
   detail?: string | undefined;
 };
@@ -167,6 +185,11 @@ export type Conversation = {
   restrictions?: Record<string, GroupPermissions> | undefined;
   /** Мьют участника до указанного времени (ISO) или бессрочно при null. */
   mutedMembers?: Record<string, string | null> | undefined;
+  /**
+   * Тег участника внутри группы: короткая подпись рядом с именем. Цвет тега
+   * зависит от роли, а сам тег хранится отдельно от профиля.
+   */
+  memberTags?: Record<string, string> | undefined;
   /** Кто вышел из группы: чат у него в списке не показывается. */
   leftIds?: string[] | undefined;
   history?: GroupEvent[] | undefined;
@@ -174,7 +197,9 @@ export type Conversation = {
 
 /** Права администратора по умолчанию: всё, кроме смены владельца. */
 export const defaultAdminPermissions = (): GroupPermissions =>
-  Object.fromEntries(groupPermissions.map((permission) => [permission, true])) as GroupPermissions;
+  Object.fromEntries(
+    groupPermissions.map((permission) => [permission, defaultAdminPermission(permission)]),
+  ) as GroupPermissions;
 
 /**
  * Роль участника считается из записи группы: отдельного поля «роль» нет,
@@ -219,13 +244,27 @@ export function groupCan(
   if (role === "admin") {
     const own = conversation.adminPermissions?.[userId]?.[permission];
     if (own !== undefined) return own;
-    return conversation.adminDefaults?.[permission] ?? true;
+    return conversation.adminDefaults?.[permission] ?? defaultAdminPermission(permission);
   }
+  // Управляющие права участникам не выдаются: иначе любой мог бы выгонять людей.
+  if (isAdminOnlyPermission(permission)) return false;
   const groupDefault = conversation.permissions?.[permission] ?? true;
   const personal = conversation.restrictions?.[userId]?.[permission];
   if (personal !== undefined) return personal && groupDefault;
   if (permission === "send_messages" && isGroupMemberMuted(conversation, userId, now)) return false;
   return groupDefault;
+}
+
+export function isAdminOnlyPermission(permission: GroupPermission): boolean {
+  return (adminOnlyPermissions as readonly string[]).includes(permission);
+}
+
+/**
+ * Что получает администратор, если владелец не уточнил права: всё, кроме
+ * добавления новых администраторов — как в Telegram, где это выключено.
+ */
+export function defaultAdminPermission(permission: GroupPermission): boolean {
+  return permission !== "add_admins";
 }
 
 /** Все права сразу: клиент показывает по ним доступные кнопки. */

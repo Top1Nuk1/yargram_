@@ -84,6 +84,7 @@ export type UpdateConversationInput = {
   permissions?: GroupPermissions | undefined;
   restrictions?: Record<string, GroupPermissions> | undefined;
   mutedMembers?: Record<string, string | null> | undefined;
+  memberTags?: Record<string, string> | undefined;
   leftIds?: string[] | undefined;
   history?: GroupEvent[] | undefined;
 };

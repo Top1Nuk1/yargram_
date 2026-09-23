@@ -848,6 +848,8 @@ export class ChatService {
             permissions: conversation.permissions ?? {},
             restrictions: conversation.restrictions ?? {},
             mutedMembers: conversation.mutedMembers ?? {},
+            // Теги участников: клиент рисует их рядом с именем и красит по роли.
+            memberTags: conversation.memberTags ?? {},
             history: conversation.history ?? [],
             role: groupRoleFor(conversation, currentUserId),
             myPermissions: effectiveGroupPermissions(conversation, currentUserId),

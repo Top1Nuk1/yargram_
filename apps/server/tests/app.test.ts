@@ -2468,6 +2468,174 @@ describe("Yargram API", () => {
     });
   });
 
+  it("ставит теги участникам и убирает их вместе с выходом из группы", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "tag-alice@example.com", "TagAlice");
+    const bob = await register(harness.app, "tag-bob@example.com", "TagBob");
+    const carol = await register(harness.app, "tag-carol@example.com", "TagCarol");
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "Теги", memberIds: [bob.user.id, carol.user.id] });
+    const groupId = created.body.conversation.id as string;
+
+    // Владелец ставит тег участнику и себе.
+    const forBob = await request(harness.app)
+      .put(`/api/groups/${groupId}/tag`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id, tag: "  #смирнёха  " });
+    expect(forBob.status).toBe(200);
+    const forAlice = await request(harness.app)
+      .put(`/api/groups/${groupId}/tag`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: alice.user.id, tag: "Организатор" });
+    expect(forAlice.status).toBe(200);
+
+    const listed = await request(harness.app)
+      .get(`/api/groups/${groupId}/members`)
+      .set("Authorization", bearer(alice.accessToken));
+    const byId = new Map<string, { user: { id: string }; tag?: string }>(
+      listed.body.members.map(
+        (item: { user: { id: string }; tag?: string }) => [item.user.id, item] as const,
+      ),
+    );
+    // Тег обрезан по краям, у остальных участников поля нет.
+    expect(byId.get(bob.user.id)?.tag).toBe("#смирнёха");
+    expect(byId.get(alice.user.id)?.tag).toBe("Организатор");
+    expect(byId.get(carol.user.id)).not.toHaveProperty("tag");
+    // Тег виден и в самой беседе: клиент рисует его рядом с именем.
+    const conversation = await request(harness.app)
+      .get("/api/conversations")
+      .set("Authorization", bearer(bob.accessToken));
+    const group = conversation.body.conversations.find((item: { id: string }) => item.id === groupId);
+    expect(group.memberTags[bob.user.id]).toBe("#смирнёха");
+
+    // Обычный участник чужие теги менять не может, а свой — может.
+    const carolTagsBob = await request(harness.app)
+      .put(`/api/groups/${groupId}/tag`)
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ userId: bob.user.id, tag: "самозванец" });
+    expect(carolTagsBob.status).toBe(403);
+    const carolTagsSelf = await request(harness.app)
+      .put(`/api/groups/${groupId}/tag`)
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ userId: carol.user.id, tag: "Новичок" });
+    expect(carolTagsSelf.status).toBe(200);
+
+    // Тег владельца не подменяет даже администратор.
+    await request(harness.app)
+      .post(`/api/groups/${groupId}/admins`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id, admin: true });
+    const bobTagsOwner = await request(harness.app)
+      .put(`/api/groups/${groupId}/tag`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ userId: alice.user.id, tag: "Подменённый" });
+    expect(bobTagsOwner.status).toBe(403);
+
+    // Пустой тег снимает подпись.
+    const cleared = await request(harness.app)
+      .put(`/api/groups/${groupId}/tag`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: carol.user.id, tag: "   " });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.conversation.memberTags).not.toHaveProperty(carol.user.id);
+
+    // Вместе с выходом участника уходит и его тег.
+    await request(harness.app)
+      .delete(`/api/groups/${groupId}/members/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    const afterRemoval = await request(harness.app)
+      .get(`/api/groups/${groupId}/members`)
+      .set("Authorization", bearer(alice.accessToken));
+    const remaining = afterRemoval.body.members.map(
+      (item: { user: { id: string }; tag?: string }) => [item.user.id, item.tag] as const,
+    );
+    expect(remaining).not.toContainEqual([bob.user.id, "#смирнёха"]);
+    expect(remaining).toContainEqual([alice.user.id, "Организатор"]);
+
+    // История знает про смену тега.
+    const history = await request(harness.app)
+      .get(`/api/groups/${groupId}/history`)
+      .set("Authorization", bearer(alice.accessToken));
+    const tagEvents = history.body.events.filter(
+      (item: { kind: string }) => item.kind === "member_tag_changed",
+    );
+    expect(tagEvents).toHaveLength(4);
+    expect(tagEvents.at(-1)).toMatchObject({ targetId: bob.user.id, detail: "#смирнёха" });
+  });
+
+  it("пускает администратора к управлению, но не выше своих прав", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "power-alice@example.com", "PowerAlice");
+    const bob = await register(harness.app, "power-bob@example.com", "PowerBob");
+    const carol = await register(harness.app, "power-carol@example.com", "PowerCarol");
+    const dave = await register(harness.app, "power-dave@example.com", "PowerDave");
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "Полномочия", memberIds: [bob.user.id, carol.user.id, dave.user.id] });
+    const groupId = created.body.conversation.id as string;
+
+    // Обычный участник не может ни удалять, ни ограничивать, ни тегировать.
+    for (const call of [
+      request(harness.app)
+        .delete(`/api/groups/${groupId}/members/${bob.user.id}`)
+        .set("Authorization", bearer(carol.accessToken)),
+      request(harness.app)
+        .post(`/api/groups/${groupId}/restrict`)
+        .set("Authorization", bearer(carol.accessToken))
+        .send({ userId: bob.user.id, mutedUntil: "forever" }),
+      request(harness.app)
+        .put(`/api/groups/${groupId}/tag`)
+        .set("Authorization", bearer(carol.accessToken))
+        .send({ userId: bob.user.id, tag: "метка" }),
+    ]) {
+      expect((await call).status).toBe(403);
+    }
+
+    // Администратор без права добавления администраторов назначать не может.
+    const promoted = await request(harness.app)
+      .post(`/api/groups/${groupId}/admins`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id, admin: true, permissions: { add_admins: true } });
+    expect(promoted.status).toBe(200);
+
+    const bobPromotesCarol = await request(harness.app)
+      .post(`/api/groups/${groupId}/admins`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ userId: carol.user.id, admin: true, permissions: { add_admins: true } });
+    expect(bobPromotesCarol.status).toBe(200);
+
+    // Но выдать право, которого нет у него самого, Боб не может.
+    const bobLosesInfo = await request(harness.app)
+      .post(`/api/groups/${groupId}/admins`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id, admin: true, permissions: { change_info: false } });
+    expect(bobLosesInfo.status).toBe(200);
+    const bobGrantsInfo = await request(harness.app)
+      .post(`/api/groups/${groupId}/admins`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ userId: carol.user.id, admin: true, permissions: { change_info: true } });
+    expect(bobGrantsInfo.status).toBe(403);
+    expect(bobGrantsInfo.body.error.code).toBe("NO_RIGHTS");
+
+    // Администратор не снимает другого администратора — это дело владельца.
+    const bobRemovesAdmin = await request(harness.app)
+      .delete(`/api/groups/${groupId}/members/${carol.user.id}`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(bobRemovesAdmin.status).toBe(403);
+
+    // А обычного участника удаляет свободно: право remove_members у него есть.
+    const bobRemovesMember = await request(harness.app)
+      .delete(`/api/groups/${groupId}/members/${dave.user.id}`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(bobRemovesMember.status).toBe(200);
+    expect(bobRemovesMember.body.conversation.memberCount).toBe(3);
+  });
+
   it("refuses deleted accounts and closes groups to strangers", async () => {
     const harness = await createHarness();
     const alice = await register(harness.app, "closed-alice@example.com", "ClosedAlice");

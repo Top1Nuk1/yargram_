@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
-import { allowedReactionEmojis, type DatabaseState } from "../domain/models.js";
+import { allowedReactionEmojis, groupPermissions, type DatabaseState } from "../domain/models.js";
 
 const attachmentKindSchema = z.enum(["image", "file", "avatar"]);
 const attachmentSchema = z.object({
@@ -56,17 +56,14 @@ const userSchema = z
     favoriteMessageIds: [...new Set(user.favoriteMessageIds)],
   }));
 
+/**
+ * Ключи прав берём из домена: своя копия списка рано или поздно разъехалась бы
+ * с ним, и хранилище молча вырезало бы новые права при чтении.
+ */
 const groupPermissionsSchema = z
-  .object({
-    send_messages: z.boolean().optional(),
-    send_media: z.boolean().optional(),
-    send_links: z.boolean().optional(),
-    send_polls: z.boolean().optional(),
-    add_members: z.boolean().optional(),
-    pin_messages: z.boolean().optional(),
-    change_info: z.boolean().optional(),
-    delete_messages: z.boolean().optional(),
-  })
+  .object(
+    Object.fromEntries(groupPermissions.map((permission) => [permission, z.boolean().optional()])),
+  )
   .optional();
 
 const groupEventSchema = z.object({
@@ -102,6 +99,7 @@ const conversationSchema = z
     permissions: groupPermissionsSchema,
     restrictions: z.record(z.string(), groupPermissionsSchema).optional(),
     mutedMembers: z.record(z.string(), z.string().nullable()).optional(),
+    memberTags: z.record(z.string(), z.string()).optional(),
     leftIds: z.array(z.string()).optional(),
     history: z.array(groupEventSchema).optional(),
   })
