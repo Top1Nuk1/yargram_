@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Ban,
-  BellOff,
   Check,
-  Clock,
   Copy,
   Crown,
   History,
@@ -13,8 +11,6 @@ import {
   Search,
   Shield,
   ShieldCheck,
-  Tag,
-  Trash2,
   UserPlus,
   UsersRound,
   X,
@@ -33,8 +29,6 @@ import {
   groupPermissionHints,
   groupPermissionLabels,
   groupRoleLabel,
-  memberActionAllowed,
-  mutedUntilLabel,
   orderMembersByPresence,
   viewerCan,
   viewerIsOwner,
@@ -54,7 +48,7 @@ import {
   type User,
 } from '../../types';
 import { MemberContextMenu } from './MemberContextMenu';
-import { AdminRightsDialog, MemberTagDialog } from './MemberDialogs';
+import { AdminRightsDialog, MemberCardDialog, MemberTagDialog } from './MemberDialogs';
 import { MemberSearchList } from './MemberSearchList';
 import { MemberTag } from './MemberTag';
 
@@ -74,14 +68,6 @@ interface GroupInfoPanelProps {
 type Tab = 'members' | 'rights' | 'history';
 
 /** Сроки мьюта: от часа до бессрочного — как в Telegram. */
-const muteOptions: Array<{ label: string; hours: number | null }> = [
-  { label: '1 час', hours: 1 },
-  { label: '8 часов', hours: 8 },
-  { label: '1 день', hours: 24 },
-  { label: '1 неделя', hours: 24 * 7 },
-  { label: 'Навсегда', hours: null },
-];
-
 function Switch({
   checked,
   disabled,
@@ -719,160 +705,20 @@ export function GroupInfoPanel({
         )}
 
         {openMember && (
-          <div
-            className="absolute inset-0 z-20 flex flex-col bg-surface"
-            role="dialog"
-            aria-modal="true"
-            aria-label={`Участник ${openMember.user.displayName}`}
-          >
-            <header className="flex items-center justify-between gap-2 border-b border-line/70 px-3 py-2">
-              <IconButton label="Назад" onClick={() => setOpenMemberId(null)}>
-                <X className="h-5 w-5" />
-              </IconButton>
-              <h3 className="min-w-0 flex-1 truncate text-sm font-bold text-ink">Участник</h3>
-            </header>
-
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <div className="flex flex-col items-center px-5 py-5 text-center">
-                <Avatar
-                  name={openMember.user.displayName}
-                  src={openMember.user.avatarUrl}
-                  size="xl"
-                  online={openMember.user.isOnline}
-                  {...avatarProps(openMember.user)}
-                />
-                <p className="mt-3 inline-flex max-w-full items-center gap-2 text-lg font-bold text-ink">
-                  <UserName name={openMember.user.displayName} user={openMember.user} />
-                  <MemberTag tag={openMember.tag} role={openMember.role} className="text-xs" />
-                </p>
-                <p className="mt-1 inline-flex items-center gap-1.5 text-sm text-muted">
-                  {openMember.role === 'owner' ? (
-                    <Crown className="h-4 w-4 text-brand" aria-hidden="true" />
-                  ) : openMember.role === 'admin' ? (
-                    <ShieldCheck className="h-4 w-4 text-brand" aria-hidden="true" />
-                  ) : openMember.role === 'restricted' ? (
-                    <Ban className="h-4 w-4 text-danger" aria-hidden="true" />
-                  ) : null}
-                  {groupRoleLabel(openMember.role)}
-                </p>
-                {groupMemberMuted(openMember) && (
-                  <p className="mt-1 text-xs text-danger">
-                    Заглушён · {mutedUntilLabel(openMember.mutedUntil)}
-                  </p>
-                )}
-              </div>
-
-              <div className="mx-5 mb-4 space-y-3">
-                {memberActionAllowed(conversation, currentUserId, openMember, 'admin') && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setAdminTarget(openMember)}
-                    className="flex w-full items-center gap-3 rounded-xl bg-canvas px-4 py-3 text-left transition hover:bg-brand-soft/40 disabled:opacity-60"
-                  >
-                    <Shield className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 text-sm font-semibold text-ink">
-                      {openMember.role === 'admin' ? 'Права администратора' : 'Назначить администратором'}
-                    </span>
-                    <span className="shrink-0 text-xs font-semibold text-brand">Настроить</span>
-                  </button>
-                )}
-
-                {memberActionAllowed(conversation, currentUserId, openMember, 'tag') && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setTagTarget(openMember)}
-                    className="flex w-full items-center gap-3 rounded-xl bg-canvas px-4 py-3 text-left transition hover:bg-brand-soft/40 disabled:opacity-60"
-                  >
-                    <Tag className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 text-sm font-semibold text-ink">
-                      Изменить тег участника
-                    </span>
-                    {openMember.tag ? (
-                      <MemberTag tag={openMember.tag} role={openMember.role} />
-                    ) : (
-                      <span className="shrink-0 text-xs text-muted">без тега</span>
-                    )}
-                  </button>
-                )}
-
-                {canManage && openMember.role !== 'owner' && (
-                  <>
-                    <section className="overflow-hidden rounded-xl bg-canvas">
-                      <p className="px-4 pt-3 text-xs font-bold uppercase tracking-wide text-muted">
-                        Разрешения участника
-                      </p>
-                      {/* Участнику управляющие права не выдать — их и не показываем. */}
-                      {(openMember.role === 'admin' ? groupPermissionKeys : memberPermissionKeys).map((permission) => (
-                        <div
-                          key={permission}
-                          className="flex items-center gap-3 border-t border-line/60 px-4 py-2.5"
-                        >
-                          <span className="min-w-0 flex-1 truncate text-sm text-ink">
-                            {groupPermissionLabels[permission]}
-                          </span>
-                          <Switch
-                            label={groupPermissionLabels[permission]}
-                            checked={openMember.permissions[permission]}
-                            disabled={busy}
-                            onChange={(next) => void setMemberPermission(openMember, permission, next)}
-                          />
-                        </div>
-                      ))}
-                    </section>
-
-                    <section className="overflow-hidden rounded-xl bg-canvas">
-                      <p className="flex items-center gap-1.5 px-4 pt-3 text-xs font-bold uppercase tracking-wide text-muted">
-                        <BellOff className="h-3.5 w-3.5" aria-hidden="true" /> Мьют
-                      </p>
-                      {groupMemberMuted(openMember) ? (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void unmuteMember(openMember)}
-                          className="mt-2 flex w-full items-center gap-2 border-t border-line/60 px-4 py-3 text-left text-sm font-semibold text-brand transition hover:bg-brand-soft/40 disabled:opacity-60"
-                        >
-                          <Clock className="h-4 w-4" aria-hidden="true" />
-                          Снять мьют
-                        </button>
-                      ) : (
-                        <div className="mt-2 flex flex-wrap gap-1.5 border-t border-line/60 p-3">
-                          {muteOptions.map((option) => (
-                            <button
-                              key={option.label}
-                              type="button"
-                              disabled={busy}
-                              onClick={() => void muteMember(openMember, option.hours)}
-                              className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-brand/40 hover:bg-brand-soft/40 disabled:opacity-60"
-                            >
-                              {option.label}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </section>
-
-                    <Button
-                      type="button"
-                      variant="danger"
-                      className="w-full"
-                      disabled={busy}
-                      onClick={() => void removeMember(openMember)}
-                    >
-                      <Trash2 className="h-4 w-4" /> Удалить из группы
-                    </Button>
-                  </>
-                )}
-
-                {!canManage && openMember.user.id !== currentUserId && (
-                  <p className="px-1 text-center text-xs leading-5 text-muted">
-                    Управлять участниками могут владелец и администраторы группы.
-                  </p>
-                )}
-              </div>
-            </div>
-          </div>
+          <MemberCardDialog
+            member={openMember}
+            conversation={conversation}
+            currentUserId={currentUserId}
+            busy={busy}
+            canManage={canManage}
+            onClose={() => setOpenMemberId(null)}
+            onOpenAdmin={() => setAdminTarget(openMember)}
+            onOpenTag={() => setTagTarget(openMember)}
+            onPermission={(permission, allowed) => void setMemberPermission(openMember, permission, allowed)}
+            onMute={(hours) => void muteMember(openMember, hours)}
+            onUnmute={() => void unmuteMember(openMember)}
+            onRemove={() => void removeMember(openMember)}
+          />
         )}
       </aside>
 

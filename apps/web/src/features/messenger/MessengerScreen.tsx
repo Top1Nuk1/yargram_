@@ -79,6 +79,7 @@ import {
   groupTitle,
   isGroup,
   memberTagOf,
+  mutedUntilText,
   viewerCan,
 } from '../../lib/group';
 import { buildMessageGroups, groupAt, groupSpacing } from '../../lib/messageGroups';
@@ -396,6 +397,10 @@ export function MessengerScreen({
   const canSendMedia = !selectedIsGroup || viewerCan(selectedConversation, 'send_media');
   const canSendLinks = !selectedIsGroup || viewerCan(selectedConversation, 'send_links');
   const composeBlocked = selectedUnavailable || !canWriteInGroup;
+  // Мьют со сроком: вместо общей фразы пишем, до какого времени писать нельзя.
+  const muteDeadline = selectedIsGroup
+    ? mutedUntilText(selectedConversation?.mutedMembers?.[currentUser.id])
+    : '';
   // Запрет ссылок виден сразу: текст со ссылкой отправить нельзя, пока право не выдадут.
   const draftLinkBlocked = selectedIsGroup && !canSendLinks && containsLink(draft);
   const canAttach = !selectedIsGroup || canSendMedia;
@@ -2638,7 +2643,10 @@ export function MessengerScreen({
                     ) : (
                       <>
                         <Ban className="h-4 w-4 shrink-0 text-muted" />
-                        В этой группе вам запрещено писать. Права выдаёт владелец группы.
+                        {/* Мьют со сроком: говорим, до какого времени закрыто письмо. */}
+                        {muteDeadline
+                          ? `В этой группе вам запрещено писать ${muteDeadline}.`
+                          : 'В этой группе вам запрещено писать. Права выдаёт владелец группы.'}
                       </>
                     )}
                   </p>

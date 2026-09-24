@@ -16,6 +16,7 @@ import {
   memberTagClass,
   mergeMemberPresence,
   mutedUntilLabel,
+  mutedUntilText,
   normalizeMemberTag,
   orderMembersByPresence,
   viewerCan,
@@ -417,6 +418,25 @@ describe('mergeMemberPresence', () => {
     expect(merged[0]?.user.isOnline).toBeUndefined();
     expect(merged[1]?.user.isOnline).toBe(true);
     expect(merged.map((item) => item.role)).toEqual(['member', 'member']);
+  });
+});
+
+describe('mutedUntilText', () => {
+  const now = new Date(2026, 8, 24, 16, 0);
+
+  it('показывает время для мьюта на сегодня', () => {
+    expect(mutedUntilText(new Date(2026, 8, 24, 18, 7).toISOString(), now)).toBe('до 18:07');
+  });
+
+  it('уточняет день, если мьют длиннее суток', () => {
+    expect(mutedUntilText(new Date(2026, 8, 25, 18, 7).toISOString(), now)).toBe('до 18:07 завтра');
+    expect(mutedUntilText(new Date(2026, 8, 28, 18, 7).toISOString(), now)).toBe('до 18:07 28 сентября');
+  });
+
+  it('молчит для бессрочного мьюта и мусора', () => {
+    expect(mutedUntilText(null, now)).toBe('');
+    expect(mutedUntilText(undefined, now)).toBe('');
+    expect(mutedUntilText('не дата', now)).toBe('');
   });
 });
 

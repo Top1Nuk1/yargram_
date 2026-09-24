@@ -166,6 +166,22 @@ describe('карточка группы', () => {
     expect(within(row).getByRole('switch')).toBeDisabled();
   });
 
+  it('карточка участника открывается отдельным окном, а не на всю панель', async () => {
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: /Кэрол/ }));
+
+    // Отдельное модальное окно поверх всего, как профиль или настройки.
+    const dialog = await screen.findByRole('dialog', { name: 'Участник' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog.className).not.toContain('absolute inset-0');
+    expect(within(dialog).getByRole('button', { name: 'Закрыть' })).toBeInTheDocument();
+    // Состав панели остаётся на месте: окно его не подменяет.
+    expect(screen.getByRole('button', { name: /Боб/ })).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Закрыть' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Участник' })).toBeNull());
+  });
+
   it('владелец назначает администратора с выбранными правами', async () => {
     renderPanel();
     fireEvent.click(await screen.findByRole('button', { name: /Кэрол/ }));

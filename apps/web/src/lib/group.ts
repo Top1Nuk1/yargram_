@@ -1,3 +1,4 @@
+import { formatMessageTime } from './format';
 import {
   presenceBucket,
   presenceBucketLabels,
@@ -260,6 +261,26 @@ export function orderMembersByPresence(
   now: number = Date.now(),
 ): GroupMember[] {
   return groupMembersByPresence(members, now).flatMap((section) => section.members);
+}
+
+/**
+ * До какого времени закрыта отправка. Для мьюта со сроком показываем время,
+ * для бессрочного и для запрета правами времени нет — там пустая строка.
+ */
+export function mutedUntilText(
+  mutedUntil: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  if (!mutedUntil) return '';
+  const until = new Date(mutedUntil);
+  if (Number.isNaN(until.getTime())) return '';
+  const time = formatMessageTime(mutedUntil);
+  const sameDay = until.toDateString() === now.toDateString();
+  if (sameDay) return `до ${time}`;
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  if (until.toDateString() === tomorrow.toDateString()) return `до ${time} завтра`;
+  const date = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(until);
+  return `до ${time} ${date}`;
 }
 
 /** Тег участника: обрезаем по краям и ограничиваем длину. */
