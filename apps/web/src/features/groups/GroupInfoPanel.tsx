@@ -13,6 +13,7 @@ import {
   Search,
   Shield,
   ShieldCheck,
+  Tag,
   Trash2,
   UserPlus,
   UsersRound,
@@ -28,24 +29,33 @@ import {
   groupInviteLink,
   groupMemberCountLabel,
   groupMemberMuted,
+  groupMembersByPresence,
   groupPermissionHints,
   groupPermissionLabels,
   groupRoleLabel,
+  memberActionAllowed,
   mutedUntilLabel,
   viewerCan,
   viewerIsOwner,
   viewerManagesGroup,
+  type MemberAction,
 } from '../../lib/group';
+import { formatLastSeen } from '../../lib/presence';
 import {
   groupPermissionKeys,
+  memberPermissionKeys,
   type Conversation,
   type EffectiveGroupPermissions,
   type GroupEvent,
   type GroupMember,
   type GroupPermission,
+  type GroupPermissions,
   type User,
 } from '../../types';
+import { MemberContextMenu } from './MemberContextMenu';
+import { AdminRightsDialog, MemberTagDialog } from './MemberDialogs';
 import { MemberSearchList } from './MemberSearchList';
+import { MemberTag } from './MemberTag';
 
 interface GroupInfoPanelProps {
   token: string;
@@ -56,6 +66,8 @@ interface GroupInfoPanelProps {
   onUpdated: (conversation: Conversation) => void;
   /** Я вышел из группы: беседу нужно убрать из списка. */
   onLeft: (conversationId: string) => void;
+  /** Показать профиль человека — открывает карточку профиля поверх всего. */
+  onShowProfile: (user: User) => void;
 }
 
 type Tab = 'members' | 'rights' | 'history';
@@ -113,13 +125,13 @@ export function GroupInfoPanel({
   onClose,
   onUpdated,
   onLeft,
+  onShowProfile,
 }: GroupInfoPanelProps) {
   const groupId = conversation.id;
   const canManage = viewerManagesGroup(conversation);
   const isOwner = viewerIsOwner(conversation);
   const canChangeInfo = viewerCan(conversation, 'change_info');
   const canAddMembers = viewerCan(conversation, 'add_members');
-  const canDeleteMessages = viewerCan(conversation, 'delete_messages');
 
   const [tab, setTab] = useState<Tab>('members');
   const [members, setMembers] = useState<GroupMember[]>([]);
@@ -131,6 +143,9 @@ export function GroupInfoPanel({
 
   const [memberQuery, setMemberQuery] = useState('');
   const [openMemberId, setOpenMemberId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; member: GroupMember } | null>(null);
+  const [adminTarget, setAdminTarget] = useState<GroupMember | null>(null);
+  const [tagTarget, setTagTarget] = useState<GroupMember | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [adding, setAdding] = useState<User[]>([]);
 
@@ -141,6 +156,8 @@ export function GroupInfoPanel({
 
   const inviteLink = groupInviteLink(conversation.inviteCode);
   const openMember = members.find((member) => member.user.id === openMemberId) ?? null;
+  // Состав по присутствию: в сети, затем недавние с точным временем, ниже давние.
+  const memberSections = useMemo(() => groupMembersByPresence(members), [members]);
 
   const nameOf = useCallback(
     (userId: string) =>
@@ -219,15 +236,55 @@ export function GroupInfoPanel({
     }
   }
 
-  async function toggleAdmin(member: GroupMember) {
-    const next = member.role !== 'admin';
+  async function saveAdminRights(member: GroupMember, permissions: GroupPermissions) {
+    const promoting = member.role !== 'admin';
     await run(
-      () => api.setGroupAdmin(token, groupId, member.user.id, next),
-      next
+      () => api.setGroupAdmin(token, groupId, member.user.id, true, permissions),
+      promoting
         ? `${member.user.displayName} теперь администратор.`
-        : `${member.user.displayName} больше не администратор.`,
+        : `Права ${member.user.displayName} обновлены.`,
     );
+    setAdminTarget(null);
     setOpenMemberId(null);
+  }
+
+  async function demoteAdmin(member: GroupMember) {
+    await run(
+      () => api.setGroupAdmin(token, groupId, member.user.id, false),
+      `${member.user.displayName} больше не администратор.`,
+    );
+    setAdminTarget(null);
+    setOpenMemberId(null);
+  }
+
+  async function saveTag(member: GroupMember, tag: string) {
+    await run(
+      () => api.setGroupMemberTag(token, groupId, member.user.id, tag),
+      tag ? `Тег «${tag}» сохранён.` : 'Тег снят.',
+    );
+    setTagTarget(null);
+  }
+
+  /** Действия из меню участника: одно меню — один обработчик. */
+  function handleMemberAction(member: GroupMember, action: MemberAction) {
+    switch (action) {
+      case 'profile':
+        onShowProfile(member.user);
+        return;
+      case 'tag':
+        setTagTarget(member);
+        return;
+      case 'admin':
+        setAdminTarget(member);
+        return;
+      case 'restrict':
+        // Ограничения и мьют живут в карточке участника.
+        setOpenMemberId(member.user.id);
+        return;
+      case 'remove':
+        void removeMember(member);
+        return;
+    }
   }
 
   /** Права администратора живут отдельно от личных ограничений участника. */
@@ -480,14 +537,29 @@ export function GroupInfoPanel({
                 {members.length === 0 ? (
                   <p className="px-4 py-8 text-center text-sm text-muted">Никого не найдено.</p>
                 ) : (
-                  <ul className="mt-2 space-y-0.5">
-                    {members.map((member) => {
-                      const muted = groupMemberMuted(member);
-                      return (
+                  // При поиске показываем плоский список, без групп по времени.
+                  <div className="mt-2">
+                    {(memberQuery.trim() ? [{ bucket: 'online' as const, label: '', members }] : memberSections).map(
+                      (section) => (
+                        <section key={section.bucket} aria-label={section.label || undefined}>
+                          {section.label && (
+                            <p className="px-3 pb-1 pt-3 text-[11px] font-bold uppercase tracking-wide text-muted">
+                              {section.label}
+                            </p>
+                          )}
+                          <ul className="space-y-0.5">
+                            {section.members.map((member) => {
+                              const muted = groupMemberMuted(member);
+                              return (
                         <li key={member.user.id}>
                           <button
                             type="button"
                             onClick={() => setOpenMemberId(member.user.id)}
+                            onContextMenu={(event) => {
+                              // Правая кнопка открывает меню действий с участником.
+                              event.preventDefault();
+                              setContextMenu({ x: event.clientX, y: event.clientY, member });
+                            }}
                             className="flex w-full items-center gap-3 rounded-xl p-2.5 text-left transition hover:bg-canvas"
                           >
                             <Avatar
@@ -498,10 +570,13 @@ export function GroupInfoPanel({
                               {...avatarProps(member.user)}
                             />
                             <span className="min-w-0 flex-1">
-                              <span className="block truncate text-sm font-semibold text-ink">
-                                <UserName name={member.user.displayName} user={member.user} size="sm" />
+                              <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+                                <span className="truncate">
+                                  <UserName name={member.user.displayName} user={member.user} size="sm" />
+                                </span>
+                                <MemberTag tag={member.tag} role={member.role} />
                                 {member.user.id === currentUserId && (
-                                  <span className="ml-1 text-xs font-normal text-muted">(вы)</span>
+                                  <span className="shrink-0 text-xs font-normal text-muted">(вы)</span>
                                 )}
                               </span>
                               <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
@@ -511,14 +586,20 @@ export function GroupInfoPanel({
                                 <span className="truncate">
                                   {groupRoleLabel(member.role)}
                                   {muted ? ' · заглушён' : ''}
+                                  {' · '}
+                                  {formatLastSeen(member.user)}
                                 </span>
                               </span>
                             </span>
                           </button>
                         </li>
-                      );
-                    })}
-                  </ul>
+                              );
+                            })}
+                          </ul>
+                        </section>
+                      ),
+                    )}
+                  </div>
                 )}
               </>
             )}
@@ -527,10 +608,11 @@ export function GroupInfoPanel({
               <section className="mx-2 overflow-hidden rounded-xl bg-canvas">
                 <p className="px-4 pt-3 text-xs leading-5 text-muted">
                   {canChangeInfo
-                    ? 'Что разрешено обычным участникам. Владельцу и администраторам можно выдать права отдельно.'
+                    ? 'Что разрешено обычным участникам. Права администратора настраиваются отдельно — в меню участника.'
                     : 'Что разрешено обычным участникам этой группы.'}
                 </p>
-                {groupPermissionKeys.map((permission) => (
+                {/* Управляющие права участникам не выдаются: их здесь нет. */}
+                {memberPermissionKeys.map((permission) => (
                   <div key={permission} className="flex items-start gap-3 border-t border-line/60 px-4 py-3">
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-semibold text-ink">
@@ -658,8 +740,9 @@ export function GroupInfoPanel({
                   online={openMember.user.isOnline}
                   {...avatarProps(openMember.user)}
                 />
-                <p className="mt-3 text-lg font-bold text-ink">
+                <p className="mt-3 inline-flex max-w-full items-center gap-2 text-lg font-bold text-ink">
                   <UserName name={openMember.user.displayName} user={openMember.user} />
+                  <MemberTag tag={openMember.tag} role={openMember.role} className="text-xs" />
                 </p>
                 <p className="mt-1 inline-flex items-center gap-1.5 text-sm text-muted">
                   {openMember.role === 'owner' ? (
@@ -679,28 +762,48 @@ export function GroupInfoPanel({
               </div>
 
               <div className="mx-5 mb-4 space-y-3">
-                {isOwner && openMember.role !== 'owner' && (
-                  <div className="flex items-center gap-3 rounded-xl bg-canvas px-4 py-3">
+                {memberActionAllowed(conversation, currentUserId, openMember, 'admin') && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setAdminTarget(openMember)}
+                    className="flex w-full items-center gap-3 rounded-xl bg-canvas px-4 py-3 text-left transition hover:bg-brand-soft/40 disabled:opacity-60"
+                  >
                     <Shield className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
                     <span className="min-w-0 flex-1 text-sm font-semibold text-ink">
-                      Администратор группы
+                      {openMember.role === 'admin' ? 'Права администратора' : 'Назначить администратором'}
                     </span>
-                    <Switch
-                      label="Администратор группы"
-                      checked={openMember.role === 'admin'}
-                      disabled={busy}
-                      onChange={() => void toggleAdmin(openMember)}
-                    />
-                  </div>
+                    <span className="shrink-0 text-xs font-semibold text-brand">Настроить</span>
+                  </button>
                 )}
 
-                {canDeleteMessages && openMember.role !== 'owner' && (
+                {memberActionAllowed(conversation, currentUserId, openMember, 'tag') && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setTagTarget(openMember)}
+                    className="flex w-full items-center gap-3 rounded-xl bg-canvas px-4 py-3 text-left transition hover:bg-brand-soft/40 disabled:opacity-60"
+                  >
+                    <Tag className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 text-sm font-semibold text-ink">
+                      Изменить тег участника
+                    </span>
+                    {openMember.tag ? (
+                      <MemberTag tag={openMember.tag} role={openMember.role} />
+                    ) : (
+                      <span className="shrink-0 text-xs text-muted">без тега</span>
+                    )}
+                  </button>
+                )}
+
+                {canManage && openMember.role !== 'owner' && (
                   <>
                     <section className="overflow-hidden rounded-xl bg-canvas">
                       <p className="px-4 pt-3 text-xs font-bold uppercase tracking-wide text-muted">
                         Разрешения участника
                       </p>
-                      {groupPermissionKeys.map((permission) => (
+                      {/* Участнику управляющие права не выдать — их и не показываем. */}
+                      {(openMember.role === 'admin' ? groupPermissionKeys : memberPermissionKeys).map((permission) => (
                         <div
                           key={permission}
                           className="flex items-center gap-3 border-t border-line/60 px-4 py-2.5"
@@ -771,6 +874,38 @@ export function GroupInfoPanel({
           </div>
         )}
       </aside>
+
+      {contextMenu && (
+        <MemberContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          conversation={conversation}
+          currentUserId={currentUserId}
+          member={contextMenu.member}
+          onClose={() => setContextMenu(null)}
+          onAction={(action) => handleMemberAction(contextMenu.member, action)}
+        />
+      )}
+
+      {adminTarget && (
+        <AdminRightsDialog
+          member={adminTarget}
+          conversation={conversation}
+          busy={busy}
+          onClose={() => setAdminTarget(null)}
+          onSubmit={(permissions) => void saveAdminRights(adminTarget, permissions)}
+          onDemote={() => void demoteAdmin(adminTarget)}
+        />
+      )}
+
+      {tagTarget && (
+        <MemberTagDialog
+          member={tagTarget}
+          busy={busy}
+          onClose={() => setTagTarget(null)}
+          onSubmit={(tag) => void saveTag(tagTarget, tag)}
+        />
+      )}
     </div>
   );
 }

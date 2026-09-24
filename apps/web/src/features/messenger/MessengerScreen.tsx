@@ -75,8 +75,10 @@ import { formatConversationTime, formatMessageTime } from '../../lib/format';
 import {
   containsLink,
   groupMemberCountLabel,
+  groupRoleOf,
   groupTitle,
   isGroup,
+  memberTagOf,
   viewerCan,
 } from '../../lib/group';
 import { buildMessageGroups, groupAt, groupSpacing } from '../../lib/messageGroups';
@@ -91,6 +93,7 @@ import { CallOverlay } from '../calls/CallOverlay';
 import { useWebRtcCall } from '../calls/useWebRtcCall';
 import { GroupCreateModal } from '../groups/GroupCreateModal';
 import { GroupInfoPanel } from '../groups/GroupInfoPanel';
+import { MemberTag } from '../groups/MemberTag';
 import { ProfileModal } from '../profile/ProfileModal';
 import { UserProfileSheet } from '../profile/UserProfileSheet';
 import { AppSidebar, type SidebarAction } from '../sidebar/AppSidebar';
@@ -282,6 +285,8 @@ export function MessengerScreen({
   const [searchOpen, setSearchOpen] = useState(false);
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
   const [groupInfoOpen, setGroupInfoOpen] = useState(false);
+  /** Профиль участника группы, открытый из карточки группы. */
+  const [memberProfile, setMemberProfile] = useState<User | null>(null);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
   const [profileOpen, setProfileOpen] = useState(false);
@@ -993,6 +998,26 @@ export function MessengerScreen({
       cancelled = true;
     };
   }, [token]);
+
+  /** Из профиля участника группы открываем личный диалог с ним. */
+  async function openDirectWith(user: User) {
+    setMemberProfile(null);
+    setGroupInfoOpen(false);
+    try {
+      const conversation = await api.createDirect(token, user.id);
+      setConversations((current) =>
+        uniqueConversations([
+          { ...conversation, otherUser: conversation.otherUser ?? user },
+          ...current.filter((item) => item.id !== conversation.id),
+        ]),
+      );
+      setListMode('inbox');
+      setFilter('');
+      setSelectedId(conversation.id);
+    } catch (error) {
+      setNotice(readableError(error, 'Не удалось открыть диалог.'));
+    }
+  }
 
   /** Я вышел из группы: беседа исчезает из списка, как и у остальных участников. */
   function handleGroupLeft(conversationId: string) {
@@ -2333,6 +2358,14 @@ export function MessengerScreen({
                       const mine = messageSenderId(message) === currentUser.id;
                       const readByPeer = (message.readBy ?? []).some((userId) => userId !== currentUser.id);
                       const sender = message.sender ?? message.author ?? selectedPeer;
+                      const senderId = messageSenderId(message) ?? '';
+                      // Тег автора и его роль нужны только в группе.
+                      const senderTag = selectedIsGroup
+                        ? memberTagOf(selectedConversation, senderId)
+                        : undefined;
+                      const senderRole = selectedIsGroup
+                        ? groupRoleOf(selectedConversation, senderId) ?? 'member'
+                        : 'member';
                       const pinned = selectedPins.some((item) => item.id === message.id);
                       const favorite = Boolean(message.isFavorite ?? message.favoritedByMe);
                       return (
@@ -2435,12 +2468,14 @@ export function MessengerScreen({
                                     }}
                                   >
                                     {!mine && (
-                                      <p className="mb-1 text-[11px] font-bold text-brand">
+                                      <p className="mb-1 flex items-center gap-1.5 text-[11px] font-bold text-brand">
                                         <UserName
                                           size="sm"
                                           name={message.sender?.displayName ?? message.author?.displayName ?? selectedPeer?.displayName ?? 'Собеседник'}
                                           user={message.sender ?? message.author ?? selectedPeer}
                                         />
+                                        {/* В группе рядом с именем — тег, покрашенный по роли. */}
+                                        {senderTag && <MemberTag tag={senderTag} role={senderRole} />}
                                       </p>
                                     )}
                                     {message.forwardedFrom && (
@@ -2764,6 +2799,17 @@ export function MessengerScreen({
           onClose={() => setGroupInfoOpen(false)}
           onUpdated={handleGroupUpdated}
           onLeft={handleGroupLeft}
+          onShowProfile={setMemberProfile}
+        />
+      )}
+      {memberProfile && (
+        <UserProfileSheet
+          token={token}
+          user={memberProfile}
+          mode="peer"
+          onClose={() => setMemberProfile(null)}
+          onMessage={() => void openDirectWith(memberProfile)}
+          onUnauthorized={() => onLogout(true)}
         />
       )}
       {profileOpen && (

@@ -6,16 +6,31 @@ import {
   groupInviteLink,
   groupMemberCountLabel,
   groupMemberMuted,
+  groupMembersByPresence,
   groupRoleLabel,
+  groupRoleOf,
   groupTitle,
+  isAdminOnlyPermission,
   isGroup,
+  memberActionAllowed,
+  memberTagClass,
   mutedUntilLabel,
+  normalizeMemberTag,
   viewerCan,
   viewerIsOwner,
   viewerManagesGroup,
   viewerPermissions,
 } from './group';
-import type { Conversation, GroupEvent, GroupPermissions } from '../types';
+import {
+  adminOnlyPermissionKeys,
+  memberPermissionKeys,
+  type Conversation,
+  type GroupEvent,
+  type GroupMember,
+  type GroupPermissions,
+  type GroupRole,
+  type User,
+} from '../types';
 
 function conversation(patch: Partial<Conversation> = {}): Conversation {
   return { id: 'group-1', type: 'group', title: 'Поход', ...patch };
@@ -222,6 +237,164 @@ describe('allGroupPermissions', () => {
     const off = allGroupPermissions(false) as GroupPermissions;
     expect(Object.values(on).every(Boolean)).toBe(true);
     expect(Object.values(off).every((value) => value === false)).toBe(true);
-    expect(Object.keys(on)).toHaveLength(8);
+    // Восемь прав участников и четыре управляющих.
+    expect(Object.keys(on)).toHaveLength(12);
+    expect(memberPermissionKeys).toHaveLength(8);
+    expect(adminOnlyPermissionKeys).toHaveLength(4);
+  });
+
+  it('управляющие права отделены от прав участников', () => {
+    for (const key of adminOnlyPermissionKeys) expect(isAdminOnlyPermission(key)).toBe(true);
+    for (const key of memberPermissionKeys) expect(isAdminOnlyPermission(key)).toBe(false);
+  });
+});
+
+describe('memberActionAllowed', () => {
+  const member = (id: string, role: GroupRole) => ({ user: { id, displayName: id }, role });
+
+  it('обычный участник может только смотреть профиль и ставить свой тег', () => {
+    const group = conversation({
+      role: 'member',
+      myPermissions: allGroupPermissions(false) as GroupMember['permissions'],
+    });
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'profile')).toBe(true);
+    expect(memberActionAllowed(group, 'me', member('me', 'member'), 'tag')).toBe(true);
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'tag')).toBe(false);
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'admin')).toBe(false);
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'remove')).toBe(false);
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'restrict')).toBe(false);
+  });
+
+  it('владелец управляет всеми, кроме самого себя', () => {
+    const group = conversation({ role: 'owner' });
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'admin')).toBe(true);
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'remove')).toBe(true);
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'restrict')).toBe(true);
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'tag')).toBe(true);
+    // Себя владелец не удаляет и не ограничивает, но свой тег ставит.
+    expect(memberActionAllowed(group, 'me', member('me', 'owner'), 'remove')).toBe(false);
+    expect(memberActionAllowed(group, 'me', member('me', 'owner'), 'restrict')).toBe(false);
+    expect(memberActionAllowed(group, 'me', member('me', 'owner'), 'tag')).toBe(true);
+  });
+
+  it('администратор не трогает другого администратора и владельца', () => {
+    const group = conversation({ role: 'admin', myPermissions: allGroupPermissions(true) as GroupMember['permissions'] });
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'remove')).toBe(true);
+    expect(memberActionAllowed(group, 'me', member('bob', 'admin'), 'remove')).toBe(false);
+    expect(memberActionAllowed(group, 'me', member('bob', 'admin'), 'restrict')).toBe(false);
+    expect(memberActionAllowed(group, 'me', member('bob', 'owner'), 'tag')).toBe(false);
+    expect(memberActionAllowed(group, 'me', member('bob', 'owner'), 'admin')).toBe(false);
+  });
+
+  it('без права добавления администраторов назначить нельзя', () => {
+    const group = conversation({
+      role: 'admin',
+      myPermissions: { ...allGroupPermissions(true), add_admins: false } as GroupMember['permissions'],
+    });
+    expect(memberActionAllowed(group, 'me', member('bob', 'member'), 'admin')).toBe(false);
+  });
+
+  it('в личном диалоге действий участника нет', () => {
+    expect(memberActionAllowed({ id: 'd', type: 'direct' }, 'me', member('bob', 'member'), 'profile')).toBe(false);
+    expect(memberActionAllowed(null, 'me', member('bob', 'member'), 'profile')).toBe(false);
+  });
+});
+
+describe('groupRoleOf', () => {
+  const base = conversation({ ownerId: 'a1', adminIds: ['b2'], memberIds: ['a1', 'b2', 'c3', 'd4'] });
+
+  it('считает роль из записи группы', () => {
+    expect(groupRoleOf(base, 'a1')).toBe('owner');
+    expect(groupRoleOf(base, 'b2')).toBe('admin');
+    expect(groupRoleOf(base, 'c3')).toBe('member');
+    // Постороннему роли нет.
+    expect(groupRoleOf(base, 'zz')).toBeNull();
+    expect(groupRoleOf({ id: 'd', type: 'direct' }, 'a1')).toBeNull();
+  });
+
+  it('ограниченным делает личный запрет или действующий мьют', () => {
+    expect(groupRoleOf({ ...base, restrictions: { c3: { send_messages: false } } }, 'c3')).toBe('restricted');
+    expect(groupRoleOf({ ...base, mutedMembers: { c3: null } }, 'c3')).toBe('restricted');
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const past = new Date(Date.now() - 60_000).toISOString();
+    expect(groupRoleOf({ ...base, mutedMembers: { c3: future } }, 'c3')).toBe('restricted');
+    // Прошедший мьют роль не меняет.
+    expect(groupRoleOf({ ...base, mutedMembers: { c3: past } }, 'c3')).toBe('member');
+    expect(groupRoleOf({ ...base, mutedMembers: {} }, 'c3')).toBe('member');
+  });
+});
+
+describe('groupMembersByPresence', () => {
+  const person = (id: string, patch: Partial<User> = {}): User => ({ id, displayName: id, ...patch });
+  const asMember = (id: string, role: GroupRole, patch: Partial<User> = {}): GroupMember => ({
+    user: person(id, patch),
+    role,
+    permissions: allGroupPermissions(true) as GroupMember['permissions'],
+    addedByOwner: false,
+  });
+
+  it('раскладывает состав по времени: в сети, недавно, давно', () => {
+    const now = Date.parse('2026-09-24T16:00:00.000Z');
+    const sections = groupMembersByPresence(
+      [
+        asMember('давний', 'member', { lastSeenAt: '2026-06-01T10:00:00.000Z' }),
+        asMember('в сети', 'owner', { isOnline: true }),
+        asMember('недавний', 'member', { lastSeenAt: '2026-09-24T15:00:00.000Z' }),
+      ],
+      now,
+    );
+
+    expect(sections.map((section) => section.bucket)).toEqual(['online', 'recent', 'long_ago']);
+    expect(sections.map((section) => section.label)).toEqual(['В сети', 'Недавно', 'Давно']);
+    expect(sections[0]?.members.map((item) => item.user.id)).toEqual(['в сети']);
+    expect(sections[1]?.members.map((item) => item.user.id)).toEqual(['недавний']);
+    expect(sections[2]?.members.map((item) => item.user.id)).toEqual(['давний']);
+  });
+
+  it('внутри группы свежие визиты выше, пустые группы не показываются', () => {
+    const now = Date.parse('2026-09-24T16:00:00.000Z');
+    const sections = groupMembersByPresence(
+      [
+        asMember('утро', 'member', { lastSeenAt: '2026-09-24T08:00:00.000Z' }),
+        asMember('день', 'member', { lastSeenAt: '2026-09-24T14:00:00.000Z' }),
+      ],
+      now,
+    );
+
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.members.map((item) => item.user.id)).toEqual(['день', 'утро']);
+    expect(groupMembersByPresence([], now)).toEqual([]);
+  });
+});
+
+describe('тег участника', () => {
+  it('обрезает пробелы и ограничивает длину', () => {
+    expect(normalizeMemberTag('  #смирнёха  ')).toBe('#смирнёха');
+    expect(normalizeMemberTag('')).toBe('');
+    expect(normalizeMemberTag('я'.repeat(40))).toHaveLength(24);
+  });
+
+  it('красит тег по роли: владелец фиолетовый, администратор зелёный, участник серый', () => {
+    expect(memberTagClass('owner')).toBe('text-owner');
+    expect(memberTagClass('admin')).toBe('text-success');
+    expect(memberTagClass('member')).toBe('text-muted');
+    expect(memberTagClass('restricted')).toBe('text-muted');
+  });
+
+  it('описывает смену тега в истории', () => {
+    const event: GroupEvent = {
+      id: 'e1',
+      at: '2026-09-23T10:00:00.000Z',
+      actorId: 'a1',
+      kind: 'member_tag_changed',
+      targetId: 'b2',
+      detail: '#смирнёха',
+    };
+    expect(groupEventText(event, (id) => (id === 'a1' ? 'Алиса' : 'Боб'))).toBe(
+      'Алиса поставил(а) Боб тег «#смирнёха»',
+    );
+    expect(groupEventText({ ...event, detail: '' }, (id) => (id === 'a1' ? 'Алиса' : 'Боб'))).toBe(
+      'Алиса снял(а) тег с Боб',
+    );
   });
 });

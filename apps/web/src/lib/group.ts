@@ -1,4 +1,11 @@
 import {
+  presenceBucket,
+  presenceBucketLabels,
+  presenceBucketOrder,
+  type PresenceBucket,
+} from './presence';
+import {
+  adminOnlyPermissionKeys,
   groupPermissionKeys,
   type Conversation,
   type EffectiveGroupPermissions,
@@ -30,6 +37,10 @@ export const groupPermissionLabels: Record<GroupPermission, string> = {
   pin_messages: 'Закрепление сообщений',
   change_info: 'Изменение информации',
   delete_messages: 'Удаление сообщений',
+  remove_members: 'Удаление участников',
+  restrict_members: 'Ограничение участников',
+  manage_tags: 'Изменение тегов участников',
+  add_admins: 'Добавление администраторов',
 };
 
 /** Короткие пояснения: что именно закрывает выключенный пункт. */
@@ -42,7 +53,16 @@ export const groupPermissionHints: Record<GroupPermission, string> = {
   pin_messages: 'Закреплять сообщения в шапке',
   change_info: 'Название, описание и фото группы',
   delete_messages: 'Удалять чужие сообщения',
+  remove_members: 'Выгонять людей из группы',
+  restrict_members: 'Запреты и мьют для участника',
+  manage_tags: 'Подписи рядом с именем у других участников',
+  add_admins: 'Назначать новых администраторов',
 };
+
+/** Управляющие права обычным участникам не выдаются — их список отдельный. */
+export function isAdminOnlyPermission(permission: GroupPermission): boolean {
+  return (adminOnlyPermissionKeys as readonly string[]).includes(permission);
+}
 
 /** Все пункты включены — состояние «как в обычной группе». */
 export function allGroupPermissions(value = true): GroupPermissions {
@@ -92,6 +112,124 @@ export function viewerManagesGroup(conversation: Conversation | null | undefined
 
 export function viewerIsOwner(conversation: Conversation | null | undefined): boolean {
   return conversation?.role === 'owner';
+}
+
+/** Что можно сделать с участником из контекстного меню. */
+export type MemberAction = 'profile' | 'tag' | 'admin' | 'restrict' | 'remove';
+
+/**
+ * Одно место, где решается, доступно ли действие над участником. Меню,
+ * карточка участника и права на сервере должны отвечать одинаково.
+ */
+export function memberActionAllowed(
+  conversation: Conversation | null | undefined,
+  actorId: string,
+  member: Pick<GroupMember, 'user' | 'role'>,
+  action: MemberAction,
+): boolean {
+  if (!isGroup(conversation)) return false;
+  const isSelf = member.user.id === actorId;
+  const targetIsOwner = member.role === 'owner';
+  const targetIsAdmin = member.role === 'admin';
+  const amOwner = viewerIsOwner(conversation);
+  switch (action) {
+    case 'profile':
+      return true;
+    case 'tag':
+      // Свой тег ставит каждый; тег владельца — только сам владелец.
+      if (targetIsOwner) return isSelf;
+      return isSelf || viewerCan(conversation, 'manage_tags');
+    case 'admin':
+      return !targetIsOwner && viewerCan(conversation, 'add_admins');
+    case 'restrict':
+    case 'remove': {
+      if (targetIsOwner) return false;
+      // Другого администратора снимает и ограничивает только владелец.
+      if (targetIsAdmin && !amOwner) return false;
+      return viewerCan(conversation, action === 'remove' ? 'remove_members' : 'restrict_members');
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Роль человека в группе, посчитанная из записи беседы. Повторяет правило
+ * сервера: отдельного поля «роль» нет.
+ */
+export function groupRoleOf(
+  conversation: Conversation | null | undefined,
+  userId: string,
+  now: number = Date.now(),
+): GroupRole | null {
+  if (!isGroup(conversation)) return null;
+  if (!(conversation?.memberIds ?? []).includes(userId)) return null;
+  if (conversation?.ownerId === userId) return 'owner';
+  if ((conversation?.adminIds ?? []).includes(userId)) return 'admin';
+  const personal = conversation?.restrictions?.[userId];
+  if (personal && Object.values(personal).some((allowed) => allowed === false)) return 'restricted';
+  const muted = conversation?.mutedMembers?.[userId];
+  // null — бессрочный мьют, отсутствие ключа — мьюта нет.
+  if (muted === null || (muted !== undefined && Date.parse(muted) > now)) return 'restricted';
+  return 'member';
+}
+
+/** Тег участника из записи беседы: он же показывается рядом с именем в чате. */
+export function memberTagOf(
+  conversation: Conversation | null | undefined,
+  userId: string,
+): string | undefined {
+  return conversation?.memberTags?.[userId];
+}
+
+export interface MemberPresenceSection {
+  bucket: PresenceBucket;
+  label: string;
+  members: GroupMember[];
+}
+
+/**
+ * Состав группы по присутствию: сверху те, кто в сети, затем недавние с точным
+ * временем, ниже — на прошлой неделе, в прошлом месяце и совсем давно.
+ */
+export function groupMembersByPresence(
+  members: GroupMember[],
+  now: number = Date.now(),
+): MemberPresenceSection[] {
+  const sections = new Map<PresenceBucket, GroupMember[]>();
+  for (const member of members) {
+    const bucket = presenceBucket(member.user, now);
+    const list = sections.get(bucket);
+    if (list) list.push(member);
+    else sections.set(bucket, [member]);
+  }
+
+  // Внутри группы свежие визиты выше: у «недавних» видно точное время.
+  const seenAt = (member: GroupMember): number => {
+    const parsed = Date.parse(member.user.lastSeenAt ?? '');
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+
+  return presenceBucketOrder.filter((bucket) => sections.has(bucket)).map((bucket) => {
+    const list = sections.get(bucket) ?? [];
+    if (bucket !== 'online') list.sort((left, right) => seenAt(right) - seenAt(left));
+    return { bucket, label: presenceBucketLabels[bucket], members: list };
+  });
+}
+
+/** Тег участника: обрезаем по краям и ограничиваем длину. */
+export function normalizeMemberTag(value: string): string {
+  return value.trim().slice(0, 24);
+}
+
+/**
+ * Цвет тега зависит от роли: у владельца фиолетовый, у администратора зелёный,
+ * у обычного участника серый.
+ */
+export function memberTagClass(role: GroupRole): string {
+  if (role === 'owner') return 'text-owner';
+  if (role === 'admin') return 'text-success';
+  return 'text-muted';
 }
 
 /**
@@ -193,6 +331,10 @@ export function groupEventText(
         : `${actor} заглушил(а) ${target} бессрочно`;
     case 'member_unmuted':
       return `${actor} снял(а) мьют с ${target}`;
+    case 'member_tag_changed':
+      return event.detail
+        ? `${actor} поставил(а) ${target} тег «${event.detail}»`
+        : `${actor} снял(а) тег с ${target}`;
     default:
       return `${actor} изменил(а) группу`;
   }

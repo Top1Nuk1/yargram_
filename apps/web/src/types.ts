@@ -139,11 +139,8 @@ export interface Message {
   favoritedByMe?: boolean;
 }
 
-/**
- * Права группы включаются по отдельности: владелец собирает из них любую
- * комбинацию для администраторов и участников.
- */
-export const groupPermissionKeys = [
+/** Права, которые владелец выдаёт обычным участникам. */
+export const memberPermissionKeys = [
   'send_messages',
   'send_media',
   'send_links',
@@ -153,6 +150,26 @@ export const groupPermissionKeys = [
   'change_info',
   'delete_messages',
 ] as const;
+
+/** Управляющие права: только у владельца и администраторов. */
+export const adminOnlyPermissionKeys = [
+  'remove_members',
+  'restrict_members',
+  'manage_tags',
+  'add_admins',
+] as const;
+
+/**
+ * Права группы включаются по отдельности: владелец собирает из них любую
+ * комбинацию для администраторов и участников.
+ */
+export const groupPermissionKeys = [
+  ...memberPermissionKeys,
+  ...adminOnlyPermissionKeys,
+] as const;
+
+export type MemberPermissionKey = (typeof memberPermissionKeys)[number];
+export type AdminOnlyPermissionKey = (typeof adminOnlyPermissionKeys)[number];
 
 export type GroupPermission = (typeof groupPermissionKeys)[number];
 export type GroupPermissions = Partial<Record<GroupPermission, boolean>>;
@@ -174,7 +191,8 @@ export type GroupEventKind =
   | 'permissions_changed'
   | 'member_restricted'
   | 'member_muted'
-  | 'member_unmuted';
+  | 'member_unmuted'
+  | 'member_tag_changed';
 
 /** Запись истории изменений группы: кто и что сделал. */
 export interface GroupEvent {
@@ -193,6 +211,8 @@ export interface GroupMember {
   permissions: EffectiveGroupPermissions;
   /** Поля нет, когда мьюта нет; null — бессрочный мьют. */
   mutedUntil?: string | null;
+  /** Подпись рядом с именем; поля нет, если тег не задан. */
+  tag?: string;
   addedByOwner: boolean;
 }
 
@@ -212,6 +232,8 @@ export interface Conversation {
   permissions?: GroupPermissions;
   restrictions?: Record<string, GroupPermissions>;
   mutedMembers?: Record<string, string | null>;
+  /** Теги участников внутри группы: id участника → подпись рядом с именем. */
+  memberTags?: Record<string, string>;
   history?: GroupEvent[];
   /** Роль смотрящего в группе; у личного диалога и «Избранного» — нет. */
   role?: GroupRole | null;
@@ -220,6 +242,8 @@ export interface Conversation {
   memberCount?: number;
   participants?: Participant[];
   members?: Participant[];
+  /** Идентификаторы участников: по ним считается роль в группе. */
+  memberIds?: string[];
   users?: User[];
   otherUser?: User;
   lastMessage?: Message | null;

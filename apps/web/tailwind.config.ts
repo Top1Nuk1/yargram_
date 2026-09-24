@@ -19,6 +19,8 @@ export default {
         },
         success: 'rgb(var(--success) / <alpha-value>)',
         danger: 'rgb(var(--danger) / <alpha-value>)',
+        /** Фиолетовый акцент: тег владельца группы. */
+        owner: 'rgb(var(--accent) / <alpha-value>)',
       },
       boxShadow: {
         panel: '0 4px 24px rgba(15, 35, 50, 0.06)',

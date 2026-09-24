@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { mergeUserProfile, updateUserPresence } from './presence';
-import { formatLastSeen, isUserOnline } from '../features/messenger/messengerUtils';
+import {
+  formatLastSeen,
+  isUserOnline,
+  mergeUserProfile,
+  presenceBucket,
+  presenceBucketLabels,
+  presenceBucketOrder,
+  updateUserPresence,
+} from './presence';
 import type { User } from '../types';
 
 const user: User = { id: 'peer', displayName: 'Peer', lastSeenAt: '2026-05-14T10:00:00Z', online: true };
@@ -49,5 +56,41 @@ describe('last seen in the viewer device timezone', () => {
   it('handles missing and invalid timestamps', () => {
     expect(formatLastSeen({ ...user, online: false, lastSeenAt: 'invalid' })).toBe('Был(а) давно');
     expect(formatLastSeen(null)).toBe('Статус неизвестен');
+  });
+});
+
+describe('группы присутствия для списка участников', () => {
+  const now = Date.parse('2026-09-24T16:00:00.000Z');
+  const at = (id: string, patch: Partial<User>) =>
+    ({ id, displayName: id, ...patch }) as User;
+
+  it('сверху те, кто в сети, потом недавние с точным временем, ниже давние', () => {
+    expect(presenceBucket(at('a', { isOnline: true }), now)).toBe('online');
+    expect(presenceBucket(at('b', { lastSeenAt: '2026-09-24T15:00:00.000Z' }), now)).toBe('recent');
+    expect(presenceBucket(at('c', { lastSeenAt: '2026-09-23T15:00:00.000Z' }), now)).toBe('recent');
+    expect(presenceBucket(at('d', { lastSeenAt: '2026-09-21T15:00:00.000Z' }), now)).toBe('within_week');
+    expect(presenceBucket(at('e', { lastSeenAt: '2026-09-05T15:00:00.000Z' }), now)).toBe('within_month');
+    expect(presenceBucket(at('f', { lastSeenAt: '2026-06-05T15:00:00.000Z' }), now)).toBe('long_ago');
+  });
+
+  it('приблизительный статус важнее точного времени, а скрытое время — давно', () => {
+    expect(presenceBucket(at('a', { lastSeenStatus: 'recently', lastSeenAt: null }), now)).toBe('recent');
+    expect(presenceBucket(at('b', { lastSeenStatus: 'within_month', lastSeenAt: null }), now)).toBe('within_month');
+    expect(presenceBucket(at('c', { showLastSeen: false, lastSeenAt: '2026-09-24T15:00:00.000Z' }), now)).toBe('long_ago');
+    expect(presenceBucket(at('d', { lastSeenAt: null }), now)).toBe('long_ago');
+    expect(presenceBucket(at('e', { lastSeenAt: 'не дата' }), now)).toBe('long_ago');
+    expect(presenceBucket(null, now)).toBe('long_ago');
+  });
+
+  it('в сети не показывается тому, кто скрыл время или отдал только давность', () => {
+    expect(presenceBucket(at('a', { isOnline: true, lastSeenStatus: 'within_week' }), now)).toBe('within_week');
+    expect(presenceBucket(at('b', { isOnline: true, showLastSeen: false }), now)).toBe('long_ago');
+  });
+
+  it('порядок групп и подписи заданы явно', () => {
+    expect(presenceBucketOrder).toEqual(['online', 'recent', 'within_week', 'within_month', 'long_ago']);
+    expect(presenceBucketLabels.online).toBe('В сети');
+    expect(presenceBucketLabels.recent).toBe('Недавно');
+    expect(presenceBucketLabels.long_ago).toBe('Давно');
   });
 });

@@ -1,5 +1,4 @@
-import type { Attachment, Conversation, Message, User } from '../../types';
-import { formatMessageTime } from '../../lib/format';
+import type { Attachment, Conversation, Message } from '../../types';
 
 export const MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😎', '🔥', '😢', '😮'] as const;
 
@@ -73,38 +72,10 @@ export function conversationPins(conversation: Conversation | null | undefined):
   return Array.from(new Map(pins.map((message) => [message.id, message])).values());
 }
 
-export function isUserOnline(user: User | null | undefined): boolean {
-  return !user?.lastSeenStatus && user?.showLastSeen !== false && Boolean(user?.isOnline ?? user?.online);
-}
+// Онлайн считается в одном месте — в lib/presence, чтобы списки и шапка чата
+// не расходились в ответе.
+export { formatLastSeen, isUserOnline } from '../../lib/presence';
 
-export function formatLastSeen(user: User | null | undefined, now = new Date()): string {
-  if (!user) return 'Статус неизвестен';
-  if (user.lastSeenStatus) {
-    return {
-      recently: 'Был(а) недавно',
-      within_week: 'Был(а) на прошлой неделе',
-      within_month: 'Был(а) в прошлом месяце',
-      long_ago: 'Был(а) давно',
-    }[user.lastSeenStatus];
-  }
-  if (user.showLastSeen === false) return 'Был(а) давно';
-  if (isUserOnline(user)) return 'В сети';
-  if (!user.lastSeenAt) return 'Был(а) давно';
-  const seen = new Date(user.lastSeenAt);
-  if (Number.isNaN(seen.getTime())) return 'Был(а) давно';
-
-  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startSeen = new Date(seen.getFullYear(), seen.getMonth(), seen.getDate());
-  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-  const time = formatMessageTime(user.lastSeenAt);
-  if (startSeen.getTime() === startToday.getTime()) return `Был(а) сегодня в ${time}`;
-  if (startSeen.getTime() === yesterday.getTime()) return `Был(а) вчера в ${time}`;
-  const date = new Intl.DateTimeFormat('ru-RU', {
-    day: 'numeric', month: 'long',
-    ...(seen.getFullYear() !== now.getFullYear() ? { year: 'numeric' as const } : {}),
-  }).format(seen);
-  return `Был(а) ${date} в ${time}`;
-}
 
 // Conversation muting helper
 export function conversationIsMuted(conversation: Conversation | null | undefined): boolean {

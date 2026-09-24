@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../../api/client';
 import { allGroupPermissions } from '../../lib/group';
-import type { Conversation, GroupEvent, GroupMember } from '../../types';
+import type { Conversation, GroupEvent, GroupMember, User } from '../../types';
 import { GroupInfoPanel } from './GroupInfoPanel';
 
 vi.mock('../../api/client', async (importOriginal) => {
@@ -16,6 +16,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       updateGroup: vi.fn(),
       setGroupAdmin: vi.fn(),
       setGroupPermissions: vi.fn(),
+      setGroupMemberTag: vi.fn(),
       restrictGroupMember: vi.fn(),
       removeGroupMember: vi.fn(),
       addGroupMembers: vi.fn(),
@@ -36,7 +37,15 @@ const bob: Person = { id: 'bob-2', displayName: 'Боб', username: 'bob', avata
 const carol: Person = { id: 'carol-3', displayName: 'Кэрол', username: 'carol', avatarUrl: null };
 
 /** Минимальный профиль: остальные поля User необязательны. */
-type Person = { id: string; displayName: string; username: string; avatarUrl: string | null; isOnline?: boolean };
+type Person = {
+  id: string;
+  displayName: string;
+  username: string;
+  avatarUrl: string | null;
+  isOnline?: boolean;
+  lastSeenAt?: string | null;
+  lastSeenStatus?: User['lastSeenStatus'];
+};
 
 function member(
   user: Person,
@@ -82,6 +91,7 @@ function renderPanel(patch: Partial<Conversation> = {}, handlers: Partial<Parame
   const onUpdated = vi.fn();
   const onLeft = vi.fn();
   const onClose = vi.fn();
+  const onShowProfile = vi.fn();
   const view = render(
     <GroupInfoPanel
       token="token"
@@ -90,10 +100,11 @@ function renderPanel(patch: Partial<Conversation> = {}, handlers: Partial<Parame
       onClose={onClose}
       onUpdated={onUpdated}
       onLeft={onLeft}
+      onShowProfile={onShowProfile}
       {...handlers}
     />,
   );
-  return { ...view, onUpdated, onLeft, onClose };
+  return { ...view, onUpdated, onLeft, onClose, onShowProfile };
 }
 
 beforeEach(() => {
@@ -101,6 +112,7 @@ beforeEach(() => {
   vi.mocked(api.groupHistory).mockResolvedValue(history);
   vi.mocked(api.setGroupPermissions).mockResolvedValue(group());
   vi.mocked(api.setGroupAdmin).mockResolvedValue(group());
+  vi.mocked(api.setGroupMemberTag).mockResolvedValue(group());
   vi.mocked(api.restrictGroupMember).mockResolvedValue(group());
   vi.mocked(api.leaveGroup).mockResolvedValue(group());
   vi.mocked(api.regenerateGroupInvite).mockResolvedValue(group({ inviteCode: 'fresh-code' }));
@@ -125,9 +137,10 @@ describe('карточка группы', () => {
     for (const person of [alice, bob, carol]) {
       expect(await screen.findByText(person.displayName)).toBeInTheDocument();
     }
-    expect(await screen.findByText('Владелец')).toBeInTheDocument();
-    expect(await screen.findByText('Администратор')).toBeInTheDocument();
-    expect(await screen.findByText('Ограниченный')).toBeInTheDocument();
+    // Подпись строки — роль плюс присутствие: «Владелец · В сети».
+    expect(await screen.findByText(/^Владелец · /)).toBeInTheDocument();
+    expect(await screen.findByText(/^Администратор · /)).toBeInTheDocument();
+    expect(await screen.findByText(/^Ограниченный · /)).toBeInTheDocument();
   });
 
   it('переключает права группы и отправляет только изменённый пункт', async () => {
@@ -153,17 +166,106 @@ describe('карточка группы', () => {
     expect(within(row).getByRole('switch')).toBeDisabled();
   });
 
-  it('владелец назначает администратора из карточки участника', async () => {
+  it('владелец назначает администратора с выбранными правами', async () => {
     renderPanel();
     fireEvent.click(await screen.findByRole('button', { name: /Кэрол/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Назначить администратором/ }));
 
-    const adminSwitch = await screen.findByRole('switch', { name: 'Администратор группы' });
-    expect(adminSwitch).toHaveAttribute('aria-checked', 'false');
+    // Окно назначения: список возможностей и подсказка про добавление админов.
+    expect(await screen.findByRole('dialog', { name: 'Добавить администратора' })).toBeInTheDocument();
+    expect(screen.getByText(/не сможет добавлять новых администраторов/)).toBeInTheDocument();
 
-    fireEvent.click(adminSwitch);
+    // По умолчанию добавление администраторов выключено, остальное включено.
+    const addAdmins = screen.getByRole('switch', { name: 'Добавление администраторов' });
+    expect(addAdmins).toHaveAttribute('aria-checked', 'false');
+    const removeMembers = screen.getByRole('switch', { name: 'Удаление участников' });
+    expect(removeMembers).toHaveAttribute('aria-checked', 'true');
+
+    // Выключаем одно право и сохраняем.
+    fireEvent.click(removeMembers);
+    expect(screen.getByText(/не сможет добавлять новых администраторов/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(api.setGroupAdmin).toHaveBeenCalledTimes(1));
+    const call = vi.mocked(api.setGroupAdmin).mock.calls[0];
+    expect(call?.slice(0, 4)).toEqual(['token', 'group-1', 'carol-3', true]);
+    expect(call?.[4]).toMatchObject({ remove_members: false, add_admins: false });
+  });
+
+  it('меню участника по правой кнопке показывает действия и гасит недоступные', async () => {
+    renderPanel({ role: 'member', myPermissions: allGroupPermissions(false) as GroupMember['permissions'] });
+
+    const row = await screen.findByRole('button', { name: /Кэрол/ });
+    fireEvent.contextMenu(row);
+
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: 'Показать профиль' })).toBeEnabled();
+    for (const label of [
+      'Изменить тег участника',
+      'Назначить администратором',
+      'Ограничить пользователя',
+      'Удалить из группы',
+    ]) {
+      expect(within(menu).getByRole('menuitem', { name: label })).toBeDisabled();
+    }
+  });
+
+  it('из меню участника открывается профиль и меняется тег', async () => {
+    const { onShowProfile } = renderPanel();
+
+    fireEvent.contextMenu(await screen.findByRole('button', { name: /Кэрол/ }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Показать профиль' }));
+    expect(onShowProfile).toHaveBeenCalledWith(expect.objectContaining({ id: 'carol-3' }));
+
+    fireEvent.contextMenu(await screen.findByRole('button', { name: /Кэрол/ }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Изменить тег участника' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Изменить тег участника' });
+    expect(within(dialog).getByText(/будет отображаться рядом с именем/)).toBeInTheDocument();
+
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: '  #смирнёха  ' } });
+    // Превью показывает, как подпись встанет рядом с именем.
+    expect(within(dialog).getAllByText('#смирнёха').length).toBeGreaterThan(0);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }));
+
     await waitFor(() =>
-      expect(api.setGroupAdmin).toHaveBeenCalledWith('token', 'group-1', 'carol-3', true),
+      expect(api.setGroupMemberTag).toHaveBeenCalledWith('token', 'group-1', 'carol-3', '#смирнёха'),
     );
+  });
+
+  it('раскладывает состав по присутствию: в сети, потом недавние, ниже давние', async () => {
+    vi.mocked(api.groupMembers).mockResolvedValue([
+      member({ ...carol, isOnline: false, lastSeenAt: '2026-06-01T10:00:00.000Z' }, 'member'),
+      member({ ...alice, isOnline: true }, 'owner'),
+      member({ ...bob, isOnline: false, lastSeenAt: new Date(Date.now() - 3_600_000).toISOString() }, 'admin'),
+    ]);
+    renderPanel();
+
+    // Заголовки групп идут в порядке «в сети → недавно → давно».
+    const sections = await screen.findAllByRole('region');
+    expect(sections.map((node) => node.getAttribute('aria-label'))).toEqual([
+      'В сети',
+      'Недавно',
+      'Давно',
+    ]);
+    expect(within(sections[0] as HTMLElement).getByText('Алиса')).toBeInTheDocument();
+    expect(within(sections[1] as HTMLElement).getByText('Боб')).toBeInTheDocument();
+    expect(within(sections[2] as HTMLElement).getByText('Кэрол')).toBeInTheDocument();
+    // У недавних видно точное время, а не только роль.
+    expect(within(sections[1] as HTMLElement).getByText(/^Администратор · Был\(а\) сегодня в /)).toBeInTheDocument();
+  });
+
+  it('тег участника виден в составе и покрашен по роли', async () => {
+    vi.mocked(api.groupMembers).mockResolvedValue([
+      member(alice, 'owner', { tag: 'Организатор' }),
+      member(bob, 'admin', { tag: '#смирнёха' }),
+      member(carol, 'member', { tag: 'Новичок' }),
+    ]);
+    renderPanel();
+
+    expect(await screen.findByText('Организатор')).toHaveClass('text-owner');
+    expect(screen.getByText('#смирнёха')).toHaveClass('text-success');
+    expect(screen.getByText('Новичок')).toHaveClass('text-muted');
   });
 
   it('ограничивает обычного участника и глушит его на час', async () => {

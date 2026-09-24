@@ -396,6 +396,14 @@ export const api = {
     }).then((result) => result.conversation ?? (result as Conversation));
   },
 
+  setGroupMemberTag(token: string, groupId: string, userId: string, tag: string) {
+    return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}/tag`, {
+      method: 'PUT',
+      token,
+      body: { userId, tag },
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
   regenerateGroupInvite(token: string, groupId: string) {
     return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}/invite`, {
       method: 'POST',
