@@ -17,6 +17,7 @@ import {
   mergeMemberPresence,
   mutedUntilLabel,
   normalizeMemberTag,
+  orderMembersByPresence,
   viewerCan,
   viewerIsOwner,
   viewerManagesGroup,
@@ -365,6 +366,21 @@ describe('groupMembersByPresence', () => {
     expect(sections).toHaveLength(1);
     expect(sections[0]?.members.map((item) => item.user.id)).toEqual(['день', 'утро']);
     expect(groupMembersByPresence([], now)).toEqual([]);
+  });
+
+  it('отдаёт тот же порядок плоским списком, без заголовков', () => {
+    const now = Date.parse('2026-09-24T16:00:00.000Z');
+    const members = [
+      asMember('давний', 'member', { lastSeenAt: '2026-06-01T10:00:00.000Z' }),
+      asMember('в сети', 'owner', { isOnline: true }),
+      asMember('недавний', 'member', { lastSeenAt: '2026-09-24T15:00:00.000Z' }),
+    ];
+    expect(orderMembersByPresence(members, now).map((item) => item.user.id)).toEqual([
+      'в сети',
+      'недавний',
+      'давний',
+    ]);
+    expect(orderMembersByPresence([], now)).toEqual([]);
   });
 });
 

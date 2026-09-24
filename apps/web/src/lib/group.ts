@@ -251,6 +251,17 @@ export function groupMembersByPresence(
   });
 }
 
+/**
+ * Тот же порядок по присутствию, но плоским списком: подписи групп в интерфейсе
+ * не показываются — присутствие видно в подписи каждой строки.
+ */
+export function orderMembersByPresence(
+  members: GroupMember[],
+  now: number = Date.now(),
+): GroupMember[] {
+  return groupMembersByPresence(members, now).flatMap((section) => section.members);
+}
+
 /** Тег участника: обрезаем по краям и ограничиваем длину. */
 export function normalizeMemberTag(value: string): string {
   return value.trim().slice(0, 24);

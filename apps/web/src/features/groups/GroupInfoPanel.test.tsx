@@ -233,7 +233,7 @@ describe('карточка группы', () => {
     );
   });
 
-  it('раскладывает состав по присутствию: в сети, потом недавние, ниже давние', async () => {
+  it('ставит вперёд тех, кто в сети, и не пишет заголовков групп', async () => {
     vi.mocked(api.groupMembers).mockResolvedValue([
       member({ ...carol, isOnline: false, lastSeenAt: '2026-06-01T10:00:00.000Z' }, 'member'),
       member({ ...alice, isOnline: true }, 'owner'),
@@ -241,24 +241,26 @@ describe('карточка группы', () => {
     ]);
     renderPanel();
 
-    // Заголовки групп идут в порядке «в сети → недавно → давно».
-    const sections = await screen.findAllByRole('region');
-    expect(sections.map((node) => node.getAttribute('aria-label'))).toEqual([
-      'В сети',
-      'Недавно',
-      'Давно',
+    // Ждём состав, затем смотрим порядок строк: в сети → недавний → давний.
+    await screen.findByRole('button', { name: /Кэрол/ });
+    const rows = screen
+      .getAllByRole('button')
+      .filter((node) => /Алиса|Боб|Кэрол/.test(node.textContent ?? ''));
+    expect(rows.map((node) => node.textContent)).toEqual([
+      expect.stringContaining('Алиса'),
+      expect.stringContaining('Боб'),
+      expect.stringContaining('Кэрол'),
     ]);
-    expect(within(sections[0] as HTMLElement).getByText('Алиса')).toBeInTheDocument();
-    expect(within(sections[1] as HTMLElement).getByText('Боб')).toBeInTheDocument();
-    expect(within(sections[2] as HTMLElement).getByText('Кэрол')).toBeInTheDocument();
-    // У недавних видно точное время, а не только роль.
-    expect(within(sections[1] as HTMLElement).getByText('Администратор ·')).toBeInTheDocument();
-    expect(within(sections[1] as HTMLElement).getByText(/^Был\(а\) в \d/)).toBeInTheDocument();
-    // В сети подпись голубая, у остальных серая.
-    const onlineRow = within(sections[0] as HTMLElement).getByRole('button', { name: /Алиса/ });
+    // Подписей групп над строками нет: «Недавно» и родственные исчезли совсем,
+    // а «В сети» остаётся только подписью самой строки.
+    for (const label of ['Недавно', 'На прошлой неделе', 'В прошлом месяце']) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+    expect(screen.getAllByText('В сети')).toHaveLength(1);
+    // Присутствие видно в самой строке: голубым у того, кто в сети.
+    const onlineRow = rows[0] as HTMLElement;
     expect(within(onlineRow).getByText('В сети')).toHaveClass('text-brand');
-    const offlineRow = within(sections[2] as HTMLElement).getByRole('button', { name: /Кэрол/ });
-    // Точное время известно, поэтому вместо «давно» показываем дату.
+    const offlineRow = rows[2] as HTMLElement;
     expect(within(offlineRow).getByText(/^Был\(а\) /)).toHaveClass('text-muted');
   });
 
@@ -267,9 +269,8 @@ describe('карточка группы', () => {
     vi.mocked(api.groupMembers).mockResolvedValue([member({ ...bob, isOnline: false }, 'admin')]);
     renderPanel({ members: [{ id: 'bob-2', isOnline: true, online: true, displayName: 'Боб' }] });
 
-    const sections = await screen.findAllByRole('region');
-    expect(sections[0]?.getAttribute('aria-label')).toBe('В сети');
-    expect(within(sections[0] as HTMLElement).getByText('Боб')).toBeInTheDocument();
+    const row = await screen.findByRole('button', { name: /Боб/ });
+    expect(within(row).getByText('В сети')).toHaveClass('text-brand');
   });
 
   it('тег участника виден в составе и покрашен по роли', async () => {

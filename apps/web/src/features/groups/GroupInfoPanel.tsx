@@ -29,13 +29,13 @@ import {
   groupInviteLink,
   groupMemberCountLabel,
   groupMemberMuted,
-  groupMembersByPresence,
   mergeMemberPresence,
   groupPermissionHints,
   groupPermissionLabels,
   groupRoleLabel,
   memberActionAllowed,
   mutedUntilLabel,
+  orderMembersByPresence,
   viewerCan,
   viewerIsOwner,
   viewerManagesGroup,
@@ -161,9 +161,9 @@ export function GroupInfoPanel({
     () => mergeMemberPresence(members, conversation.members),
     [conversation.members, members],
   );
-  // Состав по присутствию: в сети, затем недавние с точным временем, ниже давние.
-  const memberSections = useMemo(
-    () => groupMembersByPresence(membersWithPresence),
+  // Порядок по присутствию: в сети, затем недавние с точным временем, ниже давние.
+  const orderedMembers = useMemo(
+    () => orderMembersByPresence(membersWithPresence),
     [membersWithPresence],
   );
   const openMember = membersWithPresence.find((member) => member.user.id === openMemberId) ?? null;
@@ -546,18 +546,10 @@ export function GroupInfoPanel({
                 {membersWithPresence.length === 0 ? (
                   <p className="px-4 py-8 text-center text-sm text-muted">Никого не найдено.</p>
                 ) : (
-                  // При поиске показываем плоский список, без групп по времени.
+                  // Заголовков групп нет: присутствие видно в подписи каждой строки.
                   <div className="mt-2">
-                    {(memberQuery.trim() ? [{ bucket: 'online' as const, label: '', members: membersWithPresence }] : memberSections).map(
-                      (section) => (
-                        <section key={section.bucket} aria-label={section.label || undefined}>
-                          {section.label && (
-                            <p className="px-3 pb-1 pt-3 text-[11px] font-bold uppercase tracking-wide text-muted">
-                              {section.label}
-                            </p>
-                          )}
-                          <ul className="space-y-0.5">
-                            {section.members.map((member) => {
+                    <ul className="space-y-0.5">
+                      {orderedMembers.map((member) => {
                               const muted = groupMemberMuted(member);
                               return (
                         <li key={member.user.id}>
@@ -605,12 +597,9 @@ export function GroupInfoPanel({
                             </span>
                           </button>
                         </li>
-                              );
-                            })}
-                          </ul>
-                        </section>
-                      ),
-                    )}
+                      );
+                    })}
+                  </ul>
                   </div>
                 )}
               </>
