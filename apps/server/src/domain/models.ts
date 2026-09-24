@@ -294,14 +294,50 @@ export type CallMessage = {
   durationSeconds: number;
 };
 
+/** Вариант ответа в опросе. */
+export type PollOption = {
+  id: string;
+  text: string;
+};
+
+/** Настройки опроса: владелец включает их по отдельности. */
+export type PollSettings = {
+  /** Показывать, кто как голосовал. */
+  showNames: boolean;
+  /** Разрешить несколько ответов. */
+  multiple: boolean;
+  /** Участники могут добавлять свои варианты. */
+  addOptions: boolean;
+  /** Ответ можно изменить. */
+  changeVote: boolean;
+  /** Показывать варианты в случайном порядке. */
+  shuffle: boolean;
+  /** Правильные варианты: непустой список превращает опрос в викторину. */
+  correctOptionIds: string[];
+  /** Когда опрос закрывается сам; null — не закрывается. */
+  deadline: string | null;
+};
+
+export type Poll = {
+  question: string;
+  description: string;
+  options: PollOption[];
+  settings: PollSettings;
+  /** Кто как ответил: id участника → выбранные варианты. */
+  votes: Record<string, string[]>;
+  closed: boolean;
+};
+
 export type Message = {
   id: string;
   conversationId: string;
   senderId: string;
   text: string;
-  kind: "user" | "system";
+  kind: "user" | "system" | "poll";
   systemEvent?: "call" | "user_joined" | "user_left" | undefined;
   call?: CallMessage | undefined;
+  /** Опрос: заполнен только у сообщений вида poll. */
+  poll?: Poll | undefined;
   createdAt: string;
   editedAt?: string | undefined;
   replyToId?: string | undefined;

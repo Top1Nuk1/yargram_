@@ -1,5 +1,6 @@
 import type {
   Attachment,
+  Poll,
   AttachmentView,
   CallMessage,
   CallRecord,
@@ -118,10 +119,13 @@ export type CreateMessageInput = Pick<Message, "conversationId" | "senderId" | "
   kind?: Message["kind"];
   systemEvent?: Message["systemEvent"];
   call?: CallMessage;
+  poll?: Poll;
 };
 
 export interface MessageRepository {
   create(input: CreateMessageInput): Promise<Message>;
+  /** Опрос живёт внутри сообщения: голоса и варианты меняются на месте. */
+  updatePoll(id: string, poll: Poll): Promise<Message>;
   listForConversation(
     conversationId: string,
     options: { limit: number; before?: string; query?: string },

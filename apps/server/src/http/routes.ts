@@ -106,6 +106,7 @@ const downloadQuerySchema = z.object({
 const directConversationSchema = z.object({ userId: z.string().uuid() });
 const conversationParamsSchema = z.object({ conversationId: z.string().uuid() });
 const messageParamsSchema = conversationParamsSchema.extend({ messageId: z.string().uuid() });
+const messageIdParamsSchema = z.object({ messageId: z.string().uuid() });
 const pinParamsSchema = messageParamsSchema;
 const messageListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -166,6 +167,26 @@ const memberTagSchema = z.object({
   /** Пустая строка снимает тег. */
   tag: z.string().trim().max(24),
 });
+const createPollSchema = z.object({
+  question: z.string().trim().min(1).max(255),
+  description: z.string().trim().max(500).optional(),
+  // Границы числа вариантов держит сервис: там же понятные коды ошибок.
+  options: z.array(z.string().trim().min(1).max(100)).min(1).max(50),
+  settings: z
+    .object({
+      showNames: z.boolean().optional(),
+      multiple: z.boolean().optional(),
+      addOptions: z.boolean().optional(),
+      changeVote: z.boolean().optional(),
+      shuffle: z.boolean().optional(),
+      correctOptionIds: z.array(z.string()).optional(),
+      deadline: z.string().datetime({ offset: true }).nullable().optional(),
+    })
+    .optional(),
+});
+const pollVoteSchema = z.object({ optionIds: z.array(z.string()).max(12) });
+const pollOptionSchema = z.object({ text: z.string().trim().min(1).max(100) });
+
 const restrictMemberSchema = z.object({
   userId: z.string().uuid(),
   permissions: groupPermissionsSchema.optional(),
@@ -826,6 +847,73 @@ export function createApiRouter(dependencies: {
         messages,
         nextCursor: messages.length === query.limit ? messages[0]?.createdAt ?? null : null,
       });
+    }),
+  );
+
+  /** Опрос изменился: рассылаем общий вид сообщения всем участникам. */
+  const publishPollUpdate = async (messageId: string, memberIds: string[]) => {
+    const broadcast = await dependencies.chatService.broadcastView(messageId);
+    if (broadcast) dependencies.events.publishUpdatedMessage({ message: broadcast, memberIds });
+  };
+
+  router.post(
+    "/conversations/:conversationId/polls",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { conversationId } = parseParams(conversationParamsSchema, request);
+      const input = parseBody(createPollSchema, request);
+      const result = await dependencies.chatService.createPoll(
+        request.auth.userId,
+        conversationId,
+        input,
+      );
+      dependencies.events.publishNewMessage(result);
+      response.status(201).json({ message: result.message });
+    }),
+  );
+
+  // Голос и свой вариант ответа: после каждого меняем сообщение у всех, но
+  // рассылаем общий вид — в анонимном опросе чужие голоса не уходят никому.
+  router.post(
+    "/messages/:messageId/poll/vote",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { messageId } = parseParams(messageIdParamsSchema, request);
+      const { optionIds } = parseBody(pollVoteSchema, request);
+      const result = await dependencies.chatService.votePoll(
+        request.auth.userId,
+        messageId,
+        optionIds,
+      );
+      await publishPollUpdate(messageId, result.memberIds);
+      response.json({ message: result.message });
+    }),
+  );
+
+  router.post(
+    "/messages/:messageId/poll/options",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { messageId } = parseParams(messageIdParamsSchema, request);
+      const { text } = parseBody(pollOptionSchema, request);
+      const result = await dependencies.chatService.addPollOption(
+        request.auth.userId,
+        messageId,
+        text,
+      );
+      await publishPollUpdate(messageId, result.memberIds);
+      response.json({ message: result.message });
+    }),
+  );
+
+  router.post(
+    "/messages/:messageId/poll/close",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { messageId } = parseParams(messageIdParamsSchema, request);
+      const result = await dependencies.chatService.closePoll(request.auth.userId, messageId);
+      await publishPollUpdate(messageId, result.memberIds);
+      response.json({ message: result.message });
     }),
   );
 

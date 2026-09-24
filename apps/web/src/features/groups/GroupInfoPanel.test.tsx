@@ -107,6 +107,14 @@ function renderPanel(patch: Partial<Conversation> = {}, handlers: Partial<Parame
   return { ...view, onUpdated, onLeft, onClose, onShowProfile };
 }
 
+
+/** Карточка участника открывается из меню: строка → «Ограничить пользователя». */
+async function openMemberCard(name: string) {
+  fireEvent.contextMenu(await screen.findByRole('button', { name: new RegExp(name) }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Ограничить пользователя' }));
+  return screen.findByRole('dialog', { name: 'Участник' });
+}
+
 beforeEach(() => {
   vi.mocked(api.groupMembers).mockResolvedValue(members);
   vi.mocked(api.groupHistory).mockResolvedValue(history);
@@ -166,12 +174,17 @@ describe('карточка группы', () => {
     expect(within(row).getByRole('switch')).toBeDisabled();
   });
 
-  it('карточка участника открывается отдельным окном, а не на всю панель', async () => {
+  it('клик по строке открывает меню, а не карточку участника', async () => {
     renderPanel();
     fireEvent.click(await screen.findByRole('button', { name: /Кэрол/ }));
 
-    // Отдельное модальное окно поверх всего, как профиль или настройки.
-    const dialog = await screen.findByRole('dialog', { name: 'Участник' });
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Участник' })).toBeNull();
+  });
+
+  it('карточка участника открывается отдельным окном, а не на всю панель', async () => {
+    renderPanel();
+    const dialog = await openMemberCard('Кэрол');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(dialog.className).not.toContain('absolute inset-0');
     expect(within(dialog).getByRole('button', { name: 'Закрыть' })).toBeInTheDocument();
@@ -184,8 +197,8 @@ describe('карточка группы', () => {
 
   it('владелец назначает администратора с выбранными правами', async () => {
     renderPanel();
-    fireEvent.click(await screen.findByRole('button', { name: /Кэрол/ }));
-    fireEvent.click(await screen.findByRole('button', { name: /Назначить администратором/ }));
+    const card = await openMemberCard('Кэрол');
+    fireEvent.click(within(card).getByRole('button', { name: /Назначить администратором/ }));
 
     // Окно назначения: список возможностей и подсказка про добавление админов.
     expect(await screen.findByRole('dialog', { name: 'Добавить администратора' })).toBeInTheDocument();
@@ -304,10 +317,10 @@ describe('карточка группы', () => {
 
   it('ограничивает обычного участника и глушит его на час', async () => {
     renderPanel();
-    fireEvent.click(await screen.findByRole('button', { name: /Кэрол/ }));
+    const card = await openMemberCard('Кэрол');
 
     // Кэрол ограничена, поэтому переключатель выключен: включение снимает запрет.
-    const messagesSwitch = await screen.findByRole('switch', { name: 'Отправка сообщений' });
+    const messagesSwitch = within(card).getByRole('switch', { name: 'Отправка сообщений' });
     expect(messagesSwitch).toHaveAttribute('aria-checked', 'false');
     fireEvent.click(messagesSwitch);
     await waitFor(() =>
@@ -316,7 +329,7 @@ describe('карточка группы', () => {
       }),
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: '1 час' }));
+    fireEvent.click(within(card).getByRole('button', { name: '1 час' }));
     await waitFor(() => expect(api.restrictGroupMember).toHaveBeenCalledTimes(2));
     const muteCall = vi.mocked(api.restrictGroupMember).mock.calls[1];
     expect(muteCall?.[3].mutedUntil).toEqual(expect.any(String));
@@ -324,9 +337,9 @@ describe('карточка группы', () => {
 
   it('права администратора меняются отдельно от ограничений участника', async () => {
     renderPanel();
-    fireEvent.click(await screen.findByRole('button', { name: /Боб/ }));
+    const card = await openMemberCard('Боб');
 
-    const linksSwitch = await screen.findByRole('switch', { name: 'Отправка ссылок' });
+    const linksSwitch = within(card).getByRole('switch', { name: 'Отправка ссылок' });
     fireEvent.click(linksSwitch);
     await waitFor(() =>
       expect(api.setGroupAdmin).toHaveBeenCalledWith('token', 'group-1', 'bob-2', true, {

@@ -1,4 +1,4 @@
-import type { ConversationDraft, Message, ScheduledMessage } from "../domain/models.js";
+import type { ConversationDraft, Message, Poll, ScheduledMessage } from "../domain/models.js";
 import type { AtRestCrypto } from "../lib/crypto.js";
 import type {
   DraftRepository,
@@ -32,10 +32,35 @@ export function withEncryption(repositories: Repositories, crypto: AtRestCrypto)
 }
 
 function encryptedMessages(messages: MessageRepository, crypto: AtRestCrypto): MessageRepository {
-  const toPlain = (message: Message): Message => ({ ...message, text: crypto.decryptText(message.text) });
+  // Вопрос и варианты опроса — такой же текст, как сообщения, и шифруется так же.
+  const encryptPoll = (poll: Poll): Poll => ({
+    ...poll,
+    question: crypto.encryptText(poll.question),
+    description: crypto.encryptText(poll.description),
+    options: poll.options.map((option) => ({ ...option, text: crypto.encryptText(option.text) })),
+  });
+  const decryptPoll = (poll: Poll): Poll => ({
+    ...poll,
+    question: crypto.decryptText(poll.question),
+    description: crypto.decryptText(poll.description),
+    options: poll.options.map((option) => ({ ...option, text: crypto.decryptText(option.text) })),
+  });
+  const toPlain = (message: Message): Message => ({
+    ...message,
+    text: crypto.decryptText(message.text),
+    ...(message.poll ? { poll: decryptPoll(message.poll) } : {}),
+  });
 
   return {
-    create: async (input) => toPlain(await messages.create({ ...input, text: crypto.encryptText(input.text) })),
+    create: async (input) =>
+      toPlain(
+        await messages.create({
+          ...input,
+          text: crypto.encryptText(input.text),
+          ...(input.poll === undefined ? {} : { poll: encryptPoll(input.poll) }),
+        }),
+      ),
+    updatePoll: async (id, poll) => toPlain(await messages.updatePoll(id, encryptPoll(poll))),
     async listForConversation(conversationId, options) {
       const needle = options.query?.trim().toLocaleLowerCase("ru-RU") ?? "";
       if (!needle) {

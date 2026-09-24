@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import type {
   Attachment,
   AttachmentView,
   CallRecord,
   Conversation,
   Message,
+  Poll,
+  PollSettings,
   PublicUser,
   ReactionEmoji,
   User,
@@ -20,6 +23,72 @@ import {
   toPublicUserFor,
 } from "../domain/models.js";
 import type { EffectiveGroupPermissions, GroupRole } from "../domain/models.js";
+
+const POLL_QUESTION_MAX = 255;
+const POLL_DESCRIPTION_MAX = 500;
+const POLL_OPTION_MAX = 100;
+const POLL_OPTIONS_MAX = 12;
+
+/** Настройки из запроса: ключ может прийти как undefined, это допустимо. */
+export type PollSettingsInput = {
+  [K in keyof PollSettings]?: PollSettings[K] | undefined;
+};
+
+/** Настройки опроса по умолчанию: как в макете «Новый опрос». */
+export function defaultPollSettings(): PollSettings {
+  return {
+    showNames: true,
+    multiple: false,
+    addOptions: true,
+    changeVote: true,
+    shuffle: false,
+    correctOptionIds: [],
+    deadline: null,
+  };
+}
+
+/** Собираем настройки: что пришло в запросе, остальное — по умолчанию. */
+export function mergePollSettings(input?: PollSettingsInput): PollSettings {
+  const defaults = defaultPollSettings();
+  const pick = <K extends keyof PollSettings>(key: K): PollSettings[K] => {
+    const value = input?.[key];
+    return value === undefined ? defaults[key] : value;
+  };
+  return {
+    showNames: pick("showNames"),
+    multiple: pick("multiple"),
+    addOptions: pick("addOptions"),
+    changeVote: pick("changeVote"),
+    shuffle: pick("shuffle"),
+    correctOptionIds: pick("correctOptionIds"),
+    deadline: pick("deadline"),
+  };
+}
+
+/** Опрос закрыт: автор остановил или вышел срок. */
+export function pollClosed(poll: Poll, now: number = Date.now()): boolean {
+  if (poll.closed) return true;
+  if (!poll.settings.deadline) return false;
+  const at = Date.parse(poll.settings.deadline);
+  return !Number.isNaN(at) && at <= now;
+}
+
+/**
+ * Опрос глазами смотрящего. Итоги считает сервер, поэтому анонимный опрос тоже
+ * показывает числа; чужие голоса уезжают наружу только при открытых именах.
+ */
+export function viewPoll(poll: Poll, viewerId?: string): PollView {
+  const counts: Record<string, number> = {};
+  for (const option of poll.options) counts[option.id] = 0;
+  let totalVoters = 0;
+  for (const picks of Object.values(poll.votes)) {
+    if (picks.length > 0) totalVoters += 1;
+    for (const pick of picks) counts[pick] = (counts[pick] ?? 0) + 1;
+  }
+  const own = viewerId ? poll.votes[viewerId] : undefined;
+  const votes = poll.settings.showNames ? poll.votes : own ? { [viewerId!]: own } : {};
+  return { ...poll, votes, counts, totalVoters, closed: pollClosed(poll) };
+}
 import { AppError } from "../lib/errors.js";
 import type { Repositories } from "../repositories/types.js";
 
@@ -29,10 +98,20 @@ export type ReactionView = {
   count: number;
 };
 
-export type MessageSnapshot = Omit<Message, "attachmentIds" | "reactions"> & {
+/**
+ * Опрос глазами смотрящего. Итоги считает сервер, поэтому анонимный опрос
+ * показывает числа, но не имена: чужие голоса в `votes` не уезжают.
+ */
+export type PollView = Poll & {
+  counts: Record<string, number>;
+  totalVoters: number;
+};
+
+export type MessageSnapshot = Omit<Message, "attachmentIds" | "reactions" | "poll"> & {
   sender: PublicUser;
   attachments: AttachmentView[];
   reactions: ReactionView[];
+  poll?: PollView | undefined;
   isFavorite?: boolean;
 };
 
@@ -256,6 +335,172 @@ export class ChatService {
       message: await this.toMessageView(message, currentUserId),
       memberIds: conversation.memberIds,
     };
+  }
+
+  /** Опрос: отдельное сообщение вида poll, а не текст с разметкой. */
+  async createPoll(
+    currentUserId: string,
+    conversationId: string,
+    input: {
+      question: string;
+      description?: string | undefined;
+      options: string[];
+      settings?: PollSettingsInput | undefined;
+    },
+  ): Promise<{ message: MessageView; memberIds: string[] }> {
+    const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+    await this.assertConversationInteractionAllowed(currentUserId, conversation);
+    if (conversation.type === "group") {
+      if (!groupCan(conversation, currentUserId, "send_messages")) {
+        throw new AppError(403, "GROUP_SENDING_DENIED", "В этой группе вам запрещено писать");
+      }
+      if (!groupCan(conversation, currentUserId, "send_polls")) {
+        throw new AppError(403, "GROUP_POLLS_DENIED", "В этой группе запрещено создавать опросы");
+      }
+    }
+
+    const question = input.question.trim();
+    if (!question) throw new AppError(400, "POLL_QUESTION_EMPTY", "У опроса должен быть вопрос");
+    if (question.length > POLL_QUESTION_MAX) {
+      throw new AppError(400, "POLL_QUESTION_TOO_LONG", "Вопрос слишком длинный");
+    }
+    const options = input.options.map((option) => option.trim()).filter((option) => option !== "");
+    if (options.length < 2) {
+      throw new AppError(400, "POLL_OPTIONS_TOO_FEW", "Нужно хотя бы два варианта ответа");
+    }
+    if (options.length > POLL_OPTIONS_MAX) {
+      throw new AppError(400, "POLL_OPTIONS_TOO_MANY", "Слишком много вариантов ответа");
+    }
+
+    const message = await this.repositories.messages.create({
+      conversationId,
+      senderId: currentUserId,
+      text: question,
+      kind: "poll",
+      attachmentIds: [],
+      poll: {
+        question,
+        description: (input.description ?? "").trim().slice(0, POLL_DESCRIPTION_MAX),
+        options: options.map((text) => ({ id: randomUUID().slice(0, 8), text })),
+        settings: mergePollSettings(input.settings),
+        votes: {},
+        closed: false,
+      },
+    });
+    return {
+      message: await this.toMessageView(message, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  /** Голос: один или несколько вариантов, с учётом настроек опроса. */
+  async votePoll(
+    currentUserId: string,
+    messageId: string,
+    optionIds: string[],
+  ): Promise<{ message: MessageView; memberIds: string[] }> {
+    const message = await this.getPollMessage(currentUserId, messageId);
+    const poll = message.poll!;
+    const conversation = await this.repositories.conversations.findById(message.conversationId);
+    if (!conversation) throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+    await this.assertConversationInteractionAllowed(currentUserId, conversation);
+    if (pollClosed(poll)) {
+      throw new AppError(403, "POLL_CLOSED", "Опрос уже завершён");
+    }
+
+    const known = new Set(poll.options.map((option) => option.id));
+    const picked = [...new Set(optionIds)].filter((id) => known.has(id));
+    if (picked.length === 0 && optionIds.length > 0) {
+      throw new AppError(400, "POLL_OPTION_UNKNOWN", "Такого варианта ответа нет");
+    }
+    if (picked.length > 1 && !poll.settings.multiple) {
+      throw new AppError(400, "POLL_SINGLE_CHOICE", "В этом опросе можно выбрать один ответ");
+    }
+    const voted = poll.votes[currentUserId] !== undefined;
+    if (voted && !poll.settings.changeVote) {
+      throw new AppError(403, "POLL_VOTE_LOCKED", "Ответ уже отправлен и изменить его нельзя");
+    }
+
+    const votes = { ...poll.votes };
+    if (picked.length === 0) {
+      delete votes[currentUserId];
+    } else {
+      votes[currentUserId] = picked;
+    }
+    const updated = await this.repositories.messages.updatePoll(messageId, { ...poll, votes });
+    return {
+      message: await this.toMessageView(updated, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  /** Свой вариант ответа: только если владелец опроса это разрешил. */
+  async addPollOption(
+    currentUserId: string,
+    messageId: string,
+    text: string,
+  ): Promise<{ message: MessageView; memberIds: string[] }> {
+    const message = await this.getPollMessage(currentUserId, messageId);
+    const poll = message.poll!;
+    if (pollClosed(poll)) throw new AppError(403, "POLL_CLOSED", "Опрос уже завершён");
+    if (!poll.settings.addOptions) {
+      throw new AppError(403, "POLL_OPTIONS_LOCKED", "В этом опросе нельзя добавлять варианты");
+    }
+    const trimmed = text.trim();
+    if (!trimmed) throw new AppError(400, "POLL_OPTION_EMPTY", "Вариант ответа пустой");
+    if (poll.options.length >= POLL_OPTIONS_MAX) {
+      throw new AppError(400, "POLL_OPTIONS_TOO_MANY", "Слишком много вариантов ответа");
+    }
+    const conversation = await this.repositories.conversations.findById(message.conversationId);
+    if (!conversation) throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+    const option = { id: randomUUID().slice(0, 8), text: trimmed.slice(0, POLL_OPTION_MAX) };
+    const updated = await this.repositories.messages.updatePoll(messageId, {
+      ...poll,
+      options: [...poll.options, option],
+    });
+    return {
+      message: await this.toMessageView(updated, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  /** Остановить опрос может только его автор. */
+  async closePoll(
+    currentUserId: string,
+    messageId: string,
+  ): Promise<{ message: MessageView; memberIds: string[] }> {
+    const message = await this.getPollMessage(currentUserId, messageId);
+    if (message.senderId !== currentUserId) {
+      throw new AppError(403, "POLL_NOT_AUTHOR", "Остановить опрос может только его автор");
+    }
+    const conversation = await this.repositories.conversations.findById(message.conversationId);
+    if (!conversation) throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+    const updated = await this.repositories.messages.updatePoll(messageId, {
+      ...message.poll!,
+      closed: true,
+    });
+    return {
+      message: await this.toMessageView(updated, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  /**
+   * Вид сообщения для рассылки всем сразу: в анонимном опросе чужие голоса
+   * не уезжают никому, поэтому итоги считаем без смотрящего.
+   */
+  async broadcastView(messageId: string): Promise<MessageView | null> {
+    const message = await this.repositories.messages.findById(messageId);
+    return message ? this.toMessageView(message) : null;
+  }
+
+  private async getPollMessage(currentUserId: string, messageId: string): Promise<Message> {
+    const message = await this.repositories.messages.findById(messageId);
+    if (!message || message.kind !== "poll" || !message.poll) {
+      throw new AppError(404, "POLL_NOT_FOUND", "Опрос не найден");
+    }
+    await this.getAuthorizedConversation(currentUserId, message.conversationId);
+    return message;
   }
 
   async forwardMessage(
@@ -891,7 +1136,7 @@ export class ChatService {
     ]);
     // Удалённый отправитель не должен ронять переписку: подставляем заглушку.
     if (!sender) return this.placeholderSnapshot(message, attachments, currentUserId);
-    const { attachmentIds: _attachmentIds, reactions, ...safeMessage } = message;
+    const { attachmentIds: _attachmentIds, reactions, poll, ...safeMessage } = message;
     const groupedReactions = new Map<ReactionEmoji, string[]>();
     for (const reaction of reactions) {
       const users = groupedReactions.get(reaction.emoji) ?? [];
@@ -909,6 +1154,7 @@ export class ChatService {
         userIds,
         count: userIds.length,
       })),
+      ...(poll ? { poll: viewPoll(poll, currentUserId) } : {}),
       ...(currentUser
         ? { isFavorite: currentUser.favoriteMessageIds.includes(message.id) }
         : {}),
@@ -941,7 +1187,7 @@ export class ChatService {
     attachments: Attachment[],
     currentUserId: string | undefined,
   ): Promise<MessageSnapshot> {
-    const { attachmentIds: _attachmentIds, reactions, ...safeMessage } = message;
+    const { attachmentIds: _attachmentIds, reactions, poll, ...safeMessage } = message;
     return {
       ...safeMessage,
       sender: removedUserPlaceholder(message.senderId),

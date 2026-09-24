@@ -75,6 +75,25 @@ const groupEventSchema = z.object({
   detail: z.string().optional(),
 });
 
+const pollOptionSchema = z.object({ id: z.string(), text: z.string() });
+const pollSettingsSchema = z.object({
+  showNames: z.boolean().default(true),
+  multiple: z.boolean().default(false),
+  addOptions: z.boolean().default(true),
+  changeVote: z.boolean().default(true),
+  shuffle: z.boolean().default(false),
+  correctOptionIds: z.array(z.string()).default([]),
+  deadline: z.string().nullable().default(null),
+});
+const pollSchema = z.object({
+  question: z.string(),
+  description: z.string().default(""),
+  options: z.array(pollOptionSchema).default([]),
+  settings: pollSettingsSchema,
+  votes: z.record(z.string(), z.array(z.string())).default({}),
+  closed: z.boolean().default(false),
+});
+
 const conversationSchema = z
   .object({
     id: z.string(),
@@ -139,9 +158,10 @@ const messageSchema = z
     conversationId: z.string(),
     senderId: z.string(),
     text: z.string(),
-    kind: z.enum(["user", "system"]).default("user"),
+    kind: z.enum(["user", "system", "poll"]).default("user"),
     systemEvent: z.enum(["call", "user_joined", "user_left"]).optional(),
     call: callMessageSchema.optional(),
+    poll: pollSchema.optional(),
     createdAt: z.string(),
     editedAt: z.string().optional(),
     replyToId: z.string().optional(),

@@ -7,6 +7,7 @@ import type {
   ConversationDraft,
   ConversationFolder,
   Message,
+  Poll,
   ReactionEmoji,
   ScheduledMessage,
   User,
@@ -390,6 +391,15 @@ class JsonConversationRepository implements ConversationRepository {
 class JsonMessageRepository implements MessageRepository {
   constructor(private readonly database: JsonDatabase) {}
 
+  async updatePoll(id: string, poll: Poll): Promise<Message> {
+    return this.database.transaction((state) => {
+      const message = state.messages.find((candidate) => candidate.id === id);
+      if (!message) throw new AppError(404, "MESSAGE_NOT_FOUND", "Message was not found");
+      message.poll = poll;
+      return message;
+    });
+  }
+
   async create(input: CreateMessageInput): Promise<Message> {
     return this.database.transaction((state) => {
       const message: Message = {
@@ -400,6 +410,7 @@ class JsonMessageRepository implements MessageRepository {
         kind: input.kind ?? "user",
         ...(input.systemEvent === undefined ? {} : { systemEvent: input.systemEvent }),
         ...(input.call === undefined ? {} : { call: input.call }),
+        ...(input.poll === undefined ? {} : { poll: input.poll }),
         createdAt: new Date().toISOString(),
         ...(input.replyToId === undefined ? {} : { replyToId: input.replyToId }),
         ...(input.forwardedFromId === undefined ? {} : { forwardedFromId: input.forwardedFromId }),

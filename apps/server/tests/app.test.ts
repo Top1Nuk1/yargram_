@@ -2468,6 +2468,224 @@ describe("Yargram API", () => {
     });
   });
 
+  it("создаёт опрос, считает голоса и прячет имена в анонимном", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "poll-alice@example.com", "PollAlice");
+    const bob = await register(harness.app, "poll-bob@example.com", "PollBob");
+    const carol = await register(harness.app, "poll-carol@example.com", "PollCarol");
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "Опросы", memberIds: [bob.user.id, carol.user.id] });
+    const groupId = created.body.conversation.id as string;
+
+    const poll = await request(harness.app)
+      .post(`/api/conversations/${groupId}/polls`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({
+        question: "Куда идём в субботу?",
+        description: "Выбираем маршрут",
+        options: ["В горы", "На речку", "В лес"],
+      });
+    expect(poll.status).toBe(201);
+    const message = poll.body.message;
+    expect(message).toMatchObject({ kind: "poll", text: "Куда идём в субботу?" });
+    expect(message.poll.options).toHaveLength(3);
+    expect(message.poll.settings).toMatchObject({
+      showNames: true,
+      multiple: false,
+      addOptions: true,
+      changeVote: true,
+      shuffle: false,
+      correctOptionIds: [],
+      deadline: null,
+    });
+    expect(message.poll).toMatchObject({ counts: {}, totalVoters: 0, closed: false });
+
+    const messageId = message.id as string;
+    const firstOption = message.poll.options[0].id as string;
+    const secondOption = message.poll.options[1].id as string;
+
+    // Один ответ: второй выбор в одиночном опросе отклоняется.
+    const vote = await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/vote`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ optionIds: [firstOption] });
+    expect(vote.status).toBe(200);
+    expect(vote.body.message.poll).toMatchObject({
+      counts: { [firstOption]: 1 },
+      totalVoters: 1,
+    });
+    const double = await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/vote`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ optionIds: [firstOption, secondOption] });
+    expect(double.status).toBe(400);
+    expect(double.body.error.code).toBe("POLL_SINGLE_CHOICE");
+
+    // Имена открыты: видно, кто голосовал.
+    await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/vote`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ optionIds: [secondOption] });
+    const withNames = await request(harness.app)
+      .get(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(alice.accessToken));
+    const seenPoll = withNames.body.messages.find((item: { id: string }) => item.id === messageId);
+    expect(seenPoll.poll.totalVoters).toBe(2);
+    // Варианты без голосов тоже попадают в итоги — нулями.
+    expect(seenPoll.poll.counts).toEqual({
+      [firstOption]: 1,
+      [secondOption]: 1,
+      [message.poll.options[2].id]: 0,
+    });
+    expect(Object.keys(seenPoll.poll.votes)).toHaveLength(2);
+
+    // Свой вариант ответа добавляется, если это разрешено.
+    const extra = await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/options`)
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ text: "На озеро" });
+    expect(extra.status).toBe(200);
+    expect(extra.body.message.poll.options).toHaveLength(4);
+
+    // Остановить опрос может только автор.
+    const strangerClose = await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/close`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(strangerClose.status).toBe(403);
+    const closed = await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/close`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(closed.status).toBe(200);
+    expect(closed.body.message.poll.closed).toBe(true);
+    const afterClose = await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/vote`)
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ optionIds: [firstOption] });
+    expect(afterClose.status).toBe(403);
+    expect(afterClose.body.error.code).toBe("POLL_CLOSED");
+  });
+
+  it("прячет чужие голоса в анонимном опросе и слушается настроек", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "anon-alice@example.com", "AnonAlice");
+    const bob = await register(harness.app, "anon-bob@example.com", "AnonBob");
+
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id });
+    const conversationId = direct.body.conversation.id as string;
+
+    const poll = await request(harness.app)
+      .post(`/api/conversations/${conversationId}/polls`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({
+        question: "Тайное голосование",
+        options: ["Да", "Нет"],
+        settings: { showNames: false, multiple: true, addOptions: false, changeVote: true },
+      });
+    const messageId = poll.body.message.id as string;
+    const options = poll.body.message.poll.options as Array<{ id: string }>;
+
+    await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/vote`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ optionIds: [options[0]!.id] });
+
+    // Анонимный опрос: числа видны всем, имена — никому, кроме себя.
+    const asAlice = await request(harness.app)
+      .get(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(alice.accessToken));
+    const seen = asAlice.body.messages.find((item: { id: string }) => item.id === messageId);
+    expect(seen.poll.counts[options[0]!.id]).toBe(1);
+    expect(seen.poll.totalVoters).toBe(1);
+    expect(seen.poll.votes).toEqual({});
+
+    const asBob = await request(harness.app)
+      .get(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(bob.accessToken));
+    const own = asBob.body.messages.find((item: { id: string }) => item.id === messageId);
+    expect(own.poll.votes[bob.user.id]).toEqual([options[0]!.id]);
+
+    // Несколько ответов разрешено, а менять ответ и добавлять варианты — нет.
+    const many = await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/vote`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ optionIds: [options[0]!.id, options[1]!.id] });
+    expect(many.status).toBe(200);
+    expect(many.body.message.poll.counts[options[1]!.id]).toBe(1);
+    const addOption = await request(harness.app)
+      .post(`/api/messages/${messageId}/poll/options`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ text: "Свой вариант" });
+    expect(addOption.status).toBe(403);
+    expect(addOption.body.error.code).toBe("POLL_OPTIONS_LOCKED");
+
+    // Ответ, который нельзя изменить, фиксируется после первого голоса.
+    const locked = await request(harness.app)
+      .post(`/api/conversations/${conversationId}/polls`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({
+        question: "Ответ не поменять",
+        options: ["Первый", "Второй"],
+        settings: { changeVote: false },
+      });
+    const lockedId = locked.body.message.id as string;
+    const lockedOptions = locked.body.message.poll.options as Array<{ id: string }>;
+    const firstVote = await request(harness.app)
+      .post(`/api/messages/${lockedId}/poll/vote`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ optionIds: [lockedOptions[0]!.id] });
+    expect(firstVote.status).toBe(200);
+    const secondVote = await request(harness.app)
+      .post(`/api/messages/${lockedId}/poll/vote`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ optionIds: [lockedOptions[1]!.id] });
+    expect(secondVote.status).toBe(403);
+    expect(secondVote.body.error.code).toBe("POLL_VOTE_LOCKED");
+  });
+
+  it("закрывает опросы правом группы и проверяет входные данные", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "limit-alice@example.com", "LimitAlice");
+    const bob = await register(harness.app, "limit-bob@example.com", "LimitBob");
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "Без опросов", memberIds: [bob.user.id] });
+    const groupId = created.body.conversation.id as string;
+    await request(harness.app)
+      .put(`/api/groups/${groupId}/permissions`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ permissions: { send_polls: false } });
+
+    const denied = await request(harness.app)
+      .post(`/api/conversations/${groupId}/polls`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ question: "Можно?", options: ["Да", "Нет"] });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe("GROUP_POLLS_DENIED");
+
+    for (const [body, code] of [
+      [{ question: "Один вариант", options: ["Только один"] }, "POLL_OPTIONS_TOO_FEW"],
+      [
+        { question: "Слишком много", options: Array.from({ length: 13 }, (_, i) => `Вариант ${i}`) },
+        "POLL_OPTIONS_TOO_MANY",
+      ],
+    ] as const) {
+      const bad = await request(harness.app)
+        .post(`/api/conversations/${groupId}/polls`)
+        .set("Authorization", bearer(alice.accessToken))
+        .send(body);
+      expect(bad.status).toBe(400);
+      expect(bad.body.error.code).toBe(code);
+    }
+  });
+
   it("ставит теги участникам и убирает их вместе с выходом из группы", async () => {
     const harness = await createHarness();
     const alice = await register(harness.app, "tag-alice@example.com", "TagAlice");

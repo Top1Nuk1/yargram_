@@ -541,9 +541,16 @@ export function GroupInfoPanel({
                         <li key={member.user.id}>
                           <button
                             type="button"
-                            onClick={() => setOpenMemberId(member.user.id)}
+                            onClick={(event) => {
+                              // Действия с участником живут в меню: карточка с правами
+                              // открывается оттуда, а не сразу по клику. Клик по строке
+                              // меню тоже открывает — иначе на телефоне без правой
+                              // кнопки до него не добраться.
+                              const rect = event.currentTarget.getBoundingClientRect();
+                              setContextMenu({ x: rect.left + 32, y: rect.bottom, member });
+                            }}
                             onContextMenu={(event) => {
-                              // Правая кнопка открывает меню действий с участником.
+                              // Правая кнопка открывает то же меню у курсора.
                               event.preventDefault();
                               setContextMenu({ x: event.clientX, y: event.clientY, member });
                             }}

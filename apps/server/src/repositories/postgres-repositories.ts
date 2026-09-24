@@ -245,6 +245,15 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
       }),
     },
     messages: {
+      async updatePoll(id, poll) {
+        return database.transaction(async (client) => {
+          const message = await find<Message>(client, "messages", id, true);
+          if (!message) throw new AppError(404, "MESSAGE_NOT_FOUND", "Message was not found");
+          message.poll = poll;
+          await save(client, "messages", message);
+          return message;
+        });
+      },
       async create(input) {
         return database.transaction(async (client) => {
           const conversation = await find<Conversation>(client, "conversations", input.conversationId, true);
