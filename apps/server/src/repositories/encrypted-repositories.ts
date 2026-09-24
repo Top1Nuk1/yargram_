@@ -61,6 +61,7 @@ function encryptedMessages(messages: MessageRepository, crypto: AtRestCrypto): M
         }),
       ),
     updatePoll: async (id, poll) => toPlain(await messages.updatePoll(id, encryptPoll(poll))),
+    countUnread: (ids, userId) => messages.countUnread(ids, userId),
     async listForConversation(conversationId, options) {
       const needle = options.query?.trim().toLocaleLowerCase("ru-RU") ?? "";
       if (!needle) {

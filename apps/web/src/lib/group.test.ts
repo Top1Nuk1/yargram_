@@ -17,6 +17,8 @@ import {
   mergeMemberPresence,
   mutedUntilLabel,
   mutedUntilText,
+  groupOnlineCount,
+  groupSubtitle,
   normalizeMemberTag,
   orderMembersByPresence,
   viewerCan,
@@ -437,6 +439,52 @@ describe('mutedUntilText', () => {
     expect(mutedUntilText(null, now)).toBe('');
     expect(mutedUntilText(undefined, now)).toBe('');
     expect(mutedUntilText('не дата', now)).toBe('');
+  });
+});
+
+describe('groupOnlineCount и подпись группы', () => {
+  const group = (members: Array<Record<string, unknown>>, patch: Partial<Conversation> = {}) =>
+    conversation({
+      ownerId: 'a1',
+      adminIds: [],
+      memberIds: ['a1', 'b2', 'c3'],
+      memberCount: 3,
+      members: members as Conversation['members'],
+      ...patch,
+    });
+
+  it('считает тех, кто в сети, по участникам беседы', () => {
+    expect(
+      groupOnlineCount(
+        group([
+          { id: 'a1', isOnline: true },
+          { id: 'b2', isOnline: false },
+          { id: 'c3', isOnline: true },
+        ]),
+      ),
+    ).toBe(2);
+    // Кто скрыл время, в сети не показывается.
+    expect(groupOnlineCount(group([{ id: 'a1', isOnline: true, showLastSeen: false }]))).toBe(0);
+    expect(groupOnlineCount(group([]))).toBe(0);
+    expect(groupOnlineCount(null)).toBe(0);
+  });
+
+  it('читает присутствие и из вложенного профиля участника', () => {
+    expect(groupOnlineCount(group([{ user: { id: 'a1', displayName: 'А', isOnline: true } }]))).toBe(1);
+  });
+
+  it('пишет подпись как «N участников · M в сети · описание»', () => {
+    const conversation = group(
+      [
+        { id: 'a1', isOnline: true },
+        { id: 'b2', isOnline: false },
+      ],
+      { description: 'Тестовая группа для Yargram' },
+    );
+    expect(groupSubtitle(conversation)).toBe('3 участника · 1 в сети · Тестовая группа для Yargram');
+    // Когда никого нет в сети, про сеть не пишем.
+    expect(groupSubtitle(group([{ id: 'a1', isOnline: false }]))).toBe('3 участника');
+    expect(groupSubtitle(null)).toBe('');
   });
 });
 

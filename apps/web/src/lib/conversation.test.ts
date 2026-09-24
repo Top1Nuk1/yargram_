@@ -5,6 +5,7 @@ import {
   conversationTitle,
   getConversationPeer,
   sortMessages,
+  unreadBadgeText,
   updateConversationPresence,
 } from './conversation';
 import { formatLastSeen, isUserOnline } from '../features/messenger/messengerUtils';
@@ -171,5 +172,20 @@ describe('conversation helpers', () => {
       expect(result.conversations[0].members).toEqual(other.members);
       expect(getConversationPeer(result.conversations[0], 'alice')?.displayName).toBe('Кира');
     });
+  });
+});
+
+describe('unreadBadgeText', () => {
+  it('показывает число и упирается в «999+»', () => {
+    expect(unreadBadgeText(3)).toBe('3');
+    expect(unreadBadgeText(999)).toBe('999');
+    expect(unreadBadgeText(1001)).toBe('999+');
+    expect(unreadBadgeText(5000)).toBe('999+');
+  });
+
+  it('молчит, когда читать нечего', () => {
+    expect(unreadBadgeText(0)).toBeNull();
+    expect(unreadBadgeText(undefined)).toBeNull();
+    expect(unreadBadgeText(-4)).toBeNull();
   });
 });

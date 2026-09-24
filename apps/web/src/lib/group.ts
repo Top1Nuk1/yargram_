@@ -1,6 +1,5 @@
 import { formatMessageTime } from './format';
-import {
-  presenceBucket,
+import { isUserOnline, presenceBucket,
   presenceBucketLabels,
   presenceBucketOrder,
   type PresenceBucket,
@@ -16,7 +15,35 @@ import {
   type GroupPermissions,
   type GroupRole,
   type Participant,
+  type User,
 } from '../types';
+
+/** Сколько участников группы сейчас в сети: для подписи «5 участников · 3 в сети». */
+export function groupOnlineCount(conversation: Conversation | null | undefined): number {
+  const participants = (conversation?.members ?? []) as Participant[];
+  let online = 0;
+  for (const participant of participants) {
+    const user =
+      participant.user ??
+      ({
+        ...participant,
+        id: participant.userId ?? participant.id ?? '',
+        displayName: participant.displayName ?? '',
+      } as User);
+    if (isUserOnline(user)) online += 1;
+  }
+  return online;
+}
+
+/** Подпись шапки группы: «5 участников · 3 в сети · описание». */
+export function groupSubtitle(conversation: Conversation | null | undefined): string {
+  if (!conversation) return '';
+  const parts = [groupMemberCountLabel(conversation.memberCount)];
+  const online = groupOnlineCount(conversation);
+  if (online > 0) parts.push(`${online} в сети`);
+  if (conversation.description) parts.push(conversation.description);
+  return parts.join(' · ');
+}
 
 /** Группа — это третий тип беседы рядом с личным диалогом и «Избранным». */
 export function isGroup(conversation: Conversation | null | undefined): boolean {

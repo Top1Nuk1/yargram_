@@ -146,6 +146,8 @@ export type ConversationView = Omit<
   /** Эффективные права смотрящего: клиент по ним включает или гасит кнопки. */
   myPermissions?: EffectiveGroupPermissions;
   memberCount?: number;
+  /** Сколько сообщений в чате я ещё не прочитал. */
+  unreadCount: number;
 };
 
 /** Сколько чего лежит в переписке с человеком — для разделов медиа в профиле. */
@@ -210,13 +212,19 @@ export class ChatService {
     archived: boolean | "all" = "all",
   ): Promise<ConversationView[]> {
     const conversations = await this.repositories.conversations.listForUser(currentUserId);
+    const shown = conversations.filter(
+      (conversation) =>
+        archived === "all" || conversation.archivedBy.includes(currentUserId) === archived,
+    );
+    // Непрочитанные считаем одним запросом на все чаты, а не по беседе.
+    const unread = await this.repositories.messages.countUnread(
+      shown.map((conversation) => conversation.id),
+      currentUserId,
+    );
     return Promise.all(
-      conversations
-        .filter(
-          (conversation) =>
-            archived === "all" || conversation.archivedBy.includes(currentUserId) === archived,
-        )
-        .map((conversation) => this.toConversationView(conversation, currentUserId)),
+      shown.map((conversation) =>
+        this.toConversationView(conversation, currentUserId, unread[conversation.id] ?? 0),
+      ),
     );
   }
 
@@ -1039,6 +1047,7 @@ export class ChatService {
   private async toConversationView(
     conversation: Conversation,
     currentUserId: string,
+    unreadCount = 0,
   ): Promise<ConversationView> {
     const users = await this.repositories.users.findManyByIds(conversation.memberIds);
     // Удалённый аккаунт не должен ронять диалог — подставляем заглушку.
@@ -1074,6 +1083,7 @@ export class ChatService {
       pinnedMessages,
       archived: conversation.archivedBy.includes(currentUserId),
       mutedUntil: conversation.mutedUntilBy[currentUserId] ?? null,
+      unreadCount,
       blocked: blockedByMe || blockedByPeer,
       blockedByMe,
       blockedByPeer,

@@ -68,6 +68,7 @@ import {
   messageSenderId,
   sortConversations,
   sortMessages,
+  unreadBadgeText,
   updateConversationPresence,
   updateConversationProfile,
   updateMessageProfile,
@@ -75,7 +76,7 @@ import {
 import { formatConversationTime, formatMessageTime } from '../../lib/format';
 import {
   containsLink,
-  groupMemberCountLabel,
+  groupSubtitle,
   groupRoleOf,
   groupTitle,
   isGroup,
@@ -648,7 +649,15 @@ export function MessengerScreen({
         return uniqueConversations(
           current.map((conversation) =>
             conversation.id === message.conversationId
-              ? { ...conversation, lastMessage: message, updatedAt: message.createdAt }
+              ? {
+                  ...conversation,
+                  lastMessage: message,
+                  updatedAt: message.createdAt,
+                  // Чужое сообщение в неоткрытом чате сразу поднимает счётчик.
+                  ...(fromMe || selectedIdRef.current === message.conversationId
+                    ? {}
+                    : { unreadCount: (conversation.unreadCount ?? 0) + 1 }),
+                }
               : conversation,
           ),
         );
@@ -2105,6 +2114,7 @@ export function MessengerScreen({
                   const title = group ? groupTitle(conversation) : conversationTitle(conversation, currentUser.id);
                   const peer = group ? null : getConversationPeer(conversation, currentUser.id);
                   const active = selectedId === conversation.id;
+                  const unread = unreadBadgeText(conversation.unreadCount ?? 0);
                   return (
                     <li key={conversation.id}>
                       <button
@@ -2123,17 +2133,28 @@ export function MessengerScreen({
                         <span className="min-w-0 flex-1">
                           <span className="flex items-baseline gap-2">
                             <span className="min-w-0 flex-1">
-                    <UserName className="text-sm font-semibold" name={title} user={peer} />
-                  </span>
+                              <span className="flex items-center gap-1">
+                                {conversationIsMuted(conversation) && <BellOff className="h-3.5 w-3.5 shrink-0" />}
+                                <UserName className="text-sm font-semibold" name={title} user={peer} />
+                              </span>
+                            </span>
                             <span className={`shrink-0 text-[11px] ${active ? 'text-white/70' : 'text-muted'}`}>
                               {formatConversationTime(conversationTimestamp(conversation))}
                             </span>
                           </span>
                           <span className={`mt-1 flex items-center gap-1 truncate text-[13px] ${active ? 'text-white/75' : 'text-muted'}`}>
-                            {conversationIsMuted(conversation) && <BellOff className="h-3 w-3 shrink-0" />}
                             <span className="truncate">{messageSummary(conversation.lastMessage)}</span>
                           </span>
                         </span>
+                        {/* Круглый счётчик: серый, если уведомления чата выключены. */}
+                        {unread && (
+                          <span
+                            className={`grid h-5 min-w-[20px] shrink-0 place-items-center rounded-full px-1.5 text-[11px] font-bold tabular-nums text-white ${conversationIsMuted(conversation) ? 'bg-[#8b93a7]' : 'bg-brand'}`}
+                            aria-label={`${unread} непрочитанных`}
+                          >
+                            {unread}
+                          </span>
+                        )}
                       </button>
                     </li>
                   );
@@ -2213,7 +2234,7 @@ export function MessengerScreen({
                       }`}
                     >
                       {selectedIsGroup
-                        ? `${groupMemberCountLabel(selectedConversation.memberCount)}${selectedConversation.description ? ` · ${selectedConversation.description}` : ''}`
+                        ? groupSubtitle(selectedConversation)
                         : peerTyping
                           ? 'Печатает…'
                           : selectedPeer

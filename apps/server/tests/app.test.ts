@@ -2468,6 +2468,56 @@ describe("Yargram API", () => {
     });
   });
 
+  it("считает непрочитанные по чатам и обнуляет их после прочтения", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "unread-alice@example.com", "UnreadAlice");
+    const bob = await register(harness.app, "unread-bob@example.com", "UnreadBob");
+
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ userId: bob.user.id });
+    const conversationId = direct.body.conversation.id as string;
+
+    // Боб пишет три сообщения: Алиса их не открывала.
+    for (const index of [1, 2, 3]) {
+      const sent = await request(harness.app)
+        .post(`/api/conversations/${conversationId}/messages`)
+        .set("Authorization", bearer(bob.accessToken))
+        .send({ text: `Сообщение ${index}` });
+      expect(sent.status).toBe(201);
+    }
+
+    const asAlice = await request(harness.app)
+      .get("/api/conversations")
+      .set("Authorization", bearer(alice.accessToken));
+    const mine = asAlice.body.conversations.find(
+      (item: { id: string }) => item.id === conversationId,
+    );
+    expect(mine.unreadCount).toBe(3);
+
+    // Свои сообщения непрочитанными не считаются.
+    const asBob = await request(harness.app)
+      .get("/api/conversations")
+      .set("Authorization", bearer(bob.accessToken));
+    const his = asBob.body.conversations.find(
+      (item: { id: string }) => item.id === conversationId,
+    );
+    expect(his.unreadCount).toBe(0);
+
+    // Прочитали историю — счётчик обнулился.
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/read`)
+      .set("Authorization", bearer(alice.accessToken));
+    const afterRead = await request(harness.app)
+      .get("/api/conversations")
+      .set("Authorization", bearer(alice.accessToken));
+    const read = afterRead.body.conversations.find(
+      (item: { id: string }) => item.id === conversationId,
+    );
+    expect(read.unreadCount).toBe(0);
+  });
+
   it("создаёт опрос, считает голоса и прячет имена в анонимном", async () => {
     const harness = await createHarness();
     const alice = await register(harness.app, "poll-alice@example.com", "PollAlice");

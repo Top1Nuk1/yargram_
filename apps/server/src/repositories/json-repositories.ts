@@ -391,6 +391,20 @@ class JsonConversationRepository implements ConversationRepository {
 class JsonMessageRepository implements MessageRepository {
   constructor(private readonly database: JsonDatabase) {}
 
+  async countUnread(conversationIds: string[], userId: string): Promise<Record<string, number>> {
+    const wanted = new Set(conversationIds);
+    return this.database.transaction((state) => {
+      const counts: Record<string, number> = {};
+      for (const id of conversationIds) counts[id] = 0;
+      for (const message of state.messages) {
+        if (!wanted.has(message.conversationId)) continue;
+        if (message.senderId === userId || message.readBy.includes(userId)) continue;
+        counts[message.conversationId] = (counts[message.conversationId] ?? 0) + 1;
+      }
+      return counts;
+    });
+  }
+
   async updatePoll(id: string, poll: Poll): Promise<Message> {
     return this.database.transaction((state) => {
       const message = state.messages.find((candidate) => candidate.id === id);

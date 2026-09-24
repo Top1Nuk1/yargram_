@@ -126,6 +126,8 @@ export interface MessageRepository {
   create(input: CreateMessageInput): Promise<Message>;
   /** Опрос живёт внутри сообщения: голоса и варианты меняются на месте. */
   updatePoll(id: string, poll: Poll): Promise<Message>;
+  /** Сколько непрочитанных в каждой беседе: считается одним проходом на все чаты. */
+  countUnread(conversationIds: string[], userId: string): Promise<Record<string, number>>;
   listForConversation(
     conversationId: string,
     options: { limit: number; before?: string; query?: string },

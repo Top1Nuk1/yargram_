@@ -122,6 +122,16 @@ export function conversationPeerDeleted(
   return Boolean(getConversationPeer(conversation, currentUserId)?.isDeleted);
 }
 
+/**
+ * Текст круглого счётчика непрочитанных. После тысячи пишем «999+», иначе круг
+ * расползается; ноль и пустое значок не показывают вовсе.
+ */
+export function unreadBadgeText(count?: number): string | null {
+  const value = Math.max(0, Math.floor(count ?? 0));
+  if (value === 0) return null;
+  return value > 1000 ? '999+' : String(value);
+}
+
 export function conversationTitle(conversation: Conversation, currentUserId: string): string {
   if (conversation.type === 'saved') return 'Избранное';
   return (

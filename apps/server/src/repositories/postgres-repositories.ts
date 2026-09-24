@@ -245,6 +245,22 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
       }),
     },
     messages: {
+      async countUnread(conversationIds, userId) {
+        const counts: Record<string, number> = {};
+        for (const id of conversationIds) counts[id] = 0;
+        if (conversationIds.length === 0) return counts;
+        // Сообщение прочитано, когда read_by содержит id пользователя.
+        const { rows } = await pool.query<{ conversation_id: string; unread: string }>(
+          `SELECT conversation_id, count(*)::text AS unread FROM messages
+           WHERE conversation_id = ANY($1::text[])
+             AND payload->>'senderId' <> $2
+             AND NOT (payload->'readBy' @> to_jsonb($2::text))
+           GROUP BY conversation_id`,
+          [conversationIds, userId],
+        );
+        for (const row of rows) counts[row.conversation_id] = Number(row.unread);
+        return counts;
+      },
       async updatePoll(id, poll) {
         return database.transaction(async (client) => {
           const message = await find<Message>(client, "messages", id, true);
