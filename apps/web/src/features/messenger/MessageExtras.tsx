@@ -29,13 +29,20 @@ export function EmojiPicker({ mode = 'composer', onSelect, onClose, className = 
   }, [onClose]);
 
   return (
-    <div ref={ref} className={`z-50 animate-slide-up rounded-2xl border border-line bg-elevated p-2 shadow-float ${className}`} role="dialog" aria-label={mode === 'reaction' ? 'Выбор реакции' : 'Выбор эмодзи'}>
+    // w-max обязателен: панель абсолютная, и без него ширина сжимается до ширины
+    // кнопки, у которой открылась — значки вылезали за край и наезжали друг на друга.
+    <div
+      ref={ref}
+      className={`z-50 w-max max-w-[min(92vw,22rem)] animate-slide-up rounded-2xl border border-line bg-elevated p-2 shadow-float ${className}`}
+      role="dialog"
+      aria-label={mode === 'reaction' ? 'Выбор реакции' : 'Выбор эмодзи'}
+    >
       <div className="grid grid-cols-7 gap-1">
         {emojis.map((emoji) => (
           <button
             key={emoji}
             type="button"
-            className="grid h-10 w-10 place-items-center rounded-xl text-[22px] leading-none transition hover:scale-110 hover:bg-brand-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+            className="grid h-10 w-full min-w-0 place-items-center rounded-xl text-[22px] leading-none transition hover:scale-110 hover:bg-brand-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
             onClick={() => onSelect(emoji)}
             aria-label={`Выбрать ${emoji}`}
           >

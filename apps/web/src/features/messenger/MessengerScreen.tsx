@@ -2814,7 +2814,7 @@ export function MessengerScreen({
                     </IconButton>
                     {emojiOpen && (
                       <EmojiPicker
-                        className="absolute bottom-14 left-0"
+                        className="absolute bottom-14 right-0"
                         onClose={() => setEmojiOpen(false)}
                         onSelect={(emoji) => {
                           const field = textareaRef.current;
