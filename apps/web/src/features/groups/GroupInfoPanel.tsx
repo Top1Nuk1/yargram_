@@ -30,6 +30,7 @@ import {
   groupMemberCountLabel,
   groupMemberMuted,
   groupMembersByPresence,
+  mergeMemberPresence,
   groupPermissionHints,
   groupPermissionLabels,
   groupRoleLabel,
@@ -155,9 +156,17 @@ export function GroupInfoPanel({
   const [copied, setCopied] = useState(false);
 
   const inviteLink = groupInviteLink(conversation.inviteCode);
-  const openMember = members.find((member) => member.user.id === openMemberId) ?? null;
+  // Живое присутствие подмешиваем к составу: сервер отдаёт «не в сети» всем.
+  const membersWithPresence = useMemo(
+    () => mergeMemberPresence(members, conversation.members),
+    [conversation.members, members],
+  );
   // Состав по присутствию: в сети, затем недавние с точным временем, ниже давние.
-  const memberSections = useMemo(() => groupMembersByPresence(members), [members]);
+  const memberSections = useMemo(
+    () => groupMembersByPresence(membersWithPresence),
+    [membersWithPresence],
+  );
+  const openMember = membersWithPresence.find((member) => member.user.id === openMemberId) ?? null;
 
   const nameOf = useCallback(
     (userId: string) =>
@@ -534,12 +543,12 @@ export function GroupInfoPanel({
                   />
                 </div>
 
-                {members.length === 0 ? (
+                {membersWithPresence.length === 0 ? (
                   <p className="px-4 py-8 text-center text-sm text-muted">Никого не найдено.</p>
                 ) : (
                   // При поиске показываем плоский список, без групп по времени.
                   <div className="mt-2">
-                    {(memberQuery.trim() ? [{ bucket: 'online' as const, label: '', members }] : memberSections).map(
+                    {(memberQuery.trim() ? [{ bucket: 'online' as const, label: '', members: membersWithPresence }] : memberSections).map(
                       (section) => (
                         <section key={section.bucket} aria-label={section.label || undefined}>
                           {section.label && (

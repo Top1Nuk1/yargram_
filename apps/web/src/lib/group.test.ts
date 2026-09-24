@@ -14,6 +14,7 @@ import {
   isGroup,
   memberActionAllowed,
   memberTagClass,
+  mergeMemberPresence,
   mutedUntilLabel,
   normalizeMemberTag,
   viewerCan,
@@ -364,6 +365,42 @@ describe('groupMembersByPresence', () => {
     expect(sections).toHaveLength(1);
     expect(sections[0]?.members.map((item) => item.user.id)).toEqual(['день', 'утро']);
     expect(groupMembersByPresence([], now)).toEqual([]);
+  });
+});
+
+describe('mergeMemberPresence', () => {
+  const asMember = (id: string, patch: Partial<User> = {}): GroupMember => ({
+    user: { id, displayName: id, ...patch },
+    role: 'member',
+    permissions: allGroupPermissions(true) as GroupMember['permissions'],
+    addedByOwner: false,
+  });
+
+  it('берёт онлайн из участников беседы: сервер отдаёт «не в сети» всем', () => {
+    const merged = mergeMemberPresence([asMember('b2', { isOnline: false })], [
+      { id: 'b2', isOnline: true, online: true, lastSeenAt: null },
+    ]);
+    expect(merged[0]?.user.isOnline).toBe(true);
+    expect(merged[0]?.user.online).toBe(true);
+  });
+
+  it('подставляет точное время и статус, не затирая остальное', () => {
+    const merged = mergeMemberPresence(
+      [asMember('b2', { isOnline: false, lastSeenAt: null })],
+      [{ id: 'b2', isOnline: false, lastSeenAt: '2026-09-24T15:00:00.000Z', lastSeenStatus: null }],
+    );
+    expect(merged[0]?.user.lastSeenAt).toBe('2026-09-24T15:00:00.000Z');
+    expect(merged[0]?.user.lastSeenStatus).toBeNull();
+  });
+
+  it('не трогает состав без данных о присутствии и не теряет роли', () => {
+    const members = [asMember('b2'), asMember('c3')];
+    expect(mergeMemberPresence(members, undefined)).toEqual(members);
+    expect(mergeMemberPresence(members, [])).toEqual(members);
+    const merged = mergeMemberPresence(members, [{ userId: 'c3', isOnline: true }]);
+    expect(merged[0]?.user.isOnline).toBeUndefined();
+    expect(merged[1]?.user.isOnline).toBe(true);
+    expect(merged.map((item) => item.role)).toEqual(['member', 'member']);
   });
 });
 

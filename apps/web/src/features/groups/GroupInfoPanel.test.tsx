@@ -255,6 +255,16 @@ describe('карточка группы', () => {
     expect(within(sections[1] as HTMLElement).getByText(/^Администратор · Был\(а\) сегодня в /)).toBeInTheDocument();
   });
 
+  it('берёт «в сети» из участников беседы, а не из ответа списка', async () => {
+    // Сервер отдаёт всем «не в сети»: онлайн приходит только событиями сокета.
+    vi.mocked(api.groupMembers).mockResolvedValue([member({ ...bob, isOnline: false }, 'admin')]);
+    renderPanel({ members: [{ id: 'bob-2', isOnline: true, online: true, displayName: 'Боб' }] });
+
+    const sections = await screen.findAllByRole('region');
+    expect(sections[0]?.getAttribute('aria-label')).toBe('В сети');
+    expect(within(sections[0] as HTMLElement).getByText('Боб')).toBeInTheDocument();
+  });
+
   it('тег участника виден в составе и покрашен по роли', async () => {
     vi.mocked(api.groupMembers).mockResolvedValue([
       member(alice, 'owner', { tag: 'Организатор' }),

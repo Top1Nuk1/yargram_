@@ -14,6 +14,7 @@ import {
   type GroupPermission,
   type GroupPermissions,
   type GroupRole,
+  type Participant,
 } from '../types';
 
 /** Группа — это третий тип беседы рядом с личным диалогом и «Избранным». */
@@ -180,6 +181,39 @@ export function memberTagOf(
   userId: string,
 ): string | undefined {
   return conversation?.memberTags?.[userId];
+}
+
+/**
+ * Подставляет живое присутствие в состав группы. Ответ сервера всегда отдаёт
+ * «не в сети» — онлайн приходит только событиями сокета и живёт в участниках
+ * беседы, поэтому берём его оттуда.
+ */
+export function mergeMemberPresence(
+  members: GroupMember[],
+  participants: Participant[] | undefined,
+): GroupMember[] {
+  if (!participants?.length) return members;
+  const live = new Map<string, Participant>();
+  for (const participant of participants) {
+    const id = participant.user?.id ?? participant.userId ?? participant.id;
+    if (id) live.set(id, participant);
+  }
+  return members.map((member) => {
+    const source = live.get(member.user.id);
+    if (!source) return member;
+    const pick = <T>(next: T | undefined, fallback: T): T => (next === undefined ? fallback : next);
+    return {
+      ...member,
+      user: {
+        ...member.user,
+        isOnline: pick(source.isOnline ?? source.online, member.user.isOnline),
+        online: pick(source.online ?? source.isOnline, member.user.online),
+        lastSeenAt: pick(source.lastSeenAt, member.user.lastSeenAt),
+        lastSeenStatus: pick(source.lastSeenStatus, member.user.lastSeenStatus),
+        showLastSeen: pick(source.showLastSeen, member.user.showLastSeen),
+      },
+    };
+  });
 }
 
 export interface MemberPresenceSection {
