@@ -88,6 +88,14 @@ export function presenceBucket(user: User | null | undefined, now: number = Date
  * Подпись присутствия: «в сети», «был(а) сегодня в 15:00», «был(а) в прошлом
  * месяце». Одно место для шапки чата и списка участников.
  */
+/** Подпись «в сети» / «был(а) …» красится: в сети — голубым, иначе серым. */
+export function presenceTextClass(user: User | null | undefined): string {
+  return isUserOnline(user) ? 'text-brand' : 'text-muted';
+}
+
+/** Сколько времени считается «только что». */
+const JUST_NOW = 5 * 60 * 1_000;
+
 export function formatLastSeen(user: User | null | undefined, now = new Date()): string {
   if (!user) return 'Статус неизвестен';
   if (user.lastSeenStatus) {
@@ -108,7 +116,9 @@ export function formatLastSeen(user: User | null | undefined, now = new Date()):
   const startSeen = new Date(seen.getFullYear(), seen.getMonth(), seen.getDate());
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   const time = formatMessageTime(user.lastSeenAt);
-  if (startSeen.getTime() === startToday.getTime()) return `Был(а) сегодня в ${time}`;
+  // Совсем недавно время не называем: «был(а) только что» понятнее.
+  if (now.getTime() - seen.getTime() < JUST_NOW) return 'Был(а) только что';
+  if (startSeen.getTime() === startToday.getTime()) return `Был(а) в ${time}`;
   if (startSeen.getTime() === yesterday.getTime()) return `Был(а) вчера в ${time}`;
   const date = new Intl.DateTimeFormat('ru-RU', {
     day: 'numeric',

@@ -41,7 +41,7 @@ import {
   viewerManagesGroup,
   type MemberAction,
 } from '../../lib/group';
-import { formatLastSeen } from '../../lib/presence';
+import { formatLastSeen, presenceTextClass } from '../../lib/presence';
 import {
   groupPermissionKeys,
   memberPermissionKeys,
@@ -596,7 +596,10 @@ export function GroupInfoPanel({
                                   {groupRoleLabel(member.role)}
                                   {muted ? ' · заглушён' : ''}
                                   {' · '}
-                                  {formatLastSeen(member.user)}
+                                  {/* В сети — голубым, иначе серым. */}
+                                  <span className={presenceTextClass(member.user)}>
+                                    {formatLastSeen(member.user)}
+                                  </span>
                                 </span>
                               </span>
                             </span>

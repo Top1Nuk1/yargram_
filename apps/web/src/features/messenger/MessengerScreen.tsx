@@ -2122,7 +2122,13 @@ export function MessengerScreen({
                         />
                       )}
                     </span>
-                    <span className={`mt-0.5 block truncate text-xs ${peerTyping ? 'font-semibold text-brand' : 'text-muted'}`}>
+                    <span
+                      className={`mt-0.5 block truncate text-xs ${
+                        peerTyping || (!selectedIsGroup && isUserOnline(selectedPeer))
+                          ? 'font-semibold text-brand'
+                          : 'text-muted'
+                      }`}
+                    >
                       {selectedIsGroup
                         ? `${groupMemberCountLabel(selectedConversation.memberCount)}${selectedConversation.description ? ` · ${selectedConversation.description}` : ''}`
                         : peerTyping

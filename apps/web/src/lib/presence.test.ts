@@ -6,6 +6,7 @@ import {
   presenceBucket,
   presenceBucketLabels,
   presenceBucketOrder,
+  presenceTextClass,
   updateUserPresence,
 } from './presence';
 import type { User } from '../types';
@@ -38,8 +39,22 @@ describe('last seen in the viewer device timezone', () => {
   const now = new Date(2026, 4, 14, 12, 0);
   const at = (year: number, month: number, day: number) => ({ ...user, online: false, lastSeenAt: new Date(year, month, day, 9, 5).toISOString() });
   it('shows local today and yesterday with time', () => {
-    expect(formatLastSeen(at(2026, 4, 14), now)).toBe('Был(а) сегодня в 09:05');
+    // Сегодня «сегодня» не пишем: «Был(а) в 09:05» короче и понятнее.
+    expect(formatLastSeen(at(2026, 4, 14), now)).toBe('Был(а) в 09:05');
     expect(formatLastSeen(at(2026, 4, 13), now)).toBe('Был(а) вчера в 09:05');
+  });
+  it('says «только что» вместо времени, если видели минуту назад', () => {
+    const now = new Date(2026, 4, 14, 12, 0);
+    const minuteAgo = { ...user, online: false, lastSeenAt: new Date(2026, 4, 14, 11, 59).toISOString() };
+    const tenMinutesAgo = { ...user, online: false, lastSeenAt: new Date(2026, 4, 14, 11, 50).toISOString() };
+    expect(formatLastSeen(minuteAgo, now)).toBe('Был(а) только что');
+    expect(formatLastSeen(tenMinutesAgo, now)).toBe('Был(а) в 11:50');
+  });
+  it('красит подпись: в сети голубым, иначе серым', () => {
+    expect(presenceTextClass({ ...user, online: true, isOnline: true })).toBe('text-brand');
+    expect(presenceTextClass({ ...user, online: false, isOnline: false })).toBe('text-muted');
+    // Кто скрыл время, в сети не показывается — подпись серая.
+    expect(presenceTextClass({ ...user, online: true, showLastSeen: false })).toBe('text-muted');
   });
   it('shows numeric day, full month, time, and year for previous years', () => {
     expect(formatLastSeen(at(2026, 4, 12), now)).toBe('Был(а) 12 мая в 09:05');

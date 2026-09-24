@@ -21,6 +21,7 @@ import { formatMessageTime } from '../../lib/format';
 import { avatarProps } from '../../lib/user';
 import type { Conversation, Message, ReportReason, User, FavoriteNote } from '../../types';
 import { formatLastSeen, messageSummary } from './messengerUtils';
+import { presenceTextClass } from '../../lib/presence';
 
 interface ModalProps {
   title: string;
@@ -267,7 +268,7 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
           primaryUsername={profile.username}
           className="mt-0.5 block text-center text-muted"
         />
-        <p className="mt-1 text-xs text-muted">{formatLastSeen(profile)}</p>
+        <p className={`mt-1 text-xs ${presenceTextClass(profile)}`}>{formatLastSeen(profile)}</p>
       </div>
       {profile.bio && <p className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink">{profile.bio}</p>}
       <dl className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-line p-3 text-xs">

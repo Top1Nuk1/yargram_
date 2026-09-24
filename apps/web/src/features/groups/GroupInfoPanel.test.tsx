@@ -137,10 +137,10 @@ describe('карточка группы', () => {
     for (const person of [alice, bob, carol]) {
       expect(await screen.findByText(person.displayName)).toBeInTheDocument();
     }
-    // Подпись строки — роль плюс присутствие: «Владелец · В сети».
-    expect(await screen.findByText(/^Владелец · /)).toBeInTheDocument();
-    expect(await screen.findByText(/^Администратор · /)).toBeInTheDocument();
-    expect(await screen.findByText(/^Ограниченный · /)).toBeInTheDocument();
+    // Строка участника — роль плюс отдельная подпись присутствия.
+    expect(await screen.findByText('Владелец ·')).toBeInTheDocument();
+    expect(await screen.findByText('Администратор ·')).toBeInTheDocument();
+    expect(await screen.findByText('Ограниченный ·')).toBeInTheDocument();
   });
 
   it('переключает права группы и отправляет только изменённый пункт', async () => {
@@ -252,7 +252,14 @@ describe('карточка группы', () => {
     expect(within(sections[1] as HTMLElement).getByText('Боб')).toBeInTheDocument();
     expect(within(sections[2] as HTMLElement).getByText('Кэрол')).toBeInTheDocument();
     // У недавних видно точное время, а не только роль.
-    expect(within(sections[1] as HTMLElement).getByText(/^Администратор · Был\(а\) сегодня в /)).toBeInTheDocument();
+    expect(within(sections[1] as HTMLElement).getByText('Администратор ·')).toBeInTheDocument();
+    expect(within(sections[1] as HTMLElement).getByText(/^Был\(а\) в \d/)).toBeInTheDocument();
+    // В сети подпись голубая, у остальных серая.
+    const onlineRow = within(sections[0] as HTMLElement).getByRole('button', { name: /Алиса/ });
+    expect(within(onlineRow).getByText('В сети')).toHaveClass('text-brand');
+    const offlineRow = within(sections[2] as HTMLElement).getByRole('button', { name: /Кэрол/ });
+    // Точное время известно, поэтому вместо «давно» показываем дату.
+    expect(within(offlineRow).getByText(/^Был\(а\) /)).toHaveClass('text-muted');
   });
 
   it('берёт «в сети» из участников беседы, а не из ответа списка', async () => {
