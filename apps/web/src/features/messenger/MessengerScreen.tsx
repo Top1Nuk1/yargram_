@@ -1,4 +1,5 @@
 import {
+  BarChart3,
   Archive,
   ArchiveRestore,
   ArrowLeft,
@@ -92,6 +93,8 @@ import { playSound } from '../../lib/sounds';
 import type { AccountStatePayload, Attachment, ChatFolder, Conversation, ConversationDraft, Message, MessageReaction, ReadReceipt, ScheduledMessage, ThemeMode, User } from '../../types';
 import { CallOverlay } from '../calls/CallOverlay';
 import { useWebRtcCall } from '../calls/useWebRtcCall';
+import { PollDialog, type PollDraft } from '../polls/PollDialog';
+import { PollMessage } from '../polls/PollMessage';
 import { GroupCreateModal } from '../groups/GroupCreateModal';
 import { GroupInfoPanel } from '../groups/GroupInfoPanel';
 import { MemberTag } from '../groups/MemberTag';
@@ -284,6 +287,8 @@ export function MessengerScreen({
   const [scheduleAt, setScheduleAt] = useState('');
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [pollOpen, setPollOpen] = useState(false);
+  const [pollBusy, setPollBusy] = useState(false);
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
   const [groupInfoOpen, setGroupInfoOpen] = useState(false);
   /** Профиль участника группы, открытый из карточки группы. */
@@ -396,6 +401,7 @@ export function MessengerScreen({
   const canWriteInGroup = !selectedIsGroup || viewerCan(selectedConversation, 'send_messages');
   const canSendMedia = !selectedIsGroup || viewerCan(selectedConversation, 'send_media');
   const canSendLinks = !selectedIsGroup || viewerCan(selectedConversation, 'send_links');
+  const canSendPolls = !selectedIsGroup || viewerCan(selectedConversation, 'send_polls');
   const composeBlocked = selectedUnavailable || !canWriteInGroup;
   // Мьют со сроком: вместо общей фразы пишем, до какого времени писать нельзя.
   const muteDeadline = selectedIsGroup
@@ -1378,6 +1384,78 @@ export function MessengerScreen({
         return;
       }
       setMessageError(readableError(error, 'Не удалось изменить закреплённое сообщение.'));
+    }
+  }
+
+  /** Кто есть кто в опросе: имена голосовавших берём из переписки и состава. */
+  const pollVoters = useMemo(() => {
+    const map = new Map<string, User>();
+    for (const message of messages) {
+      if (message.sender) map.set(message.sender.id, message.sender);
+    }
+    for (const participant of selectedConversation?.members ?? []) {
+      const id = participant.user?.id ?? participant.userId ?? participant.id;
+      if (!id) continue;
+      const known = map.get(id);
+      map.set(id, {
+        ...(known ?? { id, displayName: '' }),
+        displayName: participant.displayName ?? known?.displayName ?? '',
+        ...(participant.user ?? {}),
+      });
+    }
+    return map;
+  }, [messages, selectedConversation]);
+
+  /** Опрос изменился: обновляем сообщение и в переписке, и в списке чатов. */
+  function applyPollMessage(updated: Message) {
+    setMessages((current) => updateMessageReferences(current, updated));
+    setConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === updated.conversationId
+          ? updateConversationMessage(conversation, updated)
+          : conversation,
+      ),
+    );
+  }
+
+  async function createPoll(draft: PollDraft) {
+    if (!selectedConversation) return;
+    setPollBusy(true);
+    try {
+      const created = await api.createPoll(token, selectedConversation.id, {
+        question: draft.question,
+        description: draft.description,
+        options: draft.options,
+        // Правильные варианты отмечены по индексу — сервер выдаст им id.
+        settings: { ...draft.settings, correctOptionIds: [] },
+      });
+      setPollOpen(false);
+      setMessages((current) => [...current, created]);
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === created.conversationId
+            ? updateConversationMessage(conversation, created)
+            : conversation,
+        ),
+      );
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onLogout(true);
+      else setMessageError(readableError(error, 'Не удалось создать опрос.'));
+    } finally {
+      setPollBusy(false);
+    }
+  }
+
+  /** Голос, свой вариант и остановка опроса идут одним путём. */
+  async function runPollAction(action: () => Promise<Message>, failure: string) {
+    setPollBusy(true);
+    try {
+      applyPollMessage(await action());
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onLogout(true);
+      else setMessageError(readableError(error, failure));
+    } finally {
+      setPollBusy(false);
     }
   }
 
@@ -2519,10 +2597,39 @@ export function MessengerScreen({
                                       mine={mine}
                                       onOpenImage={(attachment) => setImageViewer({ images: messageImages(messages), initialId: attachment.id })}
                                     />
-                                    {message.text && (
-                                      <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.45] sm:text-[15px]">
-                                        <HighlightedText text={message.text} query={chatSearchOpen ? chatSearch : ''} />
-                                      </p>
+                                    {message.poll ? (
+                                      <PollMessage
+                                        poll={message.poll}
+                                        currentUserId={currentUser.id}
+                                        canVote={!selectedBlocked}
+                                        busy={pollBusy}
+                                        nameOf={(userId) => pollVoters.get(userId)}
+                                        isAuthor={senderId === currentUser.id}
+                                        onVote={(optionIds) =>
+                                          void runPollAction(
+                                            () => api.votePoll(token, message.id, optionIds),
+                                            'Не удалось проголосовать.',
+                                          )
+                                        }
+                                        onAddOption={(text) =>
+                                          void runPollAction(
+                                            () => api.addPollOption(token, message.id, text),
+                                            'Не удалось добавить вариант.',
+                                          )
+                                        }
+                                        onClosePoll={() =>
+                                          void runPollAction(
+                                            () => api.closePoll(token, message.id),
+                                            'Не удалось остановить опрос.',
+                                          )
+                                        }
+                                      />
+                                    ) : (
+                                      message.text && (
+                                        <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.45] sm:text-[15px]">
+                                          <HighlightedText text={message.text} query={chatSearchOpen ? chatSearch : ''} />
+                                        </p>
+                                      )
                                     )}
                                     <span className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${mine ? 'text-ink/60' : 'text-muted'}`}>
                                       {message.editedAt && !message.failed && 'изменено · '}
@@ -2660,6 +2767,17 @@ export function MessengerScreen({
                     onChange={handleSelectedFiles}
                     disabled={sending || selectedBlockedByMe || !canAttach || Boolean(editingMessage)}
                   />
+                  {canSendPolls && (
+                    <IconButton
+                      label="Создать опрос"
+                      type="button"
+                      disabled={sending || selectedBlockedByMe || Boolean(editingMessage)}
+                      className="h-11 w-11 shrink-0"
+                      onClick={() => setPollOpen(true)}
+                    >
+                      <BarChart3 className="h-5 w-5" />
+                    </IconButton>
+                  )}
                   <IconButton
                     label={canAttach ? 'Прикрепить фото или файл' : 'В этой группе запрещены медиа'}
                     type="button"
@@ -2795,6 +2913,13 @@ export function MessengerScreen({
           currentUserId={currentUser.id}
           onClose={() => setSearchOpen(false)}
           onConversation={handleCreatedConversation}
+        />
+      )}
+      {pollOpen && (
+        <PollDialog
+          busy={pollBusy}
+          onClose={() => setPollOpen(false)}
+          onSubmit={(draft) => void createPoll(draft)}
         />
       )}
       {groupCreateOpen && (

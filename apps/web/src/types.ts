@@ -21,7 +21,7 @@ export interface MessageReaction {
   count: number;
 }
 
-export type MessageKind = 'user' | 'system' | 'call';
+export type MessageKind = 'user' | 'system' | 'call' | 'poll';
 
 export interface CallMessageDetails {
   callId?: string;
@@ -111,6 +111,39 @@ export interface AccountStatePayload {
   user: User;
 }
 
+/** Вариант ответа в опросе. */
+export interface PollOption {
+  id: string;
+  text: string;
+}
+
+/** Настройки опроса: включаются по отдельности. */
+export interface PollSettings {
+  showNames: boolean;
+  multiple: boolean;
+  addOptions: boolean;
+  changeVote: boolean;
+  shuffle: boolean;
+  /** Правильные варианты: непустой список делает опрос викториной. */
+  correctOptionIds: string[];
+  deadline: string | null;
+}
+
+export interface Poll {
+  question: string;
+  description: string;
+  options: PollOption[];
+  settings: PollSettings;
+  votes: Record<string, string[]>;
+  closed: boolean;
+}
+
+/** Опрос глазами смотрящего: итоги считает сервер. */
+export interface PollView extends Poll {
+  counts: Record<string, number>;
+  totalVoters: number;
+}
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -135,6 +168,7 @@ export interface Message {
   kind?: MessageKind;
   systemEvent?: string | null;
   call?: CallMessageDetails | null;
+  poll?: PollView | null;
   isFavorite?: boolean;
   favoritedByMe?: boolean;
 }

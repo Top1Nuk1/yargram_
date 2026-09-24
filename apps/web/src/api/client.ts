@@ -11,6 +11,7 @@ import type {
   LoginInput,
   Message,
   PaginatedItems,
+  PollSettings,
   RegisterInput,
   ReadReceipt,
   ReportReason,
@@ -394,6 +395,43 @@ export const api = {
       token,
       body: { userId, ...input },
     }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  createPoll(
+    token: string,
+    conversationId: string,
+    body: {
+      question: string;
+      description?: string;
+      options: string[];
+      settings?: Partial<PollSettings>;
+    },
+  ) {
+    return request<{ message: Message }>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/polls`,
+      { method: 'POST', token, body },
+    ).then((result) => result.message as unknown as Message);
+  },
+
+  votePoll(token: string, messageId: string, optionIds: string[]) {
+    return request<{ message: Message }>(
+      `/api/messages/${encodeURIComponent(messageId)}/poll/vote`,
+      { method: 'POST', token, body: { optionIds } },
+    ).then((result) => result.message as unknown as Message);
+  },
+
+  addPollOption(token: string, messageId: string, text: string) {
+    return request<{ message: Message }>(
+      `/api/messages/${encodeURIComponent(messageId)}/poll/options`,
+      { method: 'POST', token, body: { text } },
+    ).then((result) => result.message as unknown as Message);
+  },
+
+  closePoll(token: string, messageId: string) {
+    return request<{ message: Message }>(
+      `/api/messages/${encodeURIComponent(messageId)}/poll/close`,
+      { method: 'POST', token },
+    ).then((result) => result.message as unknown as Message);
   },
 
   setGroupMemberTag(token: string, groupId: string, userId: string, tag: string) {
