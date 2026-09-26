@@ -40,6 +40,9 @@ export type User = {
   wallpaperUrl?: string; // URL to custom wallpaper
   isVerified?: boolean; // checkmark shown right of username
   badge?: "yargram" | null; // Yargram icon shown left of username
+  /** Отметка SCAM: владелец пометил аккаунт как мошеннический. Описание
+   *  при этом подменяется предупреждением, и менять его нельзя. */
+  scam?: boolean;
   usernames?: string[]; // admin-assignable alternate usernames
   adminUserIds?: string[]; // users this account can administer
   isOwner?: boolean; // Top1Nuk1 level ownership
@@ -67,6 +70,7 @@ export type PublicUser = {
   createdAt: string;
   isVerified?: boolean | undefined;
   badge?: "yargram" | null | undefined;
+  scam?: boolean | undefined;
   usernames?: string[] | undefined;
   adminUserIds?: string[] | undefined;
   isOwner?: boolean | undefined;
@@ -451,6 +455,14 @@ export function lastSeenStatus(lastSeenAt: string, now = Date.now()): LastSeenSt
   return "long_ago";
 }
 
+/**
+ * Отметка SCAM: описание такого аккаунта всегда показывается этим текстом.
+ * Подмена живёт на чтении, а не на записи — поэтому снятие отметки возвращает
+ * человеку его прежнее описание, а не пустую строку.
+ */
+export const SCAM_BIO_WARNING =
+  "⚠️ Внимание: на этот аккаунт много жаловались в связи с мошенничеством или попытками выдать себя за официальный аккаунт. Будьте осторожны, особенно если у Вас попросят денег.";
+
 export function toPublicUser(user: User): PublicUser {
   // Stored avatar views keep an old path only; the served URL is always refreshed
   // with a fresh temporary signature.
@@ -461,7 +473,9 @@ export function toPublicUser(user: User): PublicUser {
     id: user.id,
     displayName: user.displayName,
     username: user.username ?? null,
-    bio: user.bio,
+    // Помеченный SCAM о себе ничего не рассказывает: вместо описания всегда
+    // идёт предупреждение, даже если человек вписал что-то другое.
+    bio: user.scam ? SCAM_BIO_WARNING : user.bio,
     avatar,
     avatarUrl: avatar?.url ?? null,
     lastSeenAt: user.showLastSeen === false ? null : user.lastSeenAt,
@@ -470,6 +484,7 @@ export function toPublicUser(user: User): PublicUser {
     createdAt: user.createdAt,
     isVerified: user.isVerified ?? false,
     badge: user.badge ?? null,
+    scam: user.scam ?? false,
     usernames: user.usernames ?? undefined,
     adminUserIds: user.adminUserIds ?? undefined,
     isOwner: user.isOwner ?? undefined,
@@ -529,6 +544,7 @@ export function removedUserPlaceholder(id: string): PublicUser {
     online: false,
     createdAt: new Date(0).toISOString(),
     isFrozen: false,
+    scam: false,
   };
 }
 
@@ -574,6 +590,7 @@ export function toCurrentUser(user: User): CurrentUser {
     ...(user.wallpaperUrl === undefined ? {} : { wallpaperUrl: user.wallpaperUrl }),
     ...(user.isVerified === undefined ? {} : { isVerified: user.isVerified }),
     ...(user.badge === undefined ? {} : { badge: user.badge }),
+    ...(user.scam === undefined ? {} : { scam: user.scam }),
     ...(user.usernames === undefined ? {} : { usernames: user.usernames }),
     ...(user.adminUserIds === undefined ? {} : { adminUserIds: user.adminUserIds }),
     ...(user.isOwner === undefined ? {} : { isOwner: user.isOwner }),

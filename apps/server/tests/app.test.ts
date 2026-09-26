@@ -20,6 +20,7 @@ import { FolderService } from "../src/services/folder-service.js";
 import { GroupService } from "../src/services/group-service.js";
 import { ScheduledMessageService } from "../src/services/scheduled-message-service.js";
 import { ChatService, type MessageView } from "../src/services/chat-service.js";
+import { SCAM_BIO_WARNING } from "../src/domain/models.js";
 import { JsonDatabase } from "../src/storage/json-database.js";
 
 const temporaryDirectories: string[] = [];
@@ -1350,16 +1351,22 @@ describe("Yargram API", () => {
       expect(byUsername.body.user.id).toBe(targetId);
     }
 
-    // Тот же адрес в другом регистре занят — и внутри аккаунта, и у соседа.
-    const sameAccount = await request(harness.app)
-      .post(`/api/admin/${owner.user.id}/grant`)
-      .set(authorize)
-      .send({ targetUserId: targetId, usernames: ["TOP1NUK1"] });
-    expect(sameAccount.status).toBe(409);
+    // Адрес, занятый соседом, по-прежнему отказ.
     const taken = await request(harness.app)
       .post("/api/auth/register")
       .send({ email: "case-clash@example.com", password: "correct horse battery staple", displayName: "Clash", username: "SECOND" });
     expect(taken.status).toBe(409);
+
+    // Основной ник внутри списка дополнительных — дубль, а не ошибка: адрес и
+    // так принадлежит этому аккаунту. Раньше он отменял весь запрос, и новые
+    // ники не сохранялись вовсе; теперь дубль молча выкидывается, а остальное
+    // записывается.
+    const sameAccount = await request(harness.app)
+      .post(`/api/admin/${owner.user.id}/grant`)
+      .set(authorize)
+      .send({ targetUserId: targetId, usernames: ["TOP1NUK1", "fresh_alias"] });
+    expect(sameAccount.status).toBe(200);
+    expect(sameAccount.body.user.usernames).toEqual(["fresh_alias"]);
 
     // Кириллица и пробелы в никах не проходят валидацию.
     const invalid = await request(harness.app)
@@ -1367,6 +1374,62 @@ describe("Yargram API", () => {
       .set(authorize)
       .send({ targetUserId: targetId, usernames: ["Котик", "has space"] });
     expect(invalid.status).toBe(400);
+  });
+
+  it("does not let a profile username take an address that is someone else's alias", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "steal-owner@example.com", "StealOwner");
+    const target = await register(harness.app, "steal-target@example.com", "StealTarget");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+
+    // @zayac — дополнительный ник владельца.
+    await request(harness.app)
+      .post(`/api/admin/${owner.user.id}/grant`)
+      .set({ Authorization: bearer(owner.accessToken) })
+      .send({ targetUserId: owner.user.id, usernames: ["zayac"] })
+      .expect(200);
+
+    // Чужой аккаунт не забирает адрес себе основным ником: иначе поиск по
+    // @zayac начал бы находить не того, кому ник выдали.
+    const stolen = await request(harness.app)
+      .patch("/api/users/me")
+      .set({ Authorization: bearer(target.accessToken) })
+      .send({ username: "ZAYAC" });
+    expect(stolen.status).toBe(409);
+
+    await expect(harness.repositories.users.findByUsername("zayac")).resolves.toMatchObject({
+      id: owner.user.id,
+    });
+  });
+
+  it("drops the duplicate when the primary username becomes one of the account's own aliases", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "dup-owner@example.com", "DupOwner");
+    const target = await register(harness.app, "dup-target@example.com", "DupTarget");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const authorize = { Authorization: bearer(owner.accessToken) };
+
+    await request(harness.app)
+      .post(`/api/admin/${owner.user.id}/grant`)
+      .set(authorize)
+      .send({ targetUserId: target.user.id, usernames: ["kotik", "second_name"] })
+      .expect(200);
+
+    // Один из дополнительных ников становится основным — дубль уходит из списка.
+    const changed = await request(harness.app)
+      .patch("/api/users/me")
+      .set({ Authorization: bearer(target.accessToken) })
+      .send({ username: "KOTIK" });
+    expect(changed.status).toBe(200);
+    expect(changed.body.user).toMatchObject({ username: "KOTIK", usernames: ["second_name"] });
+
+    // Список дополнительных снова сохраняется целиком, без отказа.
+    const regranted = await request(harness.app)
+      .post(`/api/admin/${owner.user.id}/grant`)
+      .set(authorize)
+      .send({ targetUserId: target.user.id, usernames: ["second_name", "third"] });
+    expect(regranted.status).toBe(200);
+    expect(regranted.body.user.usernames).toEqual(["second_name", "third"]);
   });
 
   it("lets a user set, change and clear their own birthday", async () => {
@@ -1397,6 +1460,17 @@ describe("Yargram API", () => {
     // Неверный формат — 400.
     const bad = await request(harness.app).patch("/api/users/me").set(auth).send({ birthday: "not-a-date" });
     expect(bad.status).toBe(400);
+    const half = await request(harness.app).patch("/api/users/me").set(auth).send({ birthday: "2010-11" });
+    expect(half.status).toBe(400);
+
+    // Без года: день и месяц сохраняются, возраст не показывается.
+    const noYear = await request(harness.app).patch("/api/users/me").set(auth).send({ birthday: "11-01" });
+    expect(noYear.status).toBe(200);
+    expect(noYear.body.user.birthday).toBe("11-01");
+    const peerSeesNoYear = await request(harness.app).get(`/api/users/${me.user.id}`).set(peerAuth);
+    expect(peerSeesNoYear.body.user.birthday).toBe("11-01");
+    // Перезапуск хранилища не должен портить такую дату.
+    await expect(harness.repositories.users.findById(me.user.id)).resolves.toMatchObject({ birthday: "11-01" });
 
     // Клиент шлёт полный набор полей сразу — день рождения не должен теряться.
     const full = await request(harness.app)
@@ -1602,16 +1676,23 @@ describe("Yargram API", () => {
     expect(frozen.status).toBe(200);
     expect(frozen.body.user.isFrozen).toBe(true);
 
-    // Замороженный не проходит даже с действующим токеном и не логинится.
+    // Замороженный входит и читает: запрет накладывается только на запись.
     const me = await request(harness.app)
-      .get("/api/users/me")
+      .get("/api/auth/me")
       .set({ Authorization: bearer(bob.accessToken) });
-    expect(me.status).toBe(403);
-    expect(me.body.error.code).toBe("ACCOUNT_FROZEN");
+    expect(me.status).toBe(200);
+    expect(me.body.user.isFrozen).toBe(true);
     const login = await request(harness.app)
       .post("/api/auth/login")
-      .send({ email: "freeze-bob@example.com", password: "correct horse battery staple" });
-    expect(login.status).toBe(403);
+      .send({ email: "freeze-bob@example.com", password: TEST_PASSWORD });
+    expect(login.status).toBe(200);
+    // А вот записать он ничего не может — даже собственный профиль.
+    const write = await request(harness.app)
+      .patch("/api/users/me")
+      .set({ Authorization: bearer(bob.accessToken) })
+      .send({ displayName: "Frozen Bob" });
+    expect(write.status).toBe(403);
+    expect(write.body.error.code).toBe("ACCOUNT_FROZEN");
 
     // Обычный пользователь замораживать не может.
     const forbidden = await request(harness.app)
@@ -1640,6 +1721,72 @@ describe("Yargram API", () => {
     const self = await request(harness.app).delete(`/api/admin/${owner.user.id}`).set(ownerAuth);
     expect(self.status).toBe(400);
     expect(self.body.error.code).toBe("SELF_ACTION");
+  });
+
+  it("replaces the bio of a SCAM-marked account and freezes it against edits", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "scam-owner@example.com", "ScamOwner");
+    const bob = await register(harness.app, "scam-bob@example.com", "ScamBob");
+    const plain = await register(harness.app, "scam-plain@example.com", "ScamPlain");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+    const bobAuth = { Authorization: bearer(bob.accessToken) };
+
+    // Человек написал о себе что-то своё — это описание должно пережить отметку.
+    const original = "Люблю котиков и горные лыжи";
+    await request(harness.app).patch("/api/users/me").set(bobAuth).send({ bio: original }).expect(200);
+
+    // Обычный пользователь отметку выдать не может.
+    const forbidden = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/scam`)
+      .set({ Authorization: bearer(plain.accessToken) })
+      .send({ scam: true });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_OWNER");
+
+    const marked = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/scam`)
+      .set(ownerAuth)
+      .send({ scam: true });
+    expect(marked.status).toBe(200);
+    expect(marked.body.user.scam).toBe(true);
+    expect(marked.body.user.bio).toBe(SCAM_BIO_WARNING);
+
+    // Собеседник видит предупреждение вместо описания.
+    const publicProfile = await request(harness.app)
+      .get(`/api/users/${bob.user.id}`)
+      .set(ownerAuth)
+      .expect(200);
+    expect(publicProfile.body.user).toMatchObject({ scam: true, bio: SCAM_BIO_WARNING });
+
+    // И сам помеченный тоже — у себя в профиле он видит то же предупреждение.
+    const me = await request(harness.app).get("/api/auth/me").set(bobAuth).expect(200);
+    expect(me.body.user).toMatchObject({ scam: true, bio: SCAM_BIO_WARNING });
+
+    // Описание не меняется, но остальные настройки профиля сохраняются:
+    // поле не отклоняем, иначе форма профиля перестала бы работать целиком.
+    const write = await request(harness.app)
+      .patch("/api/users/me")
+      .set(bobAuth)
+      .send({ bio: "новое описание", displayName: "Scam Bob Renamed", themeColor: "#123456" })
+      .expect(200);
+    expect(write.body.user).toMatchObject({
+      displayName: "Scam Bob Renamed",
+      themeColor: "#123456",
+      scam: true,
+      bio: SCAM_BIO_WARNING,
+    });
+    // Прежнее описание живо в записи — его вернёт снятие отметки.
+    await expect(harness.repositories.users.findById(bob.user.id)).resolves.toMatchObject({
+      bio: original,
+    });
+
+    const cleared = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/scam`)
+      .set(ownerAuth)
+      .send({ scam: false });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.user).toMatchObject({ scam: false, bio: original });
   });
 
   it("shows frozen and deleted accounts as a placeholder instead of breaking the chat", async () => {
@@ -1725,7 +1872,7 @@ describe("Yargram API", () => {
     });
   });
 
-  it("closes writing to a deleted account but keeps a frozen one reachable", async () => {
+  it("closes writing to a frozen and to a deleted account but keeps the history readable", async () => {
     const harness = await createHarness();
     const owner = await register(harness.app, "composer-owner@example.com", "ComposerOwner");
     const alice = await register(harness.app, "composer-alice@example.com", "ComposerAlice");
@@ -1740,27 +1887,71 @@ describe("Yargram API", () => {
       .send({ userId: bob.user.id })
       .expect(201);
     const conversationId = direct.body.conversation.id as string;
-
-    // Заморозка — мера временная: сообщение уходит и дождётся разморозки.
-    await request(harness.app)
-      .post(`/api/admin/${bob.user.id}/freeze`)
-      .set(ownerAuth)
-      .send({ frozen: true })
-      .expect(200);
     await request(harness.app)
       .post(`/api/conversations/${conversationId}/messages`)
       .set(aliceAuth)
       .send({ text: "Боб, ты как?" })
       .expect(201);
 
+    // Замороженный аккаунт — только читатель: ему не пишут и он не пишет.
+    await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/freeze`)
+      .set(ownerAuth)
+      .send({ frozen: true })
+      .expect(200);
+
+    const toFrozen = await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set(aliceAuth)
+      .send({ text: "Боб, ты как?" });
+    expect(toFrozen.status).toBe(403);
+    expect(toFrozen.body.error.code).toBe("ACCOUNT_FROZEN");
+
+    // Сам замороженный входит, видит свой профиль и читает всю историю…
+    const bobLogin = await request(harness.app)
+      .post("/api/auth/login")
+      .send({ email: "composer-bob@example.com", password: TEST_PASSWORD })
+      .expect(200);
+    const bobAuth = { Authorization: bearer(bobLogin.body.accessToken as string) };
+    const me = await request(harness.app).get("/api/auth/me").set(bobAuth).expect(200);
+    expect(me.body.user.isFrozen).toBe(true);
+    expect(me.body.user.displayName).toBe("ComposerBob");
+    const history = await request(harness.app)
+      .get(`/api/conversations/${conversationId}/messages?limit=50`)
+      .set(bobAuth);
+    expect(history.status).toBe(200);
+    expect(history.body.messages).toHaveLength(1);
+    expect(history.body.messages[0].text).toBe("Боб, ты как?");
+
+    // …но ни писать, ни менять профиль не может.
+    const fromFrozen = await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set(bobAuth)
+      .send({ text: "я тут" });
+    expect(fromFrozen.status).toBe(403);
+    expect(fromFrozen.body.error.code).toBe("ACCOUNT_FROZEN");
+
+    const profile = await request(harness.app)
+      .patch("/api/users/me")
+      .set(bobAuth)
+      .send({ displayName: "Новый Боб" });
+    expect(profile.status).toBe(403);
+    expect(profile.body.error.code).toBe("ACCOUNT_FROZEN");
+
+    // Разморозили — переписка снова открыта в обе стороны.
     await request(harness.app)
       .post(`/api/admin/${bob.user.id}/freeze`)
       .set(ownerAuth)
       .send({ frozen: false })
       .expect(200);
-    await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth).expect(200);
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set(aliceAuth)
+      .send({ text: "с возвращением" })
+      .expect(201);
 
-    // Удалённый собеседник не принимает сообщения: история есть, ввода нет.
+    // Удалённый собеседник сообщения не принимает: история есть, ввода нет.
+    await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth).expect(200);
     const send = await request(harness.app)
       .post(`/api/conversations/${conversationId}/messages`)
       .set(aliceAuth)
@@ -1776,24 +1967,64 @@ describe("Yargram API", () => {
     expect(reopen.status).toBe(403);
     expect(reopen.body.error.code).toBe("ACCOUNT_DELETED");
 
-    const history = await request(harness.app)
+    const deletedHistory = await request(harness.app)
       .get(`/api/conversations/${conversationId}/messages?limit=50`)
       .set(aliceAuth);
-    expect(history.status).toBe(200);
-    expect(history.body.messages).toHaveLength(1);
-    expect(history.body.messages[0].text).toBe("Боб, ты как?");
+    expect(deletedHistory.status).toBe(200);
+    expect(deletedHistory.body.messages.length).toBeGreaterThanOrEqual(2);
+  });
 
-    // После возврата аккаунта писать снова можно.
-    await request(harness.app)
-      .post(`/api/admin/${bob.user.id}/restore`)
-      .set(ownerAuth)
-      .send({})
-      .expect(200);
-    await request(harness.app)
-      .post(`/api/conversations/${conversationId}/messages`)
-      .set(aliceAuth)
-      .send({ text: "с возвращением" })
+  it("silences a frozen author on the socket: no sending and no typing", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "sock-frozen-owner@example.com", "SockFrozenOwner");
+    const alice = await register(harness.app, "sock-frozen-alice@example.com", "SockFrozenAlice");
+    const bob = await register(harness.app, "sock-frozen-bob@example.com", "SockFrozenBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set({ Authorization: bearer(alice.accessToken) })
+      .send({ userId: bob.user.id })
       .expect(201);
+    const conversationId = direct.body.conversation.id as string;
+
+    const httpServer = createServer(harness.app);
+    const socketServer = attachSocketServer(httpServer, harness);
+    realtimeServers.push(socketServer);
+    await listen(httpServer);
+    const address = httpServer.address();
+    if (!address || typeof address === "string") throw new Error("Expected an ephemeral TCP port");
+    const url = "http://127.0.0.1:" + address.port;
+    const bobClient = createSocketClient(url, bob.accessToken);
+    const aliceClient = createSocketClient(url, alice.accessToken);
+    try {
+      await Promise.all([waitForConnect(bobClient), waitForConnect(aliceClient)]);
+      // Сокет замороженного не рвём: он остаётся читателем и дальше.
+      await request(harness.app)
+        .post(`/api/admin/${bob.user.id}/freeze`)
+        .set(ownerAuth)
+        .send({ frozen: true })
+        .expect(200);
+
+      const typingSeen: boolean[] = [];
+      aliceClient.on("typing:updated", (payload: { isTyping: boolean }) => {
+        typingSeen.push(payload.isTyping);
+      });
+      const typingError = waitForSocketEvent<{ error: { code: string } }>(bobClient, "typing:error");
+      bobClient.emit("typing:start", { conversationId });
+      expect((await typingError).error.code).toBe("ACCOUNT_FROZEN");
+      // Собеседник не должен увидеть «печатает…» от замороженного.
+      expect(typingSeen).toHaveLength(0);
+
+      const ack = await new Promise<{ ok: boolean; error?: { code: string } }>((resolve) => {
+        bobClient.emit("message:send", { conversationId, text: "не пройдёт" }, resolve);
+      });
+      expect(ack.ok).toBe(false);
+      expect(ack.error?.code).toBe("ACCOUNT_FROZEN");
+    } finally {
+      bobClient.disconnect();
+      aliceClient.disconnect();
+    }
   });
 
   it("reserves the email of a deleted or frozen account and lets the owner restore it", async () => {

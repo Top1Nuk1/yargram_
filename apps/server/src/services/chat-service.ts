@@ -89,7 +89,7 @@ export function viewPoll(poll: Poll, viewerId?: string): PollView {
   const votes = poll.settings.showNames ? poll.votes : own ? { [viewerId!]: own } : {};
   return { ...poll, votes, counts, totalVoters, closed: pollClosed(poll) };
 }
-import { AppError } from "../lib/errors.js";
+import { AppError, FROZEN_READ_ONLY_MESSAGE } from "../lib/errors.js";
 import type { Repositories } from "../repositories/types.js";
 
 export type ReactionView = {
@@ -296,6 +296,8 @@ export class ChatService {
     replyToId?: string,
     options: { attachmentIds?: string[]; forwardedFromId?: string } = {},
   ): Promise<{ message: MessageView; memberIds: string[] }> {
+    // Сокет и HTTP приходят сюда, поэтому одного запрета хватает на оба пути.
+    await this.assertAuthorWritable(currentUserId);
     const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
     await this.assertConversationInteractionAllowed(currentUserId, conversation);
     // В группе права важнее блокировок: запреты участников и общие правила группы.
@@ -982,11 +984,34 @@ export class ChatService {
     }
   }
 
-  /** Удалённый аккаунт остаётся в базе, но общение с ним закрыто. */
+  /**
+   * Удалённый аккаунт остаётся в базе, но общение с ним закрыто совсем.
+   * Замороженному писать и звонить тоже нельзя: он читает историю, но в переписке
+   * не участвует — ни он собеседнику, ни собеседник ему.
+   */
   private async assertAccountAlive(userId: string, message: string): Promise<void> {
     const user = await this.repositories.users.findById(userId);
     if (!user) throw new AppError(404, "USER_NOT_FOUND", "User was not found");
     if (user.isDeleted) throw new AppError(403, "ACCOUNT_DELETED", message);
+    if (user.isFrozen) {
+      throw new AppError(
+        403,
+        "ACCOUNT_FROZEN",
+        "Аккаунт собеседника заморожен. Переписка и звонки недоступны.",
+      );
+    }
+  }
+
+  /**
+   * Замороженный автор — только читатель. Проверяем на отправке: сокет и HTTP
+   * идут через один и тот же метод, поэтому запрет не обойти вторым путём.
+   * Публичный, потому что сокет проверяет то же самое перед «печатает…»:
+   * у замороженного не должно быть даже индикатора набора.
+   */
+  async assertAuthorWritable(userId: string): Promise<void> {
+    const user = await this.repositories.users.findById(userId);
+    if (!user) throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+    if (user.isFrozen) throw new AppError(403, "ACCOUNT_FROZEN", FROZEN_READ_ONLY_MESSAGE);
   }
 
   /**

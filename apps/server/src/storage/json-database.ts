@@ -39,6 +39,7 @@ const userSchema = z
     wallpaperUrl: z.string().optional(),
     isVerified: z.boolean().optional(),
     badge: z.enum(["yargram"]).nullable().optional(),
+    scam: z.boolean().optional(),
     usernames: z.array(z.string()).optional(),
     adminUserIds: z.array(z.string()).optional(),
     isOwner: z.boolean().optional(),
@@ -46,7 +47,8 @@ const userSchema = z
     isFrozen: z.boolean().optional(),
     isDeleted: z.boolean().optional(),
     deletedAt: z.string().optional(),
-    birthday: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Birthday must be a YYYY-MM-DD date").optional(),
+    // Год необязателен: «MM-DD» — день рождения без возраста.
+    birthday: z.string().regex(/^(?:\d{4}-)?\d{2}-\d{2}$/, "Birthday must be a YYYY-MM-DD or MM-DD date").optional(),
     createdAt: z.string(),
   })
   .transform((user) => ({

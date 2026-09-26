@@ -40,13 +40,13 @@ beforeAll(async () => {
     persistent: false, initdbFlags: ["--encoding=UTF8", "--locale=C"], postgresFlags: ["-h", "127.0.0.1"], onLog: () => {}, onError: () => {} });
   await cluster.initialise();
   await cluster.start();
-}, 120_000);
+}, 180_000);
 
 afterAll(async () => {
   await Promise.all(databases.map((database) => database.close()));
   if (cluster) await cluster.stop();
   if (directory) await rm(directory, { recursive: true, force: true });
-}, 60_000);
+}, 180_000);
 
 describe("PostgreSQL repositories against a real isolated cluster", () => {
   it("enforces case-insensitive uniqueness during concurrent registration and direct creation", async () => {

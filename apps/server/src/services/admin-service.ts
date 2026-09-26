@@ -93,13 +93,14 @@ export class AdminService {
       throw new AppError(400, "SELF_ADMIN", "Only the owner can badge their own account");
     }
 
-    const normalizedUsernames = normalizeHandles(input.usernames ?? []);
+    // Основной ник внутри списка дополнительных — не ошибка, а дубль: этот
+    // адрес уже принадлежит тому же аккаунту. Молча выкидываем, иначе один
+    // дубль отменял бы весь список, и новые ники не сохранялись бы вовсе.
     const primaryKey = target.username?.toLowerCase();
+    const normalizedUsernames = normalizeHandles(input.usernames ?? []).filter(
+      (name) => name.toLowerCase() !== primaryKey,
+    );
     for (const name of normalizedUsernames) {
-      // Тот же адрес в другом регистре: не плодим дубль внутри одного аккаунта.
-      if (primaryKey && name.toLowerCase() === primaryKey) {
-        throw new AppError(409, "USERNAME_TAKEN", `Username @${name} already belongs to this account`);
-      }
       const existing = await this.users.findByUsername(name);
       if (existing && existing.id !== target.id) {
         throw new AppError(409, "USERNAME_TAKEN", `Username @${name} is already in use`);
@@ -152,6 +153,23 @@ export class AdminService {
       removed: false,
       user: publicAccountStateFor(updated),
     });
+    return updated;
+  }
+
+  /**
+   * Отметка SCAM — только владелец Yargram, как и заморозка. Человек с отметкой
+   * остаётся в сети и может писать, но рядом с именем горит «SCAM», а описание
+   * подменяется предупреждением о мошенничестве и не меняется, пока отметку не снимут.
+   */
+  async setScam(grantorId: string, targetUserId: string, scam: boolean): Promise<User> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can mark accounts as SCAM");
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
+    const updated = await this.users.update(targetUserId, { scam });
+    if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
     return updated;
   }
 

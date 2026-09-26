@@ -66,10 +66,11 @@ const updateProfileSchema = z
     showLastSeen: z.boolean().optional(),
     themeColor: z.string().trim().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).optional(),
     wallpaperUrl: z.union([z.literal(""), z.string().trim().url()]).optional(),
-    // День рождения в профиле как в Telegram: просто дата без года обязателен.
+    // День рождения как в Telegram: год необязателен, «MM-DD» означает
+    // «год скрыт» — тогда возраст в профиле не показывается.
     birthday: z
       .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, "Birthday must be a YYYY-MM-DD date")
+      .regex(/^(?:\d{4}-)?\d{2}-\d{2}$/, "Birthday must be a YYYY-MM-DD or MM-DD date")
       .nullable()
       .optional(),
 
@@ -256,7 +257,7 @@ export function createApiRouter(dependencies: {
   events: RealtimeEvents;
 }): Router {
   const router = Router();
-  const requireAuth = createAuthMiddleware(dependencies.authService);
+  const requireAuth = createAuthMiddleware(dependencies.authService, dependencies.repositories.users);
   // The limiter belongs to one app instance: separate servers and tests must not
   // share attempt counters.
   const authLimiter = rateLimit({
@@ -398,6 +399,7 @@ export function createApiRouter(dependencies: {
     });
 
   const adminFreezeSchema = z.object({ frozen: z.boolean() });
+  const adminScamSchema = z.object({ scam: z.boolean() });
 
   router.post(
     "/admin/:userId/grant",
@@ -426,6 +428,23 @@ export function createApiRouter(dependencies: {
       const { userId } = parseParams(userParamsSchema, request);
       const { frozen } = parseBody(adminFreezeSchema, request);
       const updated = await dependencies.adminService.setFrozen(request.auth.userId, userId, frozen);
+      response.json({ user: toPublicUser(updated) });
+    }),
+  );
+
+  // Отметка SCAM: рядом с именем горит предупреждение, а описание подменяется
+  // текстом о мошенничестве. Только владелец.
+  router.post(
+    "/admin/:userId/scam",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      const { scam } = parseBody(adminScamSchema, request);
+      const updated = await dependencies.adminService.setScam(request.auth.userId, userId, scam);
+      // Собеседники должны увидеть отметку и новое описание сразу, без перезагрузки.
+      dependencies.events.publishUpdatedProfile({
+        user: await dependencies.chatService.publicUser(userId),
+      });
       response.json({ user: toPublicUser(updated) });
     }),
   );

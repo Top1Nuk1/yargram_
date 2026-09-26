@@ -272,6 +272,8 @@ export function attachSocketServer(
     socket.on("typing:start", async (payload: unknown) => {
       try {
         const { conversationId } = typingSchema.parse(payload);
+        // Замороженный не пишет — значит и «печатает…» показывать не должен.
+        await dependencies.chatService.assertAuthorWritable(userId);
         const memberIds = await dependencies.chatService.memberIdsForConversation(
           userId,
           conversationId,
@@ -719,9 +721,10 @@ export function attachSocketServer(
   dependencies.events.onAccountState((event) => {
     // Всем: собеседники подменят профиль заглушкой прямо в открытом чате.
     io.emit("account:state", event);
-    if (!event.frozen && !event.removed) return;
-    // Сам аккаунт больше не имеет права быть в сети — рвём его подключения,
-    // чтобы замороженный не писал и не звонил, пока сессия ещё жива.
+    // Удалённый аккаунт из сети убираем — он больше не участник. Замороженный
+    // остаётся читателем, поэтому сокет ему не рвём: иначе он перестанет видеть
+    // новые сообщения в группах и статусы, хотя читать ему по-прежнему можно.
+    if (!event.removed) return;
     for (const socketId of userSockets.get(event.userId) ?? []) {
       io.sockets.sockets.get(socketId)?.disconnect(true);
     }

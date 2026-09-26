@@ -30,6 +30,8 @@ export type UpdateUserInput = {
   wallpaperUrl?: string | undefined;
   isVerified?: boolean;
   badge?: "yargram" | null;
+  /** Отметка SCAM: владелец пометил аккаунт как мошеннический. */
+  scam?: boolean;
   usernames?: string[];
   adminUserIds?: string[];
   isOwner?: boolean;

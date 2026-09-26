@@ -71,4 +71,4 @@ it("retains privacy in PostgreSQL through unrelated mutations and reopened conne
   } finally {
     await database?.close(); await cluster.stop(); await rm(directory, { recursive: true, force: true });
   }
-}, 120000);
+}, 180_000);

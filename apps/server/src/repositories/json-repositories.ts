@@ -119,6 +119,7 @@ class JsonUserRepository implements UserRepository {
       if (input.notificationSoundEnabled !== undefined) user.notificationSoundEnabled = input.notificationSoundEnabled;
       if (input.isVerified !== undefined) user.isVerified = input.isVerified;
       if (input.badge !== undefined) user.badge = input.badge;
+      if (input.scam !== undefined) user.scam = input.scam;
       if (input.usernames !== undefined) user.usernames = input.usernames;
       if (input.adminUserIds !== undefined) user.adminUserIds = input.adminUserIds;
       if (input.isOwner !== undefined) user.isOwner = input.isOwner;

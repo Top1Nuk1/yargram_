@@ -44,10 +44,10 @@ export class AuthService {
       if (byEmail.isFrozen) {
         throw new AppError(409, "EMAIL_RESERVED", "Эта почта принадлежит замороженному аккаунту");
       }
-      throw new AppError(409, "EMAIL_TAKEN", "An account with this email already exists");
+      throw new AppError(409, "EMAIL_TAKEN", "Аккаунт с такой почтой уже существует");
     }
     if (username && (await this.users.findByUsername(username))) {
-      throw new AppError(409, "USERNAME_TAKEN", "This username is already in use");
+      throw new AppError(409, "USERNAME_TAKEN", "Этот ник уже занят");
     }
 
     const passwordHash = await bcrypt.hash(input.password, this.options.bcryptRounds);
@@ -65,9 +65,7 @@ export class AuthService {
         throw new AppError(
           409,
           isEmail ? "EMAIL_TAKEN" : "USERNAME_TAKEN",
-          isEmail
-            ? "An account with this email already exists"
-            : "This username is already in use",
+          isEmail ? "Аккаунт с такой почтой уже существует" : "Этот ник уже занят",
         );
       }
       throw error;
@@ -79,30 +77,54 @@ export class AuthService {
   async login(emailInput: string, password: string): Promise<AuthResult> {
     const user = await this.users.findByEmail(emailInput.trim().toLowerCase());
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-      throw new AppError(401, "INVALID_CREDENTIALS", "Email or password is incorrect");
+      throw new AppError(401, "INVALID_CREDENTIALS", "Неверный email или пароль");
     }
-    if (user.isFrozen) {
-      throw new AppError(403, "ACCOUNT_FROZEN", "This account is frozen by the Yargram owner");
-    }
+    // Замороженного пускаем внутрь: он читает историю, но ничего не отправляет
+    // и не получает — запрет на запись живёт в middleware и сервисах.
     if (user.isDeleted) {
-      throw new AppError(403, "ACCOUNT_DELETED", "This account was deleted by the Yargram owner");
+      throw new AppError(403, "ACCOUNT_DELETED", "Этот аккаунт удалён владельцем Yargram");
     }
     return this.createResult(user);
   }
 
   async getCurrentUser(userId: string): Promise<CurrentUser> {
     const user = await this.users.findById(userId);
-    if (!user) throw new AppError(401, "INVALID_TOKEN", "The token user no longer exists");
+    if (!user) throw new AppError(401, "INVALID_TOKEN", "Пользователь этого токена больше не существует");
     return toCurrentUser(user);
   }
 
   async updateProfile(userId: string, input: UpdateUserInput): Promise<CurrentUser> {
+    const existing = await this.users.findById(userId);
+    if (!existing) throw new AppError(404, "USER_NOT_FOUND", "Пользователь не найден");
+    // Помеченному SCAM описание не меняем. Поле не отклоняем, а тихо
+    // игнорируем: форма профиля отправляет его вместе с остальными
+    // настройками, и отказ закрыл бы человеку и смену темы, и день рождения.
+    const bioLocked = Boolean(existing.scam);
+    const username = input.username?.trim().replace(/^@/, "");
+
+    // Занятым считается и основной ник, и любой дополнительный: поиск идёт по
+    // обоим спискам. Проверять одни основные ники мало — иначе адрес из алиасов
+    // чужого аккаунта достался бы второму владельцу, и @ник начал бы находить
+    // не того, кому его выдали.
+    if (username && username.toLowerCase() !== existing.username?.toLowerCase()) {
+      const taken = await this.users.findByUsername(username);
+      if (taken && taken.id !== userId) {
+        throw new AppError(409, "USERNAME_TAKEN", "Этот ник уже занят");
+      }
+    }
+    // Свой же дополнительный ник, ставший основным, из списка убираем: дубль не
+    // нужен, а сохранить такой список админ-панель уже не смогла бы.
+    const aliases =
+      username === undefined
+        ? undefined
+        : existing.usernames?.filter((handle) => handle.toLowerCase() !== username.toLowerCase());
+    const aliasesChanged = aliases !== undefined && aliases.length !== (existing.usernames?.length ?? 0);
+
     const normalized: UpdateUserInput = {
       ...(input.displayName === undefined ? {} : { displayName: input.displayName.trim() }),
-      ...(input.username === undefined
-        ? {}
-        : { username: input.username.trim().replace(/^@/, "") }),
-      ...(input.bio === undefined ? {} : { bio: input.bio.trim() }),
+      ...(username === undefined ? {} : { username }),
+      ...(aliasesChanged ? { usernames: aliases ?? [] } : {}),
+      ...(input.bio === undefined || bioLocked ? {} : { bio: input.bio.trim() }),
       ...(input.showLastSeen === undefined ? {} : { showLastSeen: input.showLastSeen }),
       ...(input.notificationSoundEnabled === undefined ? {} : { notificationSoundEnabled: input.notificationSoundEnabled }),
       ...(input.themeColor === undefined ? {} : { themeColor: input.themeColor }),
@@ -114,7 +136,7 @@ export class AuthService {
       return toCurrentUser(await this.users.update(userId, normalized));
     } catch (error) {
       if (error instanceof RepositoryConflictError && error.field === "username") {
-        throw new AppError(409, "USERNAME_TAKEN", "This username is already in use");
+        throw new AppError(409, "USERNAME_TAKEN", "Этот ник уже занят");
       }
       throw error;
     }
@@ -125,21 +147,19 @@ export class AuthService {
     try {
       payload = jwt.verify(token, this.options.jwtSecret);
     } catch {
-      throw new AppError(401, "INVALID_TOKEN", "Access token is invalid or expired");
+      throw new AppError(401, "INVALID_TOKEN", "Токен доступа недействителен или истёк");
     }
 
     if (typeof payload === "string" || typeof payload.sub !== "string") {
-      throw new AppError(401, "INVALID_TOKEN", "Access token has an invalid payload");
+      throw new AppError(401, "INVALID_TOKEN", "Токен доступа содержит неверные данные");
     }
 
     const user = await this.users.findById(payload.sub);
-    if (!user) throw new AppError(401, "INVALID_TOKEN", "The token user no longer exists");
-    // Заморозку проверяем на каждом запросе: старый токен не должен работать.
-    if (user.isFrozen) {
-      throw new AppError(403, "ACCOUNT_FROZEN", "This account is frozen by the Yargram owner");
-    }
+    if (!user) throw new AppError(401, "INVALID_TOKEN", "Пользователь этого токена больше не существует");
+    // Заморозку здесь не проверяем: замороженный должен входить и читать.
+    // Запрет на запись накладывает middleware на небезопасные методы.
     if (user.isDeleted) {
-      throw new AppError(403, "ACCOUNT_DELETED", "This account was deleted by the Yargram owner");
+      throw new AppError(403, "ACCOUNT_DELETED", "Этот аккаунт удалён владельцем Yargram");
     }
     return user.id;
   }

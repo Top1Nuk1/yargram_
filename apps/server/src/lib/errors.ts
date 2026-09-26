@@ -21,6 +21,14 @@ export const asyncHandler = (
   };
 };
 
+/**
+ * Отказ для замороженного аккаунта. Текст показывается пользователю прямо
+ * в интерфейсе, поэтому живёт в одном месте: его используют и middleware,
+ * и сервис переписки.
+ */
+export const FROZEN_READ_ONLY_MESSAGE =
+  "Аккаунт заморожен: доступен только просмотр. Отправка сообщений, звонки и изменения недоступны.";
+
 export const notFoundHandler: RequestHandler = (request, _response, next) => {
   next(new AppError(404, "NOT_FOUND", `Route ${request.method} ${request.path} was not found`));
 };
