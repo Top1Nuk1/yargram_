@@ -2190,7 +2190,12 @@ export function MessengerScreen({
                             <span className="min-w-0 flex-1">
                               <span className="flex items-center gap-1">
                                 {conversationIsMuted(conversation) && <BellOff className="h-3.5 w-3.5 shrink-0" />}
-                                <UserName className="text-sm font-semibold" name={title} user={peer} />
+                                <UserName
+                                  className="text-sm font-semibold"
+                                  name={title}
+                                  user={group ? conversation : peer}
+                                  subject={group ? 'group' : 'account'}
+                                />
                               </span>
                             </span>
                             <span className={`shrink-0 text-[11px] ${active ? 'text-white/70' : 'text-muted'}`}>
@@ -2273,7 +2278,11 @@ export function MessengerScreen({
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold sm:text-[15px]">
                       {selectedIsGroup ? (
-                        groupTitle(selectedConversation)
+                        <UserName
+                          name={groupTitle(selectedConversation)}
+                          user={selectedConversation}
+                          subject="group"
+                        />
                       ) : (
                         <UserName
                           name={conversationTitle(selectedConversation, currentUser.id)}

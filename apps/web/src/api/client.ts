@@ -1,4 +1,5 @@
 import type {
+  AdminGroup,
   Attachment,
   AttachmentKind,
   AuthResult,
@@ -693,6 +694,32 @@ export const api = {
     return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/scam`, {
       method: 'POST', token, body: { scam },
     }).then((result) => ('user' in result ? result.user : result));
+  },
+
+  /**
+   * Поиск групп для админ-панели — только владелец. Владелец Yargram помечает
+   * саму группу, поэтому её ищут по названию, коду ссылки-приглашения или id.
+   */
+  adminSearchGroups(token: string, query: string) {
+    const params = new URLSearchParams({ q: query });
+    return request<{ groups: AdminGroup[] }>(`/api/admin/groups?${params}`, { token }).then(
+      (result): AdminGroup[] => result.groups ?? [],
+    );
+  },
+
+  /**
+   * Знаки группы: галочка, значок Yargram и отметка SCAM. Пока стоит отметка,
+   * рядом с названием горит красная рамка, а описание группы заменяется
+   * предупреждением о мошенничестве.
+   */
+  adminSetGroupMarks(
+    token: string,
+    groupId: string,
+    input: { isVerified?: boolean; badge?: 'yargram' | null; scam?: boolean },
+  ) {
+    return request<{ group: AdminGroup }>(`/api/admin/groups/${encodeURIComponent(groupId)}/marks`, {
+      method: 'POST', token, body: input,
+    }).then((result) => result.group);
   },
 
   /**

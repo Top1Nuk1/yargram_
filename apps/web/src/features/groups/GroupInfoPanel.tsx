@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
+  AlertTriangle,
   Ban,
   Check,
   Copy,
@@ -16,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
+import { ScamWarning } from '../../components/ScamWarning';
 import { Avatar, Button, IconButton, InlineError, Spinner } from '../../components/ui';
 import { UserName } from '../../components/UserName';
 import { avatarProps } from '../../lib/user';
@@ -140,6 +142,10 @@ export function GroupInfoPanel({
   const [titleDraft, setTitleDraft] = useState(conversation.title ?? '');
   const [descriptionDraft, setDescriptionDraft] = useState(conversation.description ?? '');
   const [copied, setCopied] = useState(false);
+  // Отметку SCAM ставит владелец Yargram: описание группы он подменяет
+  // предупреждением, поэтому менять его нельзя, пока отметку не снимут.
+  const scamMarked = Boolean(conversation.scam);
+  const groupDescription = (conversation.description ?? '').replace(/^\s*⚠️?\s*/u, '');
 
   const inviteLink = groupInviteLink(conversation.inviteCode);
   // Живое присутствие подмешиваем к составу: сервер отдаёт «не в сети» всем.
@@ -409,23 +415,44 @@ export function GroupInfoPanel({
                   maxLength={2_000}
                   onChange={(event) => setDescriptionDraft(event.target.value)}
                   placeholder="Описание"
-                  className="h-10 w-full rounded-xl border border-line bg-canvas px-3.5 text-center text-sm text-ink outline-none focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
+                  disabled={scamMarked}
+                  className="h-10 w-full rounded-xl border border-line bg-canvas px-3.5 text-center text-sm text-ink outline-none focus:border-brand/60 focus:ring-4 focus:ring-brand/10 disabled:cursor-not-allowed disabled:opacity-70"
                 />
+                {scamMarked && (
+                  <p className="text-xs font-semibold text-danger" role="status">
+                    На группе стоит отметка SCAM: описание заменено предупреждением о мошенничестве
+                    и не редактируется, пока владелец Yargram не снимет отметку.
+                  </p>
+                )}
               </div>
             ) : (
               <>
                 <h3 className="mt-3 text-xl font-extrabold tracking-[-0.025em] text-ink">
-                  {conversation.title || 'Группа'}
+                  <UserName
+                    name={conversation.title || 'Группа'}
+                    user={conversation}
+                    subject="group"
+                  />
                 </h3>
                 <p className="mt-1 text-sm text-muted">
                   {groupMemberCountLabel(conversation.memberCount ?? members.length)}
                   {conversation.role ? ` · ${groupRoleLabel(conversation.role)}` : ''}
                 </p>
-                {conversation.description && (
-                  <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-ink/85">
-                    {conversation.description}
-                  </p>
-                )}
+                {conversation.description &&
+                  (scamMarked ? (
+                    // Текст выдан владельцем Yargram: выделить и скопировать нельзя.
+                    <div className="mt-3 flex gap-2 text-left">
+                      <AlertTriangle className="mt-[3px] h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+                      <ScamWarning
+                        text={groupDescription}
+                        className="whitespace-pre-wrap text-sm leading-6 text-ink"
+                      />
+                    </div>
+                  ) : (
+                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-ink/85">
+                      {conversation.description}
+                    </p>
+                  ))}
               </>
             )}
           </section>

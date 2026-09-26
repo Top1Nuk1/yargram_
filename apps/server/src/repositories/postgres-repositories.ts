@@ -208,6 +208,16 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         if (!code) return null;
         return (await select<Conversation>(pool, "conversations", "payload->>'inviteCode' = $1", [code]))[0] ?? null;
       },
+      async searchGroups(query, limit) {
+        const wanted = query.trim().toLowerCase() || null;
+        const groups = await select<Conversation>(
+          pool,
+          "conversations",
+          "payload->>'type' = 'group' AND ($1::text IS NULL OR id = $1 OR lower(COALESCE(payload->>'inviteCode', '')) = $1 OR strpos(lower(COALESCE(payload->>'title', '')), $1) > 0)",
+          [wanted],
+        );
+        return groups.slice(0, limit);
+      },
       update: (id, input) => mutate<Conversation>("conversations", id, "Conversation", (conversation) => {
         if (input.title !== undefined) conversation.title = input.title;
         if (input.description !== undefined) conversation.description = input.description;
@@ -224,6 +234,9 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         if (input.memberTags !== undefined) conversation.memberTags = input.memberTags;
         if (input.leftIds !== undefined) conversation.leftIds = input.leftIds;
         if (input.history !== undefined) conversation.history = input.history;
+        if (input.isVerified !== undefined) conversation.isVerified = input.isVerified;
+        if (input.badge !== undefined) conversation.badge = input.badge;
+        if (input.scam !== undefined) conversation.scam = input.scam;
         conversation.updatedAt = now();
       }),
       findById: (id) => find<Conversation>(pool, "conversations", id),

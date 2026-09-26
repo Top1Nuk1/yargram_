@@ -120,8 +120,28 @@ describe('UserName', () => {
     expect(container.textContent).toBe('ТимурSCAM');
   });
 
-  it('ignores unknown badge values', () => {
+  it('говорит о группе, когда помечена группа, а не аккаунт', () => {
     const { container } = render(
+      <UserName
+        name="Поход в горы"
+        user={{ badge: 'yargram', isVerified: true, scam: true }}
+        subject="group"
+      />,
+    );
+    const titles = Array.from(container.querySelectorAll('[title]')).map((node) =>
+      node.getAttribute('title'),
+    );
+    expect(titles).toContain('Подтверждённая группа');
+    expect(titles).toContain('Подтверждён представителями Yargram');
+    // Подсказка «Мошенник» одна на оба случая: она не про аккаунт.
+    expect(titles).toContain('Мошенник');
+    expect(titles).not.toContain('Подтверждённый аккаунт');
+    expect(
+      container.querySelector('[aria-label="Отметка SCAM: группа помечена как мошенническая"]'),
+    ).not.toBeNull();
+  });
+
+  it('ignores unknown badge values', () => {    const { container } = render(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       <UserName name="Борис" user={{ badge: 'something-else' as any }} />,
     );

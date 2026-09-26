@@ -90,6 +90,10 @@ export type UpdateConversationInput = {
   memberTags?: Record<string, string> | undefined;
   leftIds?: string[] | undefined;
   history?: GroupEvent[] | undefined;
+  /** Знаки владельца Yargram: галочка, значок и отметка SCAM у группы. */
+  isVerified?: boolean | undefined;
+  badge?: "yargram" | null | undefined;
+  scam?: boolean | undefined;
 };
 
 export interface ConversationRepository {
@@ -101,6 +105,11 @@ export interface ConversationRepository {
   /** Группа: владелец всегда первый участник, права по умолчанию разрешают всё. */
   createGroup(input: CreateGroupInput): Promise<Conversation>;
   findByInviteCode(code: string): Promise<Conversation | null>;
+  /**
+   * Группы для админ-панели: поиск по названию, коду из ссылки-приглашения или
+   * по id. Пустой запрос отдаёт первые попавшиеся группы.
+   */
+  searchGroups(query: string, limit: number): Promise<Conversation[]>;
   update(id: string, input: UpdateConversationInput): Promise<Conversation>;
   findById(id: string): Promise<Conversation | null>;
   listForUser(userId: string): Promise<Conversation[]>;

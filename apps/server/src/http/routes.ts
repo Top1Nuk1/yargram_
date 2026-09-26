@@ -449,6 +449,54 @@ export function createApiRouter(dependencies: {
     }),
   );
 
+  // Знаки группы: галочка, значок Yargram и отметка SCAM. Владелец помечает
+  // саму группу, а не её создателя, поэтому группу сначала ищут — по названию,
+  // коду из ссылки-приглашения или по id.
+  const adminGroupSearchSchema = z.object({ q: z.string().trim().max(128).default("") });
+  const adminGroupMarksSchema = z
+    .object({
+      isVerified: z.boolean().optional(),
+      // "" и null одинаково снимают значок — как в маршруте аккаунтов.
+      badge: z
+        .union([z.enum(["yargram", ""]), z.null()])
+        .transform((value) => (value === "yargram" ? "yargram" : null))
+        .optional(),
+      scam: z.boolean().optional(),
+    })
+    .refine((data) => Object.values(data).some((value) => value !== undefined), {
+      message: "Нужен хотя бы один знак",
+    });
+
+  router.get(
+    "/admin/groups",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const query = parseQuery(adminGroupSearchSchema, request);
+      const groups = await dependencies.adminService.searchGroups(request.auth.userId, query.q);
+      response.json({ groups });
+    }),
+  );
+
+  router.post(
+    "/admin/groups/:groupId/marks",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      const input = parseBody(adminGroupMarksSchema, request);
+      const group = await dependencies.adminService.setGroupMarks(request.auth.userId, groupId, {
+        ...(input.isVerified === undefined ? {} : { isVerified: input.isVerified }),
+        ...(input.badge === undefined ? {} : { badge: input.badge }),
+        ...(input.scam === undefined ? {} : { scam: input.scam }),
+      });
+      // Участники должны увидеть новую галочку, значок или рамку сразу, а не
+      // после перезагрузки: вид беседы считается на каждого отдельно.
+      for (const view of await dependencies.chatService.viewsForMembers(group.id)) {
+        dependencies.events.publishConversationSettings(view);
+      }
+      response.json({ group });
+    }),
+  );
+
   // Удаление аккаунта со всем, что ему принадлежало. Только владелец.
   router.delete(
     "/admin/:userId",

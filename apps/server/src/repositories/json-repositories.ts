@@ -290,6 +290,23 @@ class JsonConversationRepository implements ConversationRepository {
     );
   }
 
+  async searchGroups(query: string, limit: number): Promise<Conversation[]> {
+    const wanted = query.trim().toLowerCase();
+    return this.database.read((state) =>
+      state.conversations
+        .filter((conversation) => conversation.type === "group")
+        .filter((conversation) => {
+          if (!wanted) return true;
+          return (
+            conversation.id === wanted ||
+            (conversation.inviteCode ?? "").toLowerCase() === wanted ||
+            (conversation.title ?? "").toLowerCase().includes(wanted)
+          );
+        })
+        .slice(0, limit),
+    );
+  }
+
   async update(id: string, input: UpdateConversationInput): Promise<Conversation> {
     return this.database.transaction((state) => {
       const conversation = state.conversations.find((candidate) => candidate.id === id);
@@ -309,6 +326,9 @@ class JsonConversationRepository implements ConversationRepository {
       if (input.memberTags !== undefined) conversation.memberTags = input.memberTags;
       if (input.leftIds !== undefined) conversation.leftIds = input.leftIds;
       if (input.history !== undefined) conversation.history = input.history;
+      if (input.isVerified !== undefined) conversation.isVerified = input.isVerified;
+      if (input.badge !== undefined) conversation.badge = input.badge;
+      if (input.scam !== undefined) conversation.scam = input.scam;
       conversation.updatedAt = new Date().toISOString();
       return conversation;
     });

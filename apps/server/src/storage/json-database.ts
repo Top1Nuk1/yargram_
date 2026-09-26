@@ -123,6 +123,11 @@ const conversationSchema = z
     memberTags: z.record(z.string(), z.string()).optional(),
     leftIds: z.array(z.string()).optional(),
     history: z.array(groupEventSchema).optional(),
+    // Знаки владельца Yargram у группы: без этих строк схема вырезала бы их
+    // при чтении файла, и отметка пропадала бы после перезапуска.
+    isVerified: z.boolean().optional(),
+    badge: z.enum(["yargram"]).nullable().optional(),
+    scam: z.boolean().optional(),
   })
   .transform((conversation) => {
     const pinnedMessageIds = [...new Set(conversation.pinnedMessageIds ?? [])];

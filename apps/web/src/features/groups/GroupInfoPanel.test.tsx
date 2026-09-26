@@ -82,6 +82,13 @@ function group(patch: Partial<Conversation> = {}): Conversation {
 
 const members = [member(alice, 'owner'), member(bob, 'admin'), member(carol, 'restricted')];
 
+/**
+ * Сервер отдаёт помеченной SCAM группе это описание вместо настоящего. Текст
+ * повторяем здесь как договор: клиент его не сочиняет, а показывает пришедший.
+ */
+const SCAM_GROUP_WARNING =
+  '⚠️ Внимание: на эту группу много жаловались в связи с мошенничеством или попытками выдать себя за официальную группу. Будьте осторожны, особенно если у Вас попросят денег.';
+
 const history: GroupEvent[] = [
   { id: 'e2', at: '2026-09-23T11:00:00.000Z', actorId: 'alice-1', kind: 'renamed', detail: 'Горы' },
   { id: 'e1', at: '2026-09-23T10:00:00.000Z', actorId: 'alice-1', kind: 'created', detail: 'Поход' },
@@ -384,5 +391,37 @@ describe('карточка группы', () => {
 
     await waitFor(() => expect(api.leaveGroup).toHaveBeenCalledWith('token', 'group-1'));
     await waitFor(() => expect(onLeft).toHaveBeenCalledWith('group-1'));
+  });
+
+  it('показывает знаки группы и не даёт скопировать предупреждение SCAM', () => {
+    renderPanel({ isVerified: true, badge: 'yargram', scam: true, description: SCAM_GROUP_WARNING });
+
+    // Значки стоят у названия: галочка и значок Yargram — как у аккаунта.
+    const titles = Array.from(document.querySelectorAll('[title]')).map((node) =>
+      node.getAttribute('title'),
+    );
+    expect(titles).toContain('Подтверждённая группа');
+    expect(titles).toContain('Подтверждён представителями Yargram');
+    expect(titles).toContain('Мошенник');
+    expect(
+      document.querySelector('[aria-label="Отметка SCAM: группа помечена как мошенническая"]'),
+    ).not.toBeNull();
+
+    // Описание подменено предупреждением о группе, и скопировать его нельзя.
+    const warning = Array.from(document.querySelectorAll('p')).find((node) =>
+      node.textContent?.startsWith('Внимание:'),
+    ) as HTMLParagraphElement;
+    expect(warning.textContent).toBe(SCAM_GROUP_WARNING.replace(/^\s*⚠️?\s*/u, ''));
+    expect(warning.className).toContain('select-none');
+    expect(fireEvent.copy(warning)).toBe(false);
+  });
+
+  it('закрывает описание группы на замок, пока стоит отметка SCAM', () => {
+    renderPanel({ scam: true, description: SCAM_GROUP_WARNING });
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить информацию' }));
+
+    expect(screen.getByPlaceholderText('Описание')).toBeDisabled();
+    expect(screen.getByPlaceholderText('Название группы')).toBeEnabled();
+    expect(screen.getByText(/На группе стоит отметка SCAM/)).toBeInTheDocument();
   });
 });

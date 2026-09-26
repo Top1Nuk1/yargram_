@@ -197,6 +197,16 @@ export type Conversation = {
   /** Кто вышел из группы: чат у него в списке не показывается. */
   leftIds?: string[] | undefined;
   history?: GroupEvent[] | undefined;
+  // ---- Знаки владельца Yargram ----
+  /**
+   * Галочка, значок Yargram и отметка SCAM есть не только у аккаунтов, но и у
+   * групп: владелец Yargram помечает саму группу, а не её создателя. Хранятся
+   * отдельно от профиля владельца группы, иначе отметка переезжала бы вместе
+   * со сменой владельца.
+   */
+  isVerified?: boolean | undefined;
+  badge?: "yargram" | null | undefined;
+  scam?: boolean | undefined;
 };
 
 /** Права администратора по умолчанию: всё, кроме смены владельца. */
@@ -462,6 +472,23 @@ export function lastSeenStatus(lastSeenAt: string, now = Date.now()): LastSeenSt
  */
 export const SCAM_BIO_WARNING =
   "⚠️ Внимание: на этот аккаунт много жаловались в связи с мошенничеством или попытками выдать себя за официальный аккаунт. Будьте осторожны, особенно если у Вас попросят денег.";
+
+/**
+ * То же предупреждение для группы. Владелец помечает не человека, а саму
+ * группу, поэтому текст говорит «на эту группу», а не «на этот аккаунт»:
+ * иначе предупреждение читалось бы как отметка на создателе.
+ */
+export const SCAM_GROUP_WARNING =
+  "⚠️ Внимание: на эту группу много жаловались в связи с мошенничеством или попытками выдать себя за официальную группу. Будьте осторожны, особенно если у Вас попросят денег.";
+
+/**
+ * Описание группы, которое видит клиент. Как и у аккаунта, подмена живёт на
+ * чтении: снятие отметки возвращает группе её прежнее описание.
+ */
+export function groupDescriptionFor(conversation: Conversation): string {
+  if (conversation.scam) return SCAM_GROUP_WARNING;
+  return conversation.description ?? "";
+}
 
 export function toPublicUser(user: User): PublicUser {
   // Stored avatar views keep an old path only; the served URL is always refreshed

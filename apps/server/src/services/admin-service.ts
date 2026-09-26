@@ -1,9 +1,10 @@
 import { AppError } from "../lib/errors.js";
 import type { RealtimeEvents } from "../realtime/events.js";
-import type { Repositories, UserRepository } from "../repositories/types.js";
+import type { Repositories, UpdateConversationInput, UserRepository } from "../repositories/types.js";
 import {
   deletedPlaceholderFor,
   publicAccountStateFor,
+  type Conversation,
   type User,
 } from "../domain/models.js";
 
@@ -16,6 +17,40 @@ export type AdminGrantInput = {
   usernames?: string[] | undefined;
   adminUserIds?: string[] | undefined;
 };
+
+/** Знаки группы, которые владелец выдаёт и снимает. */
+export type AdminGroupMarksInput = {
+  isVerified?: boolean | undefined;
+  badge?: "yargram" | null | undefined;
+  scam?: boolean | undefined;
+};
+
+/** Группа в списке админ-панели: название, размер и текущие знаки. */
+export type AdminGroupView = {
+  id: string;
+  title: string;
+  memberCount: number;
+  isVerified: boolean;
+  badge: "yargram" | null;
+  scam: boolean;
+  /** Код из ссылки-приглашения: по нему группу тоже можно найти. */
+  inviteCode: string | null;
+};
+
+/** Сколько групп отдаём на один поисковый запрос. */
+const GROUPS_SEARCH_LIMIT = 20;
+
+function groupView(conversation: Conversation): AdminGroupView {
+  return {
+    id: conversation.id,
+    title: conversation.title ?? "",
+    memberCount: conversation.memberIds.length,
+    isVerified: conversation.isVerified ?? false,
+    badge: conversation.badge ?? null,
+    scam: conversation.scam ?? false,
+    inviteCode: conversation.inviteCode ?? null,
+  };
+}
 
 /**
  * Ники храним в том регистре, в котором их написал человек: «Kotik» и «kotik»
@@ -171,6 +206,48 @@ export class AdminService {
     const updated = await this.users.update(targetUserId, { scam });
     if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
     return updated;
+  }
+
+  /**
+   * Поиск групп для админ-панели. Владелец Yargram помечает не человека, а
+   * саму группу, поэтому группу нужно как-то найти: по названию, по коду из
+   * ссылки-приглашения или по id.
+   */
+  async searchGroups(grantorId: string, query: string): Promise<AdminGroupView[]> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can administer groups");
+    }
+    const groups = await this.repositories.conversations.searchGroups(query, GROUPS_SEARCH_LIMIT);
+    return groups.map(groupView);
+  }
+
+  /**
+   * Знаки группы: галочка, значок Yargram и отметка SCAM — как у аккаунтов, но
+   * помечается сама группа, а не её создатель. Отметка не удаляет группу и не
+   * мешает писать: рядом с названием горит красная рамка, а описание
+   * подменяется предупреждением, пока её не снимут.
+   */
+  async setGroupMarks(
+    grantorId: string,
+    groupId: string,
+    input: AdminGroupMarksInput,
+  ): Promise<AdminGroupView> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can administer groups");
+    }
+    const group = await this.repositories.conversations.findById(groupId);
+    if (!group || group.type !== "group") {
+      throw new AppError(404, "GROUP_NOT_FOUND", "Group does not exist");
+    }
+    const patch: UpdateConversationInput = {
+      ...(input.isVerified === undefined ? {} : { isVerified: input.isVerified }),
+      ...(input.badge === undefined ? {} : { badge: input.badge }),
+      ...(input.scam === undefined ? {} : { scam: input.scam }),
+    };
+    const updated = await this.repositories.conversations.update(group.id, patch);
+    return groupView(updated);
   }
 
   /**

@@ -116,7 +116,11 @@ export class GroupService {
         history.push(this.event(currentUserId, timestamp, "renamed", undefined, title));
       }
     }
-    if (input.description !== undefined) {
+    // Помеченной SCAM группе описание не меняем: подмена живёт на чтении, и
+    // записанный текст всё равно никто не увидит. Поле не отклоняем, а тихо
+    // игнорируем — карточка группы отправляет его вместе с названием и аватаром,
+    // и отказ закрыл бы и переименование, и смену аватара.
+    if (input.description !== undefined && !group.scam) {
       patch.description = input.description.trim().slice(0, DESCRIPTION_MAX);
       if (patch.description !== group.description) {
         history.push(this.event(currentUserId, timestamp, "description_changed"));
@@ -547,14 +551,9 @@ export class GroupService {
 
   /** Рассылает обновлённую группу всем её участникам. */
   private async broadcast(group: Conversation): Promise<void> {
-    for (const memberId of group.memberIds) {
-      if ((group.leftIds ?? []).includes(memberId)) continue;
-      try {
-        const view = await this.chat.viewConversation(memberId, group.id);
-        this.events.publishConversationSettings({ userId: memberId, conversation: view });
-      } catch {
-        // Вышедший мог остаться в memberIds — его просто пропускаем.
-      }
+    // Вид считается отдельно на каждого: роли и права у участников разные.
+    for (const view of await this.chat.viewsForMembers(group.id)) {
+      this.events.publishConversationSettings(view);
     }
   }
 

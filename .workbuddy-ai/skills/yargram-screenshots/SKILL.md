@@ -45,9 +45,14 @@ cd C:/Games/YarGram && HTTPS_PORT=0 PORT=3100 NODE_ENV=production DATABASE_DRIVE
 ### 3. Запустить сценарий съёмки
 
 Готовые сценарии в `runtime/screenshot-preview/`: `shots-onboarding.mjs`, `shots-accounts.mjs`,
-`shots-accounts-add.mjs`, `shots-admin-panel.mjs`, `shots-frozen.mjs`, `shots-scam.mjs`,
-`shots-version.mjs`, `shots-groups.mjs`, `shots-polls.mjs`, `shots-tags.mjs`, `shots-unread.mjs`,
-`shots-removed.mjs`, `shots-restore.mjs`, `shots-live.mjs`, `shots.mjs`.
+`shots-accounts-add.mjs`, `shots-admin-panel.mjs`, `shots-group-marks.mjs`, `shots-frozen.mjs`,
+`shots-scam.mjs`, `shots-version.mjs`, `shots-groups.mjs`, `shots-polls.mjs`, `shots-tags.mjs`,
+`shots-unread.mjs`, `shots-removed.mjs`, `shots-restore.mjs`, `shots-live.mjs`, `shots.mjs`.
+
+Если сценарий вызывает `Page.navigate` в одном домене много раз и подставляет в
+страницу большой блок `HELPERS`, объявляй в нём константы через `var`, а не `const` —
+скрипт исполняется в одном контексте, и повторное `const` роняет всё с
+`SyntaxError: Identifier 'PANEL' has already been declared`.
 
 Новый сценарий делать по образцу `shots-onboarding.mjs` (там же хелперы `openApp`, `clickByText`,
 `shot`). Данные для входа готовят `seed-*.mjs`, либо аккаунт создаётся через `POST /api/auth/register`.

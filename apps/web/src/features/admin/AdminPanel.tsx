@@ -1,10 +1,21 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, ShieldAlert, ShieldCheck, Snowflake, Trash2, Undo2, X } from 'lucide-react';
+import {
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  Snowflake,
+  Trash2,
+  Undo2,
+  UserRound,
+  UsersRound,
+  X,
+} from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import { Button } from '../../components/ui';
 import { UserName } from '../../components/UserName';
 import { mergeHandles } from '../../lib/handles';
-import type { User } from '../../types';
+import type { AdminGroup, User } from '../../types';
 
 interface AdminPanelProps {
   token: string;
@@ -14,6 +25,9 @@ interface AdminPanelProps {
   /** Аккаунт удалили или вернули — список бесед стоит перечитать. */
   onChanged?: () => void;
 }
+
+/** Что администрируем: аккаунт или группу. Знаки у них одни и те же. */
+type AdminMode = 'account' | 'group';
 
 function adminErrorMessage(reason: unknown): string {
   return reason instanceof ApiError ? reason.message : 'Не удалось выполнить действие';
@@ -28,10 +42,17 @@ function adminErrorMessage(reason: unknown): string {
  * открывать панель из главного меню быстрее, чем искать вкладку.
  */
 export function AdminPanel({ token, viewer, onClose, onChanged }: AdminPanelProps) {
+  /** Что администрируем: знаки у аккаунта и группы одинаковые, но ищутся по-разному. */
+  const [mode, setMode] = useState<AdminMode>('account');
   /** Юзернейм цели: и поиск, и назначение прав идут по нему. */
   const [query, setQuery] = useState('');
   /** Кого администрируем: его состояние показывает карточка ниже. */
   const [target, setTarget] = useState<User | null>(null);
+  /** Поиск группы: название, код из ссылки-приглашения или id. */
+  const [groupQuery, setGroupQuery] = useState('');
+  const [groupResults, setGroupResults] = useState<AdminGroup[]>([]);
+  /** Какая группа выбрана в результатах поиска. */
+  const [groupTarget, setGroupTarget] = useState<AdminGroup | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -216,9 +237,79 @@ export function AdminPanel({ token, viewer, onClose, onChanged }: AdminPanelProp
       .finally(() => setBusy(false));
   }
 
+  /**
+   * Поиск группы. Пустой запрос тоже осмысленный: он показывает первые группы
+   * — так владелец находит нужную, когда название помнит неточно.
+   */
+  function findGroups() {
+    setError('');
+    setNotice('');
+    setBusy(true);
+    api
+      .adminSearchGroups(token, groupQuery.trim())
+      .then((groups) => {
+        setGroupResults(groups);
+        // Единственное совпадение выбираем сразу: лишний клик ни к чему.
+        setGroupTarget(groups.length === 1 ? groups[0] : null);
+        if (groups.length === 0) setError('Группы не найдены');
+      })
+      .catch(fail)
+      .finally(() => setBusy(false));
+  }
+
+  /** Знаки группы: галочка, значок Yargram и отметка SCAM. */
+  function setGroupMarks(
+    input: { isVerified?: boolean; badge?: 'yargram' | null; scam?: boolean },
+    success: string,
+  ) {
+    if (!groupTarget) {
+      setError('Сначала найдите и выберите группу');
+      return;
+    }
+    setError('');
+    setNotice('');
+    setBusy(true);
+    api
+      .adminSetGroupMarks(token, groupTarget.id, input)
+      .then((updated) => {
+        setGroupTarget(updated);
+        setGroupResults((current) =>
+          current.map((group) => (group.id === updated.id ? updated : group)),
+        );
+        setNotice(success);
+        // Значок у названия группы должен появиться сразу, без перезагрузки.
+        onChanged?.();
+      })
+      .catch(fail)
+      .finally(() => setBusy(false));
+  }
+
+  /**
+   * Отметка SCAM группы: рядом с названием загорается красная рамка, а описание
+   * подменяется предупреждением — о мошенничестве предупреждают всю группу, а
+   * не её создателя.
+   */
+  function toggleGroupScam() {
+    if (!groupTarget) return;
+    const next = !groupTarget.scam;
+    if (
+      next &&
+      !window.confirm(
+        `Пометить группу «${groupTarget.title}» как SCAM? Рядом с названием появится красная отметка, а описание заменится предупреждением о мошенничестве — менять его группа больше не сможет.`,
+      )
+    ) {
+      return;
+    }
+    setGroupMarks(
+      { scam: next },
+      next
+        ? `Группа «${groupTarget.title}» помечена как SCAM.`
+        : 'Отметка SCAM снята, описание группы вернулось.',
+    );
+  }
+
   const inputClass =
     'h-11 w-full rounded-xl border border-line bg-canvas px-3 text-sm text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10';
-
   return (
     <div
       className="fixed inset-0 z-[70] grid items-end bg-[#171724]/40 p-0 backdrop-blur-sm sm:place-items-center sm:p-5"
@@ -254,10 +345,156 @@ export function AdminPanel({ token, viewer, onClose, onChanged }: AdminPanelProp
         </header>
 
         <p className="mt-3 text-sm leading-6 text-muted">
-          Галочка, значок Yargram и дополнительные юзернеймы для любого аккаунта — выдача и снятие.
-          Сначала укажите юзернейм и нажмите «Показать состояние».
+          Галочка, значок Yargram и отметка SCAM — для аккаунта и для группы. У группы они
+          выдаются самой группе, а не её создателю, поэтому предупреждение говорит о группе.
         </p>
 
+        {/* Что администрируем: набор знаков одинаковый, а поиск разный. */}
+        <div className="mt-4 grid grid-cols-2 gap-2" role="tablist" aria-label="Что администрируем">
+          {(
+            [
+              ['account', 'Аккаунт', UserRound],
+              ['group', 'Группа', UsersRound],
+            ] as const
+          ).map(([value, label, Icon]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={mode === value}
+              onClick={() => {
+                setMode(value);
+                setNotice('');
+                setError('');
+              }}
+              className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border text-sm font-semibold transition ${
+                mode === value
+                  ? 'border-brand bg-brand-soft text-brand'
+                  : 'border-line bg-surface text-muted hover:text-ink'
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {mode === 'group' ? (
+          <div className="mt-4 space-y-3">
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-ink">Группа</span>
+              <input
+                className={inputClass}
+                value={groupQuery}
+                placeholder="название, ссылка-приглашение или id"
+                onChange={(event) => setGroupQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return;
+                  event.preventDefault();
+                  findGroups();
+                }}
+              />
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="secondary" className="text-xs" loading={busy} onClick={findGroups}>
+                <Search className="h-3.5 w-3.5" />
+                Найти группы
+              </Button>
+              <span className="text-xs text-muted">Пустой запрос покажет первые группы.</span>
+            </div>
+
+            {groupResults.length > 0 && (
+              <ul className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-line bg-canvas p-2">
+                {groupResults.map((group) => (
+                  <li key={group.id}>
+                    <button
+                      type="button"
+                      onClick={() => setGroupTarget(group)}
+                      aria-current={groupTarget?.id === group.id ? 'true' : undefined}
+                      className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                        groupTarget?.id === group.id ? 'bg-brand-soft text-brand' : 'hover:bg-surface'
+                      }`}
+                    >
+                      <UserName name={group.title || 'Группа'} user={group} subject="group" size="sm" />
+                      <span className="shrink-0 text-muted">{group.memberCount} участн.</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {groupTarget && (
+              <div className="rounded-xl border border-line bg-canvas p-3">
+                <p className="text-sm font-semibold text-ink">
+                  <UserName name={groupTarget.title || 'Группа'} user={groupTarget} subject="group" size="sm" />
+                </p>
+                <p className="mt-1 text-xs leading-5 text-muted">
+                  галочка {groupTarget.isVerified ? 'есть' : 'нет'}, значок{' '}
+                  {groupTarget.badge === 'yargram' ? 'Yargram' : 'нет'}, отметка SCAM{' '}
+                  {groupTarget.scam ? 'есть' : 'нет'}
+                </p>
+                {groupTarget.inviteCode && (
+                  <p className="mt-1 truncate text-xs text-muted">ссылка: {groupTarget.inviteCode}</p>
+                )}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2 border-t border-line pt-3">
+              <Button
+                type="button"
+                variant="secondary"
+                className="text-xs"
+                disabled={!groupTarget || busy}
+                onClick={() => setGroupMarks({ isVerified: true }, 'Галочка выдана группе.')}
+              >
+                Подтвердить (галочка)
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="text-xs"
+                disabled={!groupTarget || busy}
+                onClick={() => setGroupMarks({ isVerified: false }, 'Галочка снята.')}
+              >
+                Снять галочку
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="text-xs"
+                disabled={!groupTarget || busy}
+                onClick={() => setGroupMarks({ badge: 'yargram' }, 'Значок Yargram выдан группе.')}
+              >
+                Значок Yargram
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="text-xs"
+                disabled={!groupTarget || busy}
+                onClick={() => setGroupMarks({ badge: null }, 'Значок Yargram снят.')}
+              >
+                Снять значок Yargram
+              </Button>
+              <Button
+                type="button"
+                variant={groupTarget?.scam ? 'secondary' : 'danger'}
+                className="text-xs"
+                disabled={!groupTarget || busy}
+                onClick={toggleGroupScam}
+              >
+                <ShieldAlert className="h-3.5 w-3.5" />
+                {groupTarget?.scam ? 'Снять отметку SCAM' : 'Выдать отметку SCAM'}
+              </Button>
+            </div>
+
+            <p className="text-xs leading-5 text-muted">
+              Отметка SCAM у группы работает как у аккаунта: группа остаётся рабочей и писать в неё
+              можно, но рядом с названием горит красная рамка, а описание заменяется предупреждением
+              и не меняется, пока отметку не снимут.
+            </p>
+          </div>
+        ) : (
         <div className="mt-4 space-y-3">
           <label className="block">
             <span className="mb-1.5 block text-sm font-semibold text-ink">Юзернейм аккаунта</span>
@@ -448,6 +685,7 @@ export function AdminPanel({ token, viewer, onClose, onChanged }: AdminPanelProp
             кроме прав администратора.
           </p>
         </div>
+        )}
 
         {notice && (
           <p className="mt-4 rounded-xl border border-success/25 bg-success/10 px-4 py-3 text-sm text-success" role="status">

@@ -4,7 +4,13 @@ import { isFrozenAccount } from '../lib/user';
 
 interface UserNameProps {
   name: string;
+  /**
+   * Носитель значков: аккаунт или группа. Поля одни и те же, поэтому сюда
+   * подходит и `User`, и `Conversation` с её знаками группы.
+   */
   user?: Partial<Pick<User, 'displayName' | 'isFrozen' | 'isVerified' | 'badge' | 'scam'>> | null;
+  /** Что помечено — аккаунт или группа: от этого зависят подписи значков. */
+  subject?: 'account' | 'group';
   /** "sm" fits chat bubbles and list rows, "md" fits profile headers. */
   size?: 'sm' | 'md';
   className?: string;
@@ -48,9 +54,9 @@ function YargramBadge({ className }: { className: string }) {
   );
 }
 
-function VerifiedBadge({ className }: { className: string }) {
+function VerifiedBadge({ className, title }: { className: string; title: string }) {
   return (
-    <span title="Подтверждённый аккаунт" className="inline-flex shrink-0">
+    <span title={title} className="inline-flex shrink-0">
       <svg className={className} viewBox="0 0 48 48" fill="none" role="img" aria-label="Подтверждено">
         <path d={VERIFIED_ROSETTE_PATH} fill="currentColor" />
         <path
@@ -70,11 +76,15 @@ function VerifiedBadge({ className }: { className: string }) {
  * оставляем латиницей: это узнаваемая метка, а не слово интерфейса.
  * Подсказка короткая и в один ряд с остальными значками: «Мошенник».
  */
-function ScamBadge({ className }: { className: string }) {
+function ScamBadge({ className, subject }: { className: string; subject: 'account' | 'group' }) {
   return (
     <span
       role="img"
-      aria-label="Отметка SCAM: аккаунт помечен как мошеннический"
+      aria-label={
+        subject === 'group'
+          ? 'Отметка SCAM: группа помечена как мошенническая'
+          : 'Отметка SCAM: аккаунт помечен как мошеннический'
+      }
       title="Мошенник"
       className={`inline-flex shrink-0 items-center justify-center rounded-[0.3rem] border-[1.5px] border-danger/70 font-black uppercase leading-none tracking-[0.02em] text-danger ${className}`}
     >
@@ -86,8 +96,10 @@ function ScamBadge({ className }: { className: string }) {
 /**
  * Отображаемое имя (ник) со значком Yargram слева и галочкой справа.
  * Значки привязаны к нику, поэтому видны и в переписке, а не только у @username.
+ * У группы значки те же, но подписи говорят «группа»: владелец Yargram помечает
+ * саму группу, а не её создателя.
  */
-export function UserName({ name, user, size = 'md', className = '' }: UserNameProps) {
+export function UserName({ name, user, subject = 'account', size = 'md', className = '' }: UserNameProps) {
   // У звезды и розетки меньше «тела», чем у залитого круга, поэтому коробка
   // чуть больше: 14 px в переписке и списках, 17 px в шапках профилей.
   const badgeSize = size === 'sm' ? 'h-3.5 w-3.5' : 'h-[17px] w-[17px]';
@@ -114,9 +126,12 @@ export function UserName({ name, user, size = 'md', className = '' }: UserNamePr
         <YargramBadge className={`shrink-0 text-brand ${badgeSize} ${badgeLift}`} />
       )}
       <span className="truncate">{name}</span>
-      {user?.scam && <ScamBadge className={`${scamBox} ${badgeLift}`} />}
+      {user?.scam && <ScamBadge subject={subject} className={`${scamBox} ${badgeLift}`} />}
       {user?.isVerified && (
-        <VerifiedBadge className={`shrink-0 text-brand ${badgeSize} ${checkLift}`} />
+        <VerifiedBadge
+          title={subject === 'group' ? 'Подтверждённая группа' : 'Подтверждённый аккаунт'}
+          className={`shrink-0 text-brand ${badgeSize} ${checkLift}`}
+        />
       )}
     </span>
   );

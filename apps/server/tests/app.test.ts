@@ -20,7 +20,7 @@ import { FolderService } from "../src/services/folder-service.js";
 import { GroupService } from "../src/services/group-service.js";
 import { ScheduledMessageService } from "../src/services/scheduled-message-service.js";
 import { ChatService, type MessageView } from "../src/services/chat-service.js";
-import { SCAM_BIO_WARNING } from "../src/domain/models.js";
+import { SCAM_BIO_WARNING, SCAM_GROUP_WARNING } from "../src/domain/models.js";
 import { JsonDatabase } from "../src/storage/json-database.js";
 
 const temporaryDirectories: string[] = [];
@@ -1789,8 +1789,159 @@ describe("Yargram API", () => {
     expect(cleared.body.user).toMatchObject({ scam: false, bio: original });
   });
 
-  it("shows frozen and deleted accounts as a placeholder instead of breaking the chat", async () => {
+  it("grants a group the checkmark, the Yargram badge and the SCAM mark", async () => {
     const harness = await createHarness();
+    const owner = await register(harness.app, "group-owner@example.com", "GroupOwner");
+    const alice = await register(harness.app, "group-alice@example.com", "GroupAlice");
+    const bob = await register(harness.app, "group-bob@example.com", "GroupBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+    const bobAuth = { Authorization: bearer(bob.accessToken) };
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set(aliceAuth)
+      .send({ title: "Поездка на море", description: "Собираем вещи", memberIds: [bob.user.id] });
+    expect(created.status).toBe(201);
+    const groupId = created.body.conversation.id as string;
+
+    // Обычный участник знаки группе не выдаёт — это дело владельца Yargram.
+    const forbidden = await request(harness.app)
+      .post(`/api/admin/groups/${groupId}/marks`)
+      .set(aliceAuth)
+      .send({ isVerified: true });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_OWNER");
+
+    const marked = await request(harness.app)
+      .post(`/api/admin/groups/${groupId}/marks`)
+      .set(ownerAuth)
+      .send({ isVerified: true, badge: "yargram" });
+    expect(marked.status).toBe(200);
+    expect(marked.body.group).toMatchObject({
+      id: groupId,
+      isVerified: true,
+      badge: "yargram",
+      scam: false,
+    });
+
+    // Знаки видны участнику в его списке бесед, а не только владельцу.
+    const list = await request(harness.app).get("/api/conversations").set(bobAuth).expect(200);
+    expect(list.body.conversations[0]).toMatchObject({ isVerified: true, badge: "yargram" });
+
+    // Отметка SCAM подменяет описание предупреждением — и говорит о группе,
+    // а не об аккаунте.
+    const scam = await request(harness.app)
+      .post(`/api/admin/groups/${groupId}/marks`)
+      .set(ownerAuth)
+      .send({ scam: true });
+    expect(scam.status).toBe(200);
+    expect(scam.body.group.scam).toBe(true);
+
+    const warned = await request(harness.app).get("/api/conversations").set(bobAuth).expect(200);
+    expect(warned.body.conversations[0]).toMatchObject({
+      scam: true,
+      description: SCAM_GROUP_WARNING,
+    });
+
+    // Помеченная группа описание не меняет, но название меняет свободно:
+    // поле не отклоняем, иначе карточка группы перестала бы работать целиком.
+    const renamed = await request(harness.app)
+      .patch(`/api/groups/${groupId}`)
+      .set(aliceAuth)
+      .send({ title: "Поездка на море 2027", description: "новое описание" })
+      .expect(200);
+    expect(renamed.body.conversation).toMatchObject({
+      title: "Поездка на море 2027",
+      scam: true,
+      description: SCAM_GROUP_WARNING,
+    });
+    // Прежнее описание живо в записи — его вернёт снятие отметки.
+    await expect(harness.repositories.conversations.findById(groupId)).resolves.toMatchObject({
+      description: "Собираем вещи",
+      scam: true,
+    });
+
+    const cleared = await request(harness.app)
+      .post(`/api/admin/groups/${groupId}/marks`)
+      .set(ownerAuth)
+      .send({ scam: false });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.group.scam).toBe(false);
+
+    const restored = await request(harness.app).get("/api/conversations").set(bobAuth).expect(200);
+    expect(restored.body.conversations[0]).toMatchObject({
+      scam: false,
+      description: "Собираем вещи",
+    });
+  });
+
+  it("finds groups for the owner panel by title, invite code and id", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "search-owner@example.com", "SearchOwner");
+    const alice = await register(harness.app, "search-alice@example.com", "SearchAlice");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set(aliceAuth)
+      .send({ title: "Клуб любителей котиков" });
+    expect(created.status).toBe(201);
+    const groupId = created.body.conversation.id as string;
+    const inviteCode = created.body.conversation.inviteCode as string;
+
+    const byTitle = await request(harness.app)
+      .get("/api/admin/groups")
+      .query({ q: "котиков" })
+      .set(ownerAuth)
+      .expect(200);
+    expect(byTitle.body.groups).toHaveLength(1);
+    expect(byTitle.body.groups[0]).toMatchObject({
+      id: groupId,
+      title: "Клуб любителей котиков",
+      memberCount: 1,
+      isVerified: false,
+      badge: null,
+      scam: false,
+    });
+
+    const byCode = await request(harness.app)
+      .get("/api/admin/groups")
+      .query({ q: inviteCode })
+      .set(ownerAuth)
+      .expect(200);
+    expect(byCode.body.groups.map((group: { id: string }) => group.id)).toEqual([groupId]);
+
+    const byId = await request(harness.app)
+      .get("/api/admin/groups")
+      .query({ q: groupId })
+      .set(ownerAuth)
+      .expect(200);
+    expect(byId.body.groups.map((group: { id: string }) => group.id)).toEqual([groupId]);
+
+    // Личные диалоги в списке групп не показываются: там только группы.
+    const direct = await request(harness.app)
+      .post("/api/conversations/direct")
+      .set(aliceAuth)
+      .send({ userId: owner.user.id });
+    const directId = direct.body.conversation.id as string;
+    const onlyGroups = await request(harness.app)
+      .get("/api/admin/groups")
+      .query({ q: directId })
+      .set(ownerAuth)
+      .expect(200);
+    expect(onlyGroups.body.groups).toEqual([]);
+
+    // Постороннему список групп недоступен.
+    const forbidden = await request(harness.app).get("/api/admin/groups").set(aliceAuth);
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_OWNER");
+  });
+
+  it("shows frozen and deleted accounts as a placeholder instead of breaking the chat", async () => {    const harness = await createHarness();
     const owner = await register(harness.app, "gone-owner@example.com", "GoneOwner");
     const alice = await register(harness.app, "gone-alice@example.com", "GoneAlice");
     const bob = await register(harness.app, "gone-bob@example.com", "GoneBob");

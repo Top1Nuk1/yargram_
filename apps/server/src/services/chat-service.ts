@@ -16,6 +16,7 @@ import {
   effectiveGroupPermissions,
   ensurePublicUser,
   groupCan,
+  groupDescriptionFor,
   groupRoleFor,
   removedUserPlaceholder,
   toAttachmentView,
@@ -852,6 +853,30 @@ export class ChatService {
   }
 
   /**
+   * Вид беседы отдельно для каждого участника — то, что рассылается при смене
+   * названия, состава или знаков группы. Вид считается на каждого, потому что
+   * роли, права и непрочитанные у всех разные. Вышедшего пропускаем: он остался
+   * в memberIds, но группы у себя в списке не видит.
+   */
+  async viewsForMembers(
+    conversationId: string,
+  ): Promise<{ userId: string; conversation: ConversationView }[]> {
+    const conversation = await this.repositories.conversations.findById(conversationId);
+    if (!conversation) return [];
+    const left = conversation.leftIds ?? [];
+    const views: { userId: string; conversation: ConversationView }[] = [];
+    for (const memberId of conversation.memberIds) {
+      if (left.includes(memberId)) continue;
+      try {
+        views.push({ userId: memberId, conversation: await this.toConversationView(conversation, memberId) });
+      } catch {
+        // Аккаунт мог быть удалён — рассылка не должна из-за него падать.
+      }
+    }
+    return views;
+  }
+
+  /**
    * Служебное сообщение группы («Алиса добавила Боба»). Пишется от имени того,
    * кто совершил действие, чтобы в истории было видно, кто именно.
    */
@@ -1116,8 +1141,14 @@ export class ChatService {
         ? {
             // Название, аватар и описание группы: у личного диалога их нет.
             title: conversation.title ?? "",
-            description: conversation.description ?? "",
+            // У помеченной SCAM группы вместо описания идёт предупреждение —
+            // подмена на чтении, поэтому прежний текст не теряется.
+            description: groupDescriptionFor(conversation),
             avatarUrl: conversation.avatarUrl ?? null,
+            // Знаки владельца Yargram: галочка, значок и отметка SCAM группы.
+            isVerified: conversation.isVerified ?? false,
+            badge: conversation.badge ?? null,
+            scam: conversation.scam ?? false,
             // Пустая строка — «владельца нет»: поле обязательное в записи группы.
             ownerId: conversation.ownerId ?? "",
             adminIds: conversation.adminIds ?? [],

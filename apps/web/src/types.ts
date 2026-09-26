@@ -272,6 +272,13 @@ export interface Conversation {
   /** Теги участников внутри группы: id участника → подпись рядом с именем. */
   memberTags?: Record<string, string>;
   history?: GroupEvent[];
+  // ---- Знаки владельца Yargram у группы ----
+  /** Галочка «подтверждённая группа»: рисуется справа от названия. */
+  isVerified?: boolean;
+  /** Значок Yargram: рисуется слева от названия. */
+  badge?: 'yargram' | null;
+  /** Отметка SCAM: описание группы подменяется предупреждением. */
+  scam?: boolean;
   /** Роль смотрящего в группе; у личного диалога и «Избранного» — нет. */
   role?: GroupRole | null;
   /** Эффективные права смотрящего: по ним клиент гасит кнопки. */
@@ -296,6 +303,21 @@ export interface Conversation {
   blockedByMe?: boolean;
   /** Собеседник заблокировал меня: писать можно, но ему это не доставляется. */
   blockedByPeer?: boolean;
+}
+
+/**
+ * Группа в списке админ-панели: название, размер и знаки владельца Yargram.
+ * Знаки выдаются самой группе, а не её создателю.
+ */
+export interface AdminGroup {
+  id: string;
+  title: string;
+  memberCount: number;
+  isVerified: boolean;
+  badge: 'yargram' | null;
+  scam: boolean;
+  /** Код из ссылки-приглашения: по нему группу тоже можно найти. */
+  inviteCode: string | null;
 }
 
 export interface AuthResult {
