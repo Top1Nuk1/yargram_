@@ -46,8 +46,9 @@ cd C:/Games/YarGram && HTTPS_PORT=0 PORT=3100 NODE_ENV=production DATABASE_DRIVE
 
 Готовые сценарии в `runtime/screenshot-preview/`: `shots-onboarding.mjs`, `shots-accounts.mjs`,
 `shots-accounts-add.mjs`, `shots-admin-panel.mjs`, `shots-group-marks.mjs`, `shots-frozen.mjs`,
-`shots-scam.mjs`, `shots-version.mjs`, `shots-groups.mjs`, `shots-polls.mjs`, `shots-tags.mjs`,
-`shots-unread.mjs`, `shots-removed.mjs`, `shots-restore.mjs`, `shots-live.mjs`, `shots.mjs`.
+`shots-scam.mjs`, `shots-version.mjs`, `shots-groups.mjs`, `shots-polls.mjs`, `shots-deadline.mjs`,
+`shots-tags.mjs`, `shots-unread.mjs`, `shots-removed.mjs`, `shots-restore.mjs`, `shots-live.mjs`,
+`shots.mjs`.
 
 Если сценарий вызывает `Page.navigate` в одном домене много раз и подставляет в
 страницу большой блок `HELPERS`, объявляй в нём константы через `var`, а не `const` —
@@ -105,3 +106,10 @@ cd C:/Games/YarGram && HTTPS_PORT=0 PORT=3100 NODE_ENV=production DATABASE_DRIVE
 - **Стенд и `npm run build` одновременно не запускать.** Сборка съедает CPU, у тестов на
   `embedded-postgres` срываются таймауты хуков, и прогон падает «на ровном месте». Сначала сборка,
   потом тесты.
+- **Сиды для групп отправляют массив, а не одиночный id.** Эндпоинт `POST /api/groups/:id/members`
+  принимает `{ memberIds: [uuid] }` (или `userIds`). Запрос с `{ userId }` упадёт с
+  `400 MEMBERS_REQUIRED`.
+- **Поиск элементов по тексту в сайдбаре идёт через `includes`**, а не точное равенство:
+  `<button>` строки беседы содержит «Поход в горы», дату «00:09» и аватар — `textContent.trim()`
+  будет длиннее. По сусекам-аккаунтам, наоборот, можно сравнивать строго, чтобы случайно не
+  сцапать соседний пункт меню.

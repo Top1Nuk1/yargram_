@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   Clock,
@@ -306,15 +306,11 @@ export function PollDialog({
                   }}
                 />
               </div>
-              {row.key === 'deadline' && draft.settings.deadline !== null && (
-                <input
-                  type="datetime-local"
-                  aria-label="Когда завершить опрос"
-                  value={draft.settings.deadline.slice(0, 16)}
-                  onChange={(event) =>
-                    patch({ deadline: new Date(event.target.value).toISOString() })
-                  }
-                  className="mb-3 ml-14 h-10 rounded-xl border border-line bg-surface px-3 text-sm text-ink outline-none focus:border-brand/60"
+              {row.key === 'deadline' && (
+                <DeadlinePicker
+                  deadline={draft.settings.deadline}
+                  onChange={(next) => patch({ deadline: next })}
+                  disabled={busy}
                 />
               )}
             </div>
@@ -323,6 +319,240 @@ export function PollDialog({
       </section>
     </Dialog>
   );
+}
+
+/**
+ * Выбор срока в духе макета: «1 час / 3 часа / 8 часов / 1 день / 3 дня / Навсегда / Другое».
+ * «Навсегда» = null, «Другое» раскрывает дату и время.
+ */
+type Preset =
+  | { kind: 'preset'; hours: number; label: string }
+  | { kind: 'forever' }
+  | { kind: 'custom' };
+
+const DEADLINE_PRESETS: Array<{ id: string; label: string; preset: Preset }> = [
+  { id: '1h', label: '1 час', preset: { kind: 'preset', hours: 1, label: '1 час' } },
+  { id: '3h', label: '3 часа', preset: { kind: 'preset', hours: 3, label: '3 часа' } },
+  { id: '8h', label: '8 часов', preset: { kind: 'preset', hours: 8, label: '8 часов' } },
+  { id: '1d', label: '1 день', preset: { kind: 'preset', hours: 24, label: '1 день' } },
+  { id: '3d', label: '3 дня', preset: { kind: 'preset', hours: 24 * 3, label: '3 дня' } },
+  { id: 'forever', label: 'Навсегда', preset: { kind: 'forever' } },
+  { id: 'custom', label: 'Другое', preset: { kind: 'custom' } },
+];
+
+/**
+ * Разбираем ISO-строку на (preset | forever | custom) и опциональную дату/время.
+ * Каждый час мы пересчитываем пресет заново — иначе кнопка перестаёт подсвечиваться.
+ */
+function matchPreset(deadline: string | null, now: number = Date.now()): {
+  preset: Preset;
+  customDate?: string;
+  customTime?: string;
+} {
+  if (deadline === null) return { preset: { kind: 'forever' } };
+  const at = Date.parse(deadline);
+  if (Number.isNaN(at)) return { preset: { kind: 'custom' } };
+  const diffMs = at - now;
+  if (diffMs <= 0) return { preset: { kind: 'custom' } };
+  const diffHours = diffMs / (60 * 60 * 1_000);
+  // Допускаем любое время внутри текущего часа как «1 час», «3 часа» и т. п.
+  const rounded = Math.round(diffHours);
+  for (const item of DEADLINE_PRESETS) {
+    const preset = item.preset;
+    if (preset.kind !== 'preset') continue;
+    if (preset.hours === rounded) {
+      return { preset };
+    }
+  }
+  const iso = new Date(at);
+  return {
+    preset: { kind: 'custom' },
+    customDate: toDateInput(iso),
+    customTime: toTimeInput(iso),
+  };
+}
+
+function toDateInput(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function toTimeInput(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+function DeadlinePicker({
+  deadline,
+  onChange,
+  disabled,
+}: {
+  deadline: string | null;
+  onChange: (next: string | null) => void;
+  disabled: boolean;
+}) {
+  // Пересчёт раз в минуту, чтобы пресет «1 час» не уезжал раньше времени.
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (deadline === null) return undefined;
+    const handle = window.setInterval(() => force((value) => value + 1), 60_000);
+    return () => window.clearInterval(handle);
+  }, [deadline]);
+  // Дедлайн не задан — выключатель «Ограничение срока» выключен, рисовать нечего.
+  if (deadline === null) return null;
+  const matched = matchPreset(deadline);
+  return (
+    <DeadlinePickerBody
+      deadline={deadline}
+      matched={matched}
+      disabled={disabled}
+      onChange={onChange}
+      onForce={() => force((value) => value + 1)}
+    />
+  );
+}
+
+/**
+ * «Кастом» запоминаем отдельно — даже если пользователь подвинул дату так, что
+ * она снова попадает в пресет, мы продолжаем показывать поля ввода.
+ */
+function DeadlinePickerBody({
+  deadline,
+  matched,
+  disabled,
+  onChange,
+  onForce,
+}: {
+  deadline: string;
+  matched: ReturnType<typeof matchPreset>;
+  disabled: boolean;
+  onChange: (next: string | null) => void;
+  onForce: () => void;
+}) {
+  const [customMode, setCustomMode] = useState(matched.preset.kind === 'custom');
+  const showCustom = customMode || matched.preset.kind === 'custom';
+  const activeId = showCustom
+    ? 'custom'
+    : matched.preset.kind === 'preset'
+      ? (() => {
+          const target = matched.preset.hours;
+          return DEADLINE_PRESETS.find(
+            (item) => item.preset.kind === 'preset' && item.preset.hours === target,
+          )?.id ?? 'forever';
+        })()
+      : 'forever';
+
+  function pick(preset: Preset) {
+    if (disabled) return;
+    if (preset.kind === 'forever') {
+      onChange(null);
+      return;
+    }
+    if (preset.kind === 'preset') {
+      setCustomMode(false);
+      onChange(new Date(Date.now() + preset.hours * 60 * 60 * 1_000).toISOString());
+      return;
+    }
+    // «Другое»: фиксируем режим и инициализируем дату/время, если ещё не заданы.
+    setCustomMode(true);
+    if (!matched.customDate || !matched.customTime) {
+      onChange(new Date(Date.now() + 60 * 60 * 1_000).toISOString());
+    } else {
+      // Перерисуемся: на следующем рендере поля появятся с уже заполненной датой.
+      onForce();
+    }
+  }
+
+  return (
+    <div className="mb-3 ml-14 space-y-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {DEADLINE_PRESETS.map((item) => {
+          const selected = item.id === activeId;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              disabled={disabled}
+              aria-pressed={selected}
+              onClick={() => pick(item.preset)}
+              className={`rounded-xl border px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                selected
+                  ? 'border-brand/60 bg-brand text-white shadow-sm'
+                  : 'border-line bg-canvas text-ink hover:border-brand/40 hover:bg-brand-soft/40'
+              }`}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+      {!showCustom && matched.preset.kind === 'preset' && (
+        <p className="text-xs leading-5 text-muted">
+          Опрос автоматически завершится через {humanizeHours(matched.preset.hours)}.
+        </p>
+      )}
+      {showCustom && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-canvas px-3 py-2">
+          <span className="text-sm font-semibold text-brand">Завершение опроса</span>
+          <input
+            type="date"
+            aria-label="Дата завершения"
+            value={matched.customDate ?? toDateInput(new Date(deadline))}
+            onChange={(event) => {
+              const next = composeIso(
+                event.target.value,
+                matched.customTime ?? toTimeInput(new Date(deadline)),
+              );
+              onChange(next);
+            }}
+            disabled={disabled}
+            className="h-9 rounded-lg border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-brand/60"
+          />
+          <span className="text-sm text-muted">в</span>
+          <input
+            type="time"
+            aria-label="Время завершения"
+            value={matched.customTime ?? toTimeInput(new Date(deadline))}
+            onChange={(event) => {
+              const next = composeIso(
+                matched.customDate ?? toDateInput(new Date(deadline)),
+                event.target.value,
+              );
+              onChange(next);
+            }}
+            disabled={disabled}
+            className="h-9 rounded-lg border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-brand/60"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Склеиваем «YYYY-MM-DD» и «HH:mm» обратно в ISO с локальным часовым поясом. */
+function composeIso(date: string, time: string): string {
+  if (!date || !time) return defaultDeadline();
+  const at = new Date(`${date}T${time}`);
+  if (Number.isNaN(at.getTime())) return defaultDeadline();
+  return at.toISOString();
+}
+
+function humanizeHours(hours: number): string {
+  if (hours < 24) return `${hours} ${plural(hours, 'час', 'часа', 'часов')}`;
+  const days = Math.round(hours / 24);
+  return `${days} ${plural(days, 'день', 'дня', 'дней')}`;
+}
+
+/** Склоняем русские существительные по числам. */
+function plural(value: number, one: string, few: string, many: string): string {
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+  return many;
 }
 
 /** Срок по умолчанию: сутки вперёд — чаще всего хватает. */

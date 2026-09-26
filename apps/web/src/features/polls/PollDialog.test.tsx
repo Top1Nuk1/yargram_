@@ -60,9 +60,22 @@ describe('окно «Новый опрос»', () => {
       'true',
     );
 
-    expect(screen.queryByLabelText('Когда завершить опрос')).toBeNull();
+    expect(screen.queryByLabelText('Дата завершения')).toBeNull();
     fireEvent.click(screen.getByRole('switch', { name: 'Ограничение срока' }));
-    expect(screen.getByLabelText('Когда завершить опрос')).toBeInTheDocument();
+    // По умолчанию выбран пресет «1 день», никаких полей даты не видно.
+    expect(screen.getByRole('button', { name: '1 час' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: '1 день' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByLabelText('Дата завершения')).toBeNull();
+
+    // Переключаемся на «Другое» — появляются два красивых поля.
+    fireEvent.click(screen.getByRole('button', { name: 'Другое' }));
+    expect(screen.getByLabelText('Дата завершения')).toBeInTheDocument();
+    expect(screen.getByLabelText('Время завершения')).toBeInTheDocument();
+
+    // И возвращаемся к «Навсегда» — deadline снимается.
+    fireEvent.click(screen.getByRole('button', { name: 'Навсегда' }));
+    expect(screen.queryByLabelText('Дата завершения')).toBeNull();
+    expect(screen.queryByLabelText('Время завершения')).toBeNull();
   });
 
   it('отдаёт собранный опрос без пустых вариантов', () => {
