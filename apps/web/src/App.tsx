@@ -1,26 +1,62 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from './api/client';
 import { Logo } from './components/Logo';
 import { Button, Spinner } from './components/ui';
 import { AuthScreen } from './features/auth/AuthScreen';
 import { MessengerScreen } from './features/messenger/MessengerScreen';
+import { OnboardingScreen } from './features/onboarding/OnboardingScreen';
 import { useTheme } from './hooks/useTheme';
+import {
+  clearActiveToken,
+  isOnboardingDone,
+  markOnboardingDone,
+  readAccounts,
+  readActiveToken,
+  removeAccountByToken,
+  upsertAccount,
+  writeAccounts,
+  writeActiveToken,
+  type StoredAccount,
+} from './lib/accounts';
 import type { AuthResult, User } from './types';
-
-const TOKEN_KEY = 'yargram.accessToken';
-
-function readStoredToken(): string | null {
-  const token = localStorage.getItem(TOKEN_KEY)?.trim();
-  return token || null;
-}
 
 export default function App() {
   const { theme, toggleTheme } = useTheme();
-  const [token, setToken] = useState<string | null>(readStoredToken);
+  const [accounts, setAccounts] = useState<StoredAccount[]>(readAccounts);
+  const [token, setToken] = useState<string | null>(readActiveToken);
   const [user, setUser] = useState<User | null>(null);
   const [booting, setBooting] = useState(Boolean(token));
   const [notice, setNotice] = useState('');
   const [connectionAttempt, setConnectionAttempt] = useState(0);
+  const [onboardingDone, setOnboardingDone] = useState(isOnboardingDone);
+  // Режим добавления второго аккаунта: показываем вход, не теряя текущую сессию.
+  const [addingAccount, setAddingAccount] = useState(false);
+
+  // Список аккаунтов нужен внутри асинхронных обработчиков — держим актуальную копию.
+  const accountsRef = useRef(accounts);
+  useEffect(() => {
+    accountsRef.current = accounts;
+  }, [accounts]);
+
+  function persistAccounts(next: StoredAccount[]) {
+    writeAccounts(next);
+    setAccounts(next);
+  }
+
+  /** Делает аккаунт активным и просит профиль заново. */
+  function activateAccount(nextToken: string | null, message = '') {
+    setNotice(message);
+    setUser(null);
+    if (nextToken) {
+      writeActiveToken(nextToken);
+      setToken(nextToken);
+      setBooting(true);
+    } else {
+      clearActiveToken();
+      setToken(null);
+      setBooting(false);
+    }
+  }
 
   useEffect(() => {
     if (!token || user) {
@@ -36,14 +72,21 @@ export default function App() {
         if (controller.signal.aborted) return;
         setUser(currentUser);
         setNotice('');
+        persistAccounts(upsertAccount(accountsRef.current, { token, user: currentUser }));
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return;
         if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-          localStorage.removeItem(TOKEN_KEY);
-          setToken(null);
-          setUser(null);
-          setNotice('Сессия завершилась. Войдите снова.');
+          const remaining = removeAccountByToken(accountsRef.current, token);
+          persistAccounts(remaining);
+          // Если на устройстве есть другой аккаунт — переключаемся на него,
+          // иначе возвращаемся ко входу.
+          activateAccount(
+            remaining[0]?.token ?? null,
+            remaining.length > 0
+              ? 'Предыдущий аккаунт больше недоступен. Открываем другой.'
+              : 'Сессия завершилась. Войдите снова.',
+          );
           return;
         }
         setNotice('Не удалось подключиться к серверу. Проверьте Radmin VPN и повторите попытку.');
@@ -56,12 +99,15 @@ export default function App() {
   }, [token, user, connectionAttempt]);
 
   async function handleAuthenticated(result: AuthResult) {
-    localStorage.setItem(TOKEN_KEY, result.accessToken);
-    setToken(result.accessToken);
+    const nextToken = result.accessToken;
+    writeActiveToken(nextToken);
+    setToken(nextToken);
     setNotice('');
+    setAddingAccount(false);
     if (result.user) {
       setUser(result.user);
       setBooting(false);
+      persistAccounts(upsertAccount(accountsRef.current, { token: nextToken, user: result.user }));
       return;
     }
     setUser(null);
@@ -69,12 +115,44 @@ export default function App() {
     setConnectionAttempt((attempt) => attempt + 1);
   }
 
+  /** Выход: аккаунт убираем с устройства и переходим к следующему, если он есть. */
   function handleLogout(sessionExpired = false) {
-    localStorage.removeItem(TOKEN_KEY);
-    setToken(null);
-    setUser(null);
-    setNotice(sessionExpired ? 'Сессия завершилась. Войдите снова.' : 'Вы вышли из аккаунта.');
+    const current = token;
+    const remaining = current ? removeAccountByToken(accountsRef.current, current) : accountsRef.current;
+    persistAccounts(remaining);
+    setAddingAccount(false);
+    if (remaining.length > 0) {
+      activateAccount(remaining[0]!.token, 'Вы вышли из аккаунта.');
+      return;
+    }
+    activateAccount(null, sessionExpired ? 'Сессия завершилась. Войдите снова.' : 'Вы вышли из аккаунта.');
   }
+
+  function handleSwitchAccount(nextToken: string) {
+    if (nextToken === token) return;
+    activateAccount(nextToken);
+  }
+
+  function handleOnboardingDone() {
+    markOnboardingDone();
+    setOnboardingDone(true);
+  }
+
+  /**
+   * Профиль обновился (в том числе пришла пометка о заморозке) — держим его и
+   * в списке аккаунтов на устройстве, иначе переключатель покажет старое.
+   * Мемоизирован: на этой функции висит подписка на сокет.
+   */
+  const handleUserUpdated = useCallback(
+    (next: User) => {
+      setUser(next);
+      if (!token) return;
+      const merged = upsertAccount(accountsRef.current, { token, user: next });
+      writeAccounts(merged);
+      setAccounts(merged);
+    },
+    [token],
+  );
 
   if (booting) {
     return (
@@ -108,7 +186,22 @@ export default function App() {
     );
   }
 
+  if (addingAccount) {
+    return (
+      <AuthScreen
+        onAuthenticated={handleAuthenticated}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        notice="Войдите в другой аккаунт — текущий останется доступен в переключателе."
+        onCancel={() => setAddingAccount(false)}
+      />
+    );
+  }
+
   if (!token || !user) {
+    if (!onboardingDone && accounts.length === 0) {
+      return <OnboardingScreen theme={theme} onToggleTheme={toggleTheme} onDone={handleOnboardingDone} />;
+    }
     return (
       <AuthScreen
         onAuthenticated={handleAuthenticated}
@@ -121,12 +214,23 @@ export default function App() {
 
   return (
     <MessengerScreen
+      key={token}
       token={token}
       currentUser={user}
       theme={theme}
       onToggleTheme={toggleTheme}
       onLogout={handleLogout}
-      onUserUpdated={setUser}
+      onUserUpdated={handleUserUpdated}
+      accounts={accounts}
+      onSwitchAccount={handleSwitchAccount}
+      onAddAccount={() => setAddingAccount(true)}
+      onRemoveAccount={(accountToken) => {
+        const remaining = removeAccountByToken(accountsRef.current, accountToken);
+        persistAccounts(remaining);
+        if (accountToken === token) {
+          activateAccount(remaining[0]?.token ?? null, 'Вы вышли из аккаунта.');
+        }
+      }}
     />
   );
 }

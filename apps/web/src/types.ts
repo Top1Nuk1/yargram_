@@ -56,6 +56,8 @@ export interface User {
   blockedByMe?: boolean;
   isVerified?: boolean;
   badge?: 'yargram' | null;
+  /** Отметка SCAM от владельца: описание подменяется предупреждением. */
+  scam?: boolean;
   usernames?: string[];
   adminUserIds?: string[];
   isOwner?: boolean;
@@ -96,6 +98,7 @@ export interface Participant {
   blockedByMe?: boolean;
   isVerified?: boolean;
   badge?: 'yargram' | null;
+  scam?: boolean;
   isFrozen?: boolean;
   isDeleted?: boolean;
 }

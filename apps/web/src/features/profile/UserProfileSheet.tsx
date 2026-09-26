@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Ban,
   Calendar,
   Copy,
@@ -9,6 +10,7 @@ import {
   Link2,
   Mic,
   MoreHorizontal,
+  ShieldAlert,
   ShieldCheck,
   Snowflake,
   Trash2,
@@ -92,6 +94,10 @@ export function UserProfileSheet({
   const [isBlocked, setIsBlocked] = useState(Boolean(user.blockedByMe));
   // Удалённый аккаунт: профиль и история читаются, но писать и звонить нельзя.
   const isDeleted = Boolean(profile.isDeleted);
+  // Описание помеченного SCAM сервер подменяет предупреждением. Ведущий ⚠️ из
+  // текста убираем — на карточке его место занимает значок, и без этого знак
+  // задваивался бы.
+  const scamWarningText = (profile.bio ?? '').replace(/^\s*⚠️?\s*/u, '');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -202,6 +208,30 @@ export function UserProfileSheet({
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
       setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось изменить статус аккаунта.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Отметка SCAM: рядом с именем появляется красная рамка, а описание
+   * подменяется предупреждением о мошенничестве — менять его человек больше
+   * не сможет, пока владелец отметку не снимет. Снятие возвращает прежнее
+   * описание: подмена живёт на чтении, а не затирает запись.
+   */
+  async function toggleScam() {
+    const next = !profile.scam;
+    const handle = profile.username ? `@${profile.username}` : profile.displayName;
+    if (next && !window.confirm(`Пометить аккаунт ${handle} как SCAM? Описание заменится предупреждением о мошенничестве, и менять его человек больше не сможет.`)) return;
+    setBusy(true);
+    setError('');
+    try {
+      const updated = await api.adminSetScam(token, profile.id, next);
+      setProfile((current) => ({ ...current, ...updated }));
+      setNotice(next ? 'Аккаунт помечен как SCAM.' : 'Отметка SCAM снята, описание вернулось.');
+    } catch (reasonError) {
+      if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
+      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось изменить отметку SCAM.');
     } finally {
       setBusy(false);
     }
@@ -337,7 +367,9 @@ export function UserProfileSheet({
               type="button"
               aria-label="Изменить профиль"
               onClick={onEdit}
-              className="absolute right-12 top-4 grid h-9 w-9 place-items-center rounded-full text-muted transition hover:bg-canvas hover:text-ink"
+              disabled={profile.isFrozen}
+              title={profile.isFrozen ? 'Аккаунт заморожен — профиль доступен только для просмотра' : undefined}
+              className="absolute right-12 top-4 grid h-9 w-9 place-items-center rounded-full text-muted transition hover:bg-canvas hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
             >
               <Edit2 className="h-5 w-5" />
             </button>
@@ -383,11 +415,25 @@ export function UserProfileSheet({
         )}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {/* Биография. */}
-          {profile.bio && (
+          {/* Описание. У помеченного SCAM вместо «о себе» стоит предупреждение:
+              сервер отдаёт его вместо текста, поэтому рисуем отдельным блоком
+              со значком — как в Telegram. Подпись «О себе» уходит под текст. */}
+          {profile.scam ? (
             <div className="px-5 pt-3">
-              <p className="whitespace-pre-wrap text-center text-sm leading-6 text-ink">{profile.bio}</p>
+              <div className="flex gap-2 text-left">
+                <AlertTriangle className="mt-[3px] h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+                <p className="whitespace-pre-wrap text-sm leading-6 text-ink">
+                  {scamWarningText}
+                </p>
+              </div>
+              <p className="mt-1 text-xs text-muted">О себе</p>
             </div>
+          ) : (
+            profile.bio && (
+              <div className="px-5 pt-3">
+                <p className="whitespace-pre-wrap text-center text-sm leading-6 text-ink">{profile.bio}</p>
+              </div>
+            )
           )}
 
           {/* Юзернейм + имя пользователя + копирование. */}
@@ -472,14 +518,18 @@ export function UserProfileSheet({
                       disabled={bdSaving}
                       onChange={(event) => void changeBirthday('year', event.target.value)}
                     >
-                      <option value="">Год</option>
+                      <option value="">Без года</option>
                       {BIRTHDAY_YEARS.map((year) => (
                         <option key={year} value={String(year)}>{year}</option>
                       ))}
                     </select>
                   </div>
                   <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
-                    <span>{bdSaving ? 'Сохраняем…' : 'Дата сохраняется сразу, как в Telegram.'}</span>
+                    <span>
+                      {bdSaving
+                        ? 'Сохраняем…'
+                        : 'Дата сохраняется сразу. Год можно не указывать — тогда возраст не виден.'}
+                    </span>
                     {(bdDay || bdMonth || bdYear) && (
                       <button type="button" onClick={() => void clearBirthday()} className="font-semibold text-brand transition hover:text-brand-strong">
                         Убрать
@@ -522,6 +572,17 @@ export function UserProfileSheet({
                 </Button>
               )}
               {!profile.isDeleted && (
+                <Button
+                  variant={profile.scam ? 'secondary' : 'danger'}
+                  className="w-full"
+                  loading={busy}
+                  onClick={() => void toggleScam()}
+                >
+                  <ShieldAlert className="h-4 w-4" />
+                  {profile.scam ? 'Снять отметку SCAM' : 'Выдать отметку SCAM'}
+                </Button>
+              )}
+              {!profile.isDeleted && (
                 <Button variant="danger" className="w-full" loading={busy} onClick={() => void deleteAccount()}>
                   <Trash2 className="h-4 w-4" />
                   Удалить аккаунт
@@ -547,12 +608,23 @@ export function UserProfileSheet({
             </div>
           )}
 
-          {/* Действие своего профиля: быстрый переход к настройкам. */}
+          {/* Действие своего профиля: быстрый переход к настройкам.
+              Замороженному он закрыт — менять профиль нельзя. */}
           {mode === 'own' && (
             <div className="px-5 pb-5 pt-2">
-              <Button variant="secondary" className="w-full" onClick={onEdit}>
+              <Button
+                variant="secondary"
+                className="w-full"
+                onClick={onEdit}
+                disabled={profile.isFrozen}
+              >
                 <Edit2 className="h-4 w-4" /> Изменить профиль
               </Button>
+              {profile.isFrozen && (
+                <p className="mt-2 text-center text-xs text-muted">
+                  Аккаунт заморожен — профиль доступен только для просмотра.
+                </p>
+              )}
             </div>
           )}
 

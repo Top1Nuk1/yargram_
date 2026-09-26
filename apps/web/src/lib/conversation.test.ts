@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyAccountState,
   conversationPeerDeleted,
+  conversationPeerFrozen,
   conversationTitle,
   getConversationPeer,
   sortMessages,
@@ -25,17 +26,18 @@ describe('conversation helpers', () => {
     expect(conversationTitle(conversation, 'alice')).toBe('Борис');
   });
 
-  it('keeps badge and verification flags on the peer', () => {
+  it('keeps badge, verification and SCAM flags on the peer', () => {
     const flagged: Conversation = {
       id: 'conversation-2',
       members: [
         { id: 'alice', displayName: 'Алиса' },
-        { id: 'bob', displayName: 'Борис', isVerified: true, badge: 'yargram' },
+        { id: 'bob', displayName: 'Борис', isVerified: true, badge: 'yargram', scam: true },
       ],
     };
     expect(getConversationPeer(flagged, 'alice')).toMatchObject({
       isVerified: true,
       badge: 'yargram',
+      scam: true,
     });
   });
 
@@ -140,14 +142,19 @@ describe('conversation helpers', () => {
       });
     });
 
-    it('после удаления поле ввода закрывается, а после заморозки — нет', () => {
+    it('после удаления и после заморозки поле ввода закрывается', () => {
       // Удалённый собеседник не принимает сообщения: история остаётся, ввода нет.
       expect(conversationPeerDeleted(applyAccountState([chat], history, removed).conversations[0], 'alice')).toBe(true);
-      // Заморозка — временная мера: писать можно, собеседник прочитает после разморозки.
-      expect(conversationPeerDeleted(applyAccountState([chat], history, frozen).conversations[0], 'alice')).toBe(false);
+      // Заморозка закрывает отправку, но не путается с удалением: сервер отвечает
+      // ACCOUNT_FROZEN, а не ACCOUNT_DELETED, поэтому флаги разные.
+      const frozenConversation = applyAccountState([chat], history, frozen).conversations[0];
+      expect(conversationPeerDeleted(frozenConversation, 'alice')).toBe(false);
+      expect(conversationPeerFrozen(frozenConversation, 'alice')).toBe(true);
+      expect(conversationPeerFrozen(chat, 'alice')).toBe(false);
       expect(conversationPeerDeleted(chat, 'alice')).toBe(false);
       // Избранное — диалог с собой: ввод всегда доступен.
       expect(conversationPeerDeleted({ id: 'saved', type: 'saved' }, 'alice')).toBe(false);
+      expect(conversationPeerFrozen({ id: 'saved', type: 'saved' }, 'alice')).toBe(false);
     });
 
     it('разморозка возвращает настоящий профиль', () => {

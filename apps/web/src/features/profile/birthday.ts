@@ -16,21 +16,27 @@ export type BirthdayParts = { day: string; month: string; year: string };
 
 export const EMPTY_BIRTHDAY: BirthdayParts = { day: '', month: '', year: '' };
 
-/** Разбирает сохранённую дату (YYYY-MM-DD) на части для трёх списков. */
+/** Разбирает сохранённую дату (YYYY-MM-DD или MM-DD) на части для трёх списков. */
 export function parseBirthday(value: string | null | undefined): BirthdayParts {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? '');
+  const match = /^(?:(\d{4})-)?(\d{2})-(\d{2})$/.exec(value ?? '');
   if (!match) return { ...EMPTY_BIRTHDAY };
   return {
-    year: String(Number(match[1])),
+    // Год необязателен: MM-DD означает «год не показываем».
+    year: match[1] ? String(Number(match[1])) : '',
     month: String(Number(match[2])),
     day: String(Number(match[3])),
   };
 }
 
-/** Собирает YYYY-MM-DD; если выбрано не всё — null (сервер тогда сотрёт поле). */
+/**
+ * Собирает дату: «YYYY-MM-DD», а без года — «MM-DD». Год необязателен, чтобы
+ * день рождения можно было показать, не раскрывая возраст. Если не выбраны
+ * день или месяц — null, и сервер сотрёт поле.
+ */
 export function composeBirthday(day: string, month: string, year: string): string | null {
-  if (!day || !month || !year) return null;
-  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  if (!day || !month) return null;
+  const monthAndDay = `${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  return year ? `${year}-${monthAndDay}` : monthAndDay;
 }
 
 /** Сколько дней в месяце; без выбранного месяца считаем 31. */
@@ -41,15 +47,15 @@ export function daysInMonth(month: string, year: string): number {
   return new Date(y, m, 0).getDate();
 }
 
-/** «1 ноября 2010» — без года, если его скрыли. */
+/** «1 ноября 2010», а без года — просто «1 ноября». */
 export function formatBirthday(value: string | null | undefined): string {
   const parts = parseBirthday(value);
-  if (!parts.day || !parts.month || !parts.year) return '';
+  if (!parts.day || !parts.month) return '';
   const monthName = MONTH_NAMES[Number(parts.month) - 1];
-  return `${parts.day} ${monthName} ${parts.year}`;
+  return parts.year ? `${parts.day} ${monthName} ${parts.year}` : `${parts.day} ${monthName}`;
 }
 
-/** Возраст по дате; null, если даты нет. */
+/** Возраст по дате; null, если год не указан или даты нет. */
 export function ageFromBirthday(value: string | null | undefined): number | null {
   const parts = parseBirthday(value);
   if (!parts.day || !parts.month || !parts.year) return null;

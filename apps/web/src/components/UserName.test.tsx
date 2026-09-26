@@ -57,6 +57,69 @@ describe('UserName', () => {
     expect(classNameOf(yargramBadge)).toContain('-translate-y-px');
   });
 
+  it('renders the snowflake for a frozen account, even under its real name', () => {
+    const removed = render(<UserName name="Удалённый аккаунт" user={{ isFrozen: true }} />);
+    expect(removed.container.querySelector('svg')).not.toBeNull();
+
+    // Себе замороженный видит своё имя — снежинка должна остаться.
+    const own = render(<UserName name="Алиса" user={{ isFrozen: true }} />);
+    expect(own.container.querySelector('svg')).not.toBeNull();
+    expect(own.container.textContent).toBe('Алиса');
+  });
+
+  it('renders no snowflake for a plain or deleted account', () => {
+    expect(render(<UserName name="Алиса" />).container.querySelector('svg')).toBeNull();
+    expect(
+      render(<UserName name="Удалённый аккаунт" user={{ isFrozen: false }} />).container.querySelector('svg'),
+    ).toBeNull();
+  });
+
+  it('renders the SCAM box next to the name of a marked account', () => {
+    const { container } = render(<UserName name="Борис" user={{ scam: true }} />);
+    const box = container.querySelector('[role="img"]');
+    expect(box).not.toBeNull();
+    expect(box?.textContent).toBe('SCAM');
+    expect(box?.getAttribute('aria-label')).toBe(
+      'Отметка SCAM: аккаунт помечен как мошеннический',
+    );
+    // Метка стоит после имени, а не вместо него.
+    expect(container.textContent).toBe('БорисSCAM');
+  });
+
+  it('shows the SCAM box together with the other badges', () => {
+    const { container } = render(
+      <UserName name="Тимур" user={{ badge: 'yargram', isVerified: true, scam: true }} />,
+    );
+    expect(container.textContent).toBe('ТимурSCAM');
+    const labels = Array.from(container.querySelectorAll('svg')).map((svg) =>
+      svg.getAttribute('aria-label'),
+    );
+    expect(labels).toContain('Значок Yargram');
+    expect(labels).toContain('Подтверждено');
+  });
+
+  it('renders no SCAM box for a plain or explicitly unmarked account', () => {
+    expect(render(<UserName name="Алиса" />).container.querySelector('[role="img"]')).toBeNull();
+    expect(
+      render(<UserName name="Алиса" user={{ scam: false }} />).container.querySelector('[role="img"]'),
+    ).toBeNull();
+  });
+
+  it('explains every badge in a hover tooltip', () => {
+    const { container } = render(
+      <UserName name="Тимур" user={{ badge: 'yargram', isVerified: true, scam: true, isFrozen: true }} />,
+    );
+    const titles = Array.from(container.querySelectorAll('[title]')).map((node) =>
+      node.getAttribute('title'),
+    );
+    expect(titles).toContain('Подтверждённый аккаунт');
+    expect(titles).toContain('Мошенник');
+    expect(titles).toContain('Подтверждён представителями Yargram');
+    expect(titles).toContain('Аккаунт заморожен');
+    // Подсказки висят на обёртках, а не текстом внутри имени.
+    expect(container.textContent).toBe('ТимурSCAM');
+  });
+
   it('ignores unknown badge values', () => {
     const { container } = render(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

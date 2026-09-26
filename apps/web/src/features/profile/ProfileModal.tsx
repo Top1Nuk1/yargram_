@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { AtSign, Bell, Camera, FileText, Image, Palette, ShieldCheck, Trash2, UserRound, X } from 'lucide-react';
+import { AtSign, Bell, Camera, FileText, Image, Palette, ShieldCheck, Snowflake, Trash2, UserRound, X } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import { Avatar, Button, IconButton } from '../../components/ui';
 import { UserName } from '../../components/UserName';
@@ -21,18 +21,20 @@ interface ProfileModalProps {
   onSaved: (user: User) => void;
 }
 
-function adminErrorMessage(reason: unknown): string {
-  return reason instanceof ApiError ? reason.message : 'Не удалось выполнить действие';
-}
-
 export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProps) {
-  const adminTab = user?.isOwner ? [['admin', 'Админ', ShieldCheck] as const] : [];
-  const settingsTabs = [...baseTabs, ...adminTab] as (typeof baseTabs[number] | typeof adminTab[number])[];
   const [tab, setTab] = useState<string>('account');
   const [soundEnabled, setSoundEnabledState] = useState(isSoundEnabled);
   const [notificationPermission, setNotificationPermission] = useState(browserNotificationPermission);
   useEffect(() => subscribeToSoundSetting(setSoundEnabledState), []);
   const [profileUser, setProfileUser] = useState(user);
+  // Замороженный аккаунт профиль не меняет — форму закрываем целиком.
+  const frozen = Boolean(user.isFrozen);
+  // Отметку SCAM могут выдать при уже открытом окне: сервер тут же подменяет
+  // описание, поэтому забираем его в форму и закрываем поле.
+  useEffect(() => {
+    setProfileUser(user);
+    if (user.scam) setBio(user.bio ?? '');
+  }, [user]);
   const [displayName, setDisplayName] = useState(user.displayName);
   const [username, setUsername] = useState(user.username ?? '');
   const [themeColor, setThemeColor] = useState(user.themeColor ?? '#3390ec');
@@ -51,8 +53,6 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
   const [bdDay, setBdDay] = useState(initialBirthday.day);
   const [bdMonth, setBdMonth] = useState(initialBirthday.month);
   const [bdYear, setBdYear] = useState(initialBirthday.year);
-  /** Кого администрируем прямо сейчас: его состояние показывает панель ниже. */
-  const [adminTarget, setAdminTarget] = useState<User | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
@@ -180,118 +180,6 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
     }
   }
 
-  /**
-   * Выдача и снятие админских атрибутов. Цель — юзернейм из поля ввода;
-   * пустой массив usernames очищает список дополнительных ников.
-   */
-  function runAdminGrant(
-    input: { isVerified?: boolean; badge?: 'yargram' | null; usernames?: string[] },
-    success: string,
-  ) {
-    const username = (document.getElementById('admin-target-id') as HTMLInputElement | null)?.value?.trim();
-    if (!username) {
-      setError('Укажите юзернейм');
-      return;
-    }
-    setError('');
-    api.adminGrant(token, profileUser.id ?? user.id, { targetUsername: username, ...input })
-      .then((updated) => {
-        setError(success);
-        // Панель состояния цели должна показать свежие данные, а не те, что были до правки.
-        setAdminTarget((current) => (current ? { ...current, ...updated } : current));
-      })
-      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
-  }
-
-  /** Показывает текущее состояние цели: галочка, значок и список доп. юзернеймов. */
-  function inspectAdminTarget() {
-    const username = (document.getElementById('admin-target-id') as HTMLInputElement | null)
-      ?.value?.trim()
-      .replace(/^@/, '')
-      .toLowerCase();
-    if (!username) {
-      setError('Укажите юзернейм');
-      return;
-    }
-    setError('');
-    api.users(token, username)
-      .then((result) => {
-        const wanted = username;
-        const found = result.items.find(
-          (candidate) =>
-            candidate.username?.toLowerCase() === wanted ||
-            (candidate.usernames ?? []).some((alias) => alias.toLowerCase() === wanted),
-        );
-        if (!found) {
-          setAdminTarget(null);
-          setError(`Пользователь @${username} не найден`);
-          return;
-        }
-        setAdminTarget(found);
-      })
-      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
-  }
-
-  /** Заморозка: аккаунт остаётся, но человек не сможет войти. */
-  function toggleFreeze() {
-    if (!adminTarget) {
-      setError('Сначала нажмите «Показать состояние»');
-      return;
-    }
-    const next = !adminTarget.isFrozen;
-    const handle = adminTarget.username ? `@${adminTarget.username}` : adminTarget.displayName;
-    if (
-      next &&
-      !window.confirm(`Заморозить аккаунт ${handle}? Он не сможет войти и писать, пока вы не разморозите его.`)
-    ) {
-      return;
-    }
-    setError('');
-    api.adminFreeze(token, adminTarget.id, next)
-      .then((updated) => {
-        setAdminTarget({ ...adminTarget, ...updated });
-        setError(next ? `Аккаунт ${handle} заморожен.` : `Аккаунт ${handle} разморожен.`);
-      })
-      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
-  }
-
-  /**
-   * Удаление аккаунта: личное стирается, а история переписки остаётся у
-   * собеседников. Почта и ник остаются занятыми, аккаунт можно вернуть.
-   */
-  function deleteAccount() {
-    if (!adminTarget) {
-      setError('Сначала нажмите «Показать состояние»');
-      return;
-    }
-    const handle = adminTarget.username ? `@${adminTarget.username}` : adminTarget.displayName;
-    if (!window.confirm(`Удалить аккаунт ${handle}? Его почта и ник останутся занятыми, а историю переписки собеседники сохранят.`)) {
-      return;
-    }
-    setError('');
-    api.adminDeleteUser(token, adminTarget.id)
-      .then(() => {
-        setAdminTarget(null);
-        setError(`Аккаунт ${handle} удалён.`);
-      })
-      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
-  }
-
-  /** Возврат удалённого аккаунта: профиль и история снова на месте. */
-  function restoreAccount() {
-    if (!adminTarget) {
-      setError('Сначала нажмите «Показать состояние»');
-      return;
-    }
-    setError('');
-    api.adminRestoreUser(token, adminTarget.id)
-      .then((updated) => {
-        setAdminTarget({ ...adminTarget, ...updated });
-        setError('Аккаунт возвращён.');
-      })
-      .catch((reason: unknown) => setError(adminErrorMessage(reason)));
-  }
-
   const fieldClass =
     'h-12 w-full rounded-xl border border-line bg-canvas pl-11 pr-4 text-[15px] text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10';
   // Списки дня/месяца/года: без иконки слева, поэтому без pl-11.
@@ -336,13 +224,25 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
         </header>
 
         <nav className="mt-5 grid grid-cols-2 gap-1 rounded-2xl bg-canvas p-1 sm:grid-cols-4" aria-label="Разделы настроек">
-          {settingsTabs.map(([id, label, Icon]) => (
+          {baseTabs.map(([id, label, Icon]) => (
             <button key={id} type="button" aria-current={tab === id ? 'page' : undefined} onClick={() => setTab(id)} className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-3 text-xs font-semibold transition ${tab === id ? 'bg-surface text-brand shadow-sm' : 'text-muted hover:text-ink'}`}>
               <Icon className="h-4 w-4" />{label}
             </button>
           ))}
         </nav>
         <form className="mt-5 space-y-4" onSubmit={save} noValidate>
+          {/* Замороженный профиль показываем как есть, но менять ничего нельзя:
+              один `fieldset disabled` закрывает и поля, и загрузку аватара. */}
+          {frozen && (
+            <p
+              role="status"
+              className="flex items-center gap-2 rounded-xl border border-brand/25 bg-brand-soft px-4 py-3 text-xs font-medium text-brand"
+            >
+              <Snowflake className="h-4 w-4 shrink-0" aria-hidden="true" />
+              Аккаунт заморожен — профиль доступен только для просмотра, изменения недоступны.
+            </p>
+          )}
+          <fieldset disabled={frozen} className="space-y-4 border-0 p-0">
           <div hidden={tab !== 'account'} className="settings-panel space-y-4">
           <div className="rounded-xl border border-line bg-canvas/70 p-3">
             <input
@@ -429,13 +329,20 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
               <FileText className="absolute left-4 top-3.5 h-5 w-5 text-muted" />
               <textarea
                 id="profile-bio"
-                className={`${fieldClass} h-28 resize-none py-3`}
+                className={`${fieldClass} h-28 resize-none py-3 disabled:cursor-not-allowed disabled:opacity-70`}
                 value={bio}
                 onChange={(event) => setBio(event.target.value)}
                 placeholder="Пара слов о себе"
                 maxLength={280}
+                disabled={profileUser.scam}
               />
             </div>
+            {profileUser.scam && (
+              <p className="mt-1.5 text-xs font-semibold text-danger" role="status">
+                На аккаунте стоит отметка SCAM: описание заменено предупреждением о мошенничестве и не
+                редактируется, пока владелец Yargram не снимет отметку.
+              </p>
+            )}
 
           <div>
             <span className="mb-1.5 block text-sm font-semibold">День рождения</span>
@@ -473,14 +380,14 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
                 value={bdYear}
                 onChange={(event) => changeBirthdayPart('year', event.target.value)}
               >
-                <option value="">Год</option>
+                <option value="">Без года</option>
                 {BIRTHDAY_YEARS.map((year) => (
                   <option key={year} value={String(year)}>{year}</option>
                 ))}
               </select>
             </div>
             <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
-              <span>День рождения видят другие пользователи в вашем профиле.</span>
+              <span>День рождения видят другие в вашем профиле. Год можно не указывать — тогда возраст не показывается.</span>
               {(bdDay || bdMonth || bdYear) && (
                 <button type="button" onClick={clearBirthday} className="font-semibold text-brand transition hover:text-brand-strong">
                   Убрать
@@ -530,114 +437,6 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
           </div>
           </fieldset>
 
-          <fieldset hidden={tab !== 'admin'} className="settings-panel rounded-2xl border border-line p-4">
-            <legend className="flex items-center gap-2 px-2 text-sm font-semibold"><ShieldCheck className="h-4 w-4 text-brand" />Овнер / Админ</legend>
-            <p className="text-sm text-muted">Только для владельца: галочка, значок и дополнительные юзернеймы для любого аккаунта — выдача и снятие.</p>
-            <div className="mt-3 space-y-3">
-              <input id="admin-target-id" className={fieldClass} placeholder="username (например: top1nuk1)" />
-              <input id="admin-usernames" className={fieldClass} placeholder="доп. юзернеймы через запятую: kotik, second_name" />
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => inspectAdminTarget()}>Показать состояние</Button>
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ isVerified: true }, 'Галочка выдана')}>Подтвердить (галочка)</Button>
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ badge: 'yargram' }, 'Значок Yargram выдан')}>Значок Yargram</Button>
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => {
-                  const aliases = ((document.getElementById('admin-usernames') as HTMLInputElement | null)?.value ?? '')
-                    .split(/[,\s]+/)
-                    .map((value) => value.trim().replace(/^@/, ''))
-                    .filter(Boolean);
-                  if (aliases.length === 0) { setError('Укажите хотя бы один доп. юзернейм'); return; }
-                  runAdminGrant({ usernames: aliases }, `Назначены юзернеймы: ${aliases.join(', ')}`);
-                }}>Назначить юзернеймы</Button>
-              </div>
-              <div className="flex flex-wrap gap-2 border-t border-line pt-3">
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ isVerified: false }, 'Галочка снята')}>Снять галочку</Button>
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ badge: null }, 'Значок Yargram снят')}>Снять значок Yargram</Button>
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => runAdminGrant({ usernames: [] }, 'Доп. юзернеймы очищены')}>Очистить доп. юзернеймы</Button>
-                <Button type="button" variant="secondary" className="text-xs" disabled={!adminTarget} onClick={() => {
-                  if (!adminTarget) return;
-                  setError('');
-                  api.adminUnassign(token, adminTarget.id)
-                    .then((updated) => {
-                      setError('Права администратора сняты');
-                      setAdminTarget({ ...adminTarget, ...updated });
-                    })
-                    .catch((reason: unknown) => setError(adminErrorMessage(reason)));
-                }}>Снять права админа</Button>
-              </div>
-              {adminTarget && (
-                <div className="rounded-xl border border-line bg-canvas p-3">
-                  <p className="text-xs font-semibold">
-                    @{adminTarget.username ?? '—'}: галочка {adminTarget.isVerified ? 'есть' : 'нет'}, значок{' '}
-                    {adminTarget.badge === 'yargram' ? 'Yargram' : 'нет'}
-                  </p>
-                  {(adminTarget.usernames ?? []).length > 0 ? (
-                    <ul className="mt-2 space-y-1">
-                      {(adminTarget.usernames ?? []).map((alias) => (
-                        <li key={alias} className="flex items-center justify-between gap-2 text-xs">
-                          <span className="truncate">@{alias}</span>
-                          <button
-                            type="button"
-                            className="shrink-0 font-semibold text-danger hover:underline"
-                            onClick={() => runAdminGrant(
-                              { usernames: (adminTarget.usernames ?? []).filter((item) => item !== alias) },
-                              `Юзернейм @${alias} удалён`,
-                            )}
-                          >
-                            убрать
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-1 text-xs text-muted">Дополнительных юзернеймов нет.</p>
-                  )}
-                </div>
-              )}
-              {/* Заморозка и удаление — только владелец Yargram. */}
-              <div className="flex flex-wrap gap-2 border-t border-line pt-3">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="text-xs"
-                  disabled={!adminTarget || adminTarget.isDeleted}
-                  onClick={() => toggleFreeze()}
-                >
-                  {adminTarget?.isFrozen ? 'Разморозить аккаунт' : 'Заморозить аккаунт'}
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="text-xs"
-                  disabled={!adminTarget?.isDeleted}
-                  onClick={() => restoreAccount()}
-                >
-                  Вернуть аккаунт
-                </Button>
-                <Button
-                  type="button"
-                  variant="danger"
-                  className="text-xs"
-                  disabled={!adminTarget || adminTarget.isDeleted}
-                  onClick={() => deleteAccount()}
-                >
-                  Удалить аккаунт
-                </Button>
-                <span className="text-xs text-muted">
-                  Заморозка закрывает вход. Удаление оставляет историю переписки собеседникам, но почта и
-                  ник остаются занятыми — аккаунт можно вернуть.
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="secondary" className="text-xs" onClick={() => {
-                  const field = document.getElementById('admin-target-id') as HTMLInputElement | null;
-                  if (field) field.value = username || profileUser.username || '';
-                }}>Подставить свой ник</Button>
-                <span className="text-xs text-muted">Себя тоже можно администрировать: доп. юзернеймы назначаются и своему аккаунту (кроме прав администратора).</span>
-              </div>
-              <p className="text-xs text-muted">Поле юзернеймов нужно только для назначения: кнопка «Очистить» снимает все дополнительные ники сразу.</p>
-            </div>
-          </fieldset>
-
           <fieldset hidden={tab !== 'notifications'} className="settings-panel space-y-4 rounded-2xl border border-line p-4">
             <legend className="flex items-center gap-2 px-2 text-sm font-semibold"><Bell className="h-4 w-4 text-brand" />Уведомления</legend>
             <label className="flex items-center justify-between gap-4 text-sm font-semibold">Звуки сообщений
@@ -651,6 +450,8 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
             <p className="text-xs text-muted">Эти настройки применяются сразу на этом устройстве.</p>
           </fieldset>
 
+          </fieldset>
+
           {error && (
             <p className="rounded-xl border border-danger/20 bg-danger/10 px-4 py-3 text-sm text-danger" role="alert">
               {error}
@@ -659,7 +460,7 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
 
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={onClose}>Отмена</Button>
-            <Button type="submit" loading={saving} disabled={avatarBusy}>Сохранить</Button>
+            <Button type="submit" loading={saving} disabled={avatarBusy || frozen}>Сохранить</Button>
           </div>
         </form>
       </section>

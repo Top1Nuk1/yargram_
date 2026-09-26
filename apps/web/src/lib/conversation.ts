@@ -89,6 +89,9 @@ function participantUser(participant: Participant): User | null {
     // переноса значок Yargram и галочка пропадали бы в переписке.
     isVerified: participant.isVerified,
     badge: participant.badge,
+    // Отметка SCAM едет тем же путём: иначе в переписке у помеченного
+    // аккаунта пропадала бы рамка рядом с именем.
+    scam: participant.scam,
     // Заморозку тоже нужно перенести: иначе у замороженного собеседника
     // пропадала снежинка, хотя сервер её присылает.
     isFrozen: participant.isFrozen,
@@ -111,8 +114,7 @@ export function getConversationPeer(conversation: Conversation, currentUserId: s
 
 /**
  * Собеседник удалил аккаунт: история переписки остаётся, но поле ввода
- * закрывается — как в Telegram. Замороженный аккаунт writable: он просто
- * временно недоступен и всё прочитает после разморозки.
+ * закрывается — как в Telegram.
  */
 export function conversationPeerDeleted(
   conversation: Conversation | null | undefined,
@@ -120,6 +122,18 @@ export function conversationPeerDeleted(
 ): boolean {
   if (!conversation || conversation.type === 'saved') return false;
   return Boolean(getConversationPeer(conversation, currentUserId)?.isDeleted);
+}
+
+/**
+ * Собеседника заморозили: ему тоже нельзя писать, пока он не разморожен.
+ * История при этом читается в обе стороны — закрываем только ввод.
+ */
+export function conversationPeerFrozen(
+  conversation: Conversation | null | undefined,
+  currentUserId: string,
+): boolean {
+  if (!conversation || conversation.type === 'saved') return false;
+  return Boolean(getConversationPeer(conversation, currentUserId)?.isFrozen);
 }
 
 /**

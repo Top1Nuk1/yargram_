@@ -16,6 +16,13 @@ describe('удалённые и замороженные аккаунты', () =
     expect(isFrozenAccount({ id: 'a', displayName: REMOVED_ACCOUNT_NAME })).toBe(false);
   });
 
+  it('помечает снежинкой и самого замороженного, который видит своё имя', () => {
+    // Себе сервер отдаёт настоящий профиль, поэтому значок нельзя привязывать
+    // к имени заглушки — иначе замороженный не увидел бы пометку у себя.
+    expect(isFrozenAccount({ id: 'a', displayName: 'Алиса', isFrozen: true })).toBe(true);
+    expect(isFrozenAccount({ id: 'a', displayName: 'Алиса' })).toBe(false);
+  });
+
   it('отдаёт в аватар силуэт и seed из id аккаунта', () => {
     expect(avatarProps({ id: 'a', displayName: REMOVED_ACCOUNT_NAME })).toEqual({
       seed: 'a',

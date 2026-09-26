@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { Eye, EyeOff, LockKeyhole, Mail, Moon, Sun, UserRound } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, LockKeyhole, Mail, Moon, Sun, UserRound } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import { Logo } from '../../components/Logo';
 import { Button, IconButton } from '../../components/ui';
@@ -10,6 +10,8 @@ interface AuthScreenProps {
   theme: ThemeMode;
   onToggleTheme: () => void;
   notice?: string;
+  /** Показать «вернуться»: экран открыт для добавления второго аккаунта. */
+  onCancel?: () => void;
 }
 
 type AuthMode = 'login' | 'register';
@@ -22,7 +24,7 @@ function inputClass(hasError = false) {
   }`;
 }
 
-export function AuthScreen({ onAuthenticated, theme, onToggleTheme, notice }: AuthScreenProps) {
+export function AuthScreen({ onAuthenticated, theme, onToggleTheme, notice, onCancel }: AuthScreenProps) {
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -88,6 +90,16 @@ export function AuthScreen({ onAuthenticated, theme, onToggleTheme, notice }: Au
 
       <div className="mx-auto grid min-h-[100dvh] max-w-[460px] items-center px-4 py-20">
         <section className="w-full animate-slide-up rounded-xl border border-line bg-surface p-6 sm:p-8" aria-label="Вход в Yargram">
+          {onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="mb-5 inline-flex items-center gap-2 text-sm font-semibold text-muted transition hover:text-ink"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+              Вернуться в Yargram
+            </button>
+          )}
           <div className="mb-7 flex justify-center">
             <Logo />
           </div>

@@ -1,5 +1,6 @@
 import {
   Bookmark,
+  Check,
   ChevronDown,
   CircleHelp,
   LogOut,
@@ -8,6 +9,7 @@ import {
   Plus,
   Settings,
   ShieldBan,
+  ShieldCheck,
   Star,
   UserPlus,
   UsersRound,
@@ -16,6 +18,8 @@ import {
 import { useEffect, type ReactNode } from 'react';
 import { Avatar } from '../../components/ui';
 import { UserName } from '../../components/UserName';
+import { accountSubtitle, type StoredAccount } from '../../lib/accounts';
+import { avatarProps } from '../../lib/user';
 import type { User } from '../../types';
 
 export type SidebarAction =
@@ -27,15 +31,21 @@ export type SidebarAction =
   | 'favorites'
   | 'favorites-notes'
   | 'settings'
+  | 'admin'
   | 'toggle-theme'
   | 'logout';
 
 interface SidebarProps {
   currentUser: User;
-  /** Показывать ли «Добавить аккаунт» (мультиаккаунт пока в планах). */
-  showAddAccount?: boolean;
+  /** Аккаунты, сохранённые на этом устройстве. */
+  accounts: StoredAccount[];
+  /** Токен активного аккаунта — по нему отмечаем галочкой. */
+  activeToken: string;
   theme: 'light' | 'dark';
   onAction: (action: SidebarAction) => void;
+  onSwitchAccount: (token: string) => void;
+  onAddAccount: () => void;
+  onRemoveAccount: (token: string) => void;
   onClose: () => void;
 }
 
@@ -43,7 +53,17 @@ interface SidebarProps {
  * Левая панель в стиле Telegram Desktop: шапка с аватаром и быстрыми ссылками,
  * переключатель аккаунтов, список пунктов меню, ночной режим и подвал с версией.
  */
-export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction, onClose }: SidebarProps) {
+export function AppSidebar({
+  currentUser,
+  accounts,
+  activeToken,
+  theme,
+  onAction,
+  onSwitchAccount,
+  onAddAccount,
+  onRemoveAccount,
+  onClose,
+}: SidebarProps) {
   // Esc закрывает панель — так же, как и в остальных модалках.
   useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
@@ -67,7 +87,13 @@ export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction
         {/* Шапка: аватар, имя, статус и переключатель аккаунтов */}
         <header className="px-5 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
           <div className="flex items-center gap-3">
-            <Avatar name={currentUser.displayName} src={currentUser.avatarUrl ?? currentUser.avatar?.url} size="lg" online={online} />
+            <Avatar
+              name={currentUser.displayName}
+              src={currentUser.avatarUrl ?? currentUser.avatar?.url}
+              size="lg"
+              online={online}
+              {...avatarProps(currentUser, currentUser.displayName)}
+            />
             <div className="min-w-0 flex-1">
               <p className="truncate text-base font-bold text-ink">
                 <UserName name={currentUser.displayName} user={currentUser} />
@@ -88,46 +114,68 @@ export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction
           </div>
         </header>
 
-        {/* Аккаунты: текущий + «Добавить аккаунт» (заглушка). */}
-        <ul className="mx-5 mt-1 overflow-hidden rounded-xl bg-canvas">
+        {/* Аккаунты: список сохранённых на устройстве + «Добавить аккаунт». */}
+        <ul className="mx-5 mt-1 space-y-1">
+          {accounts.map((account) => {
+            const isActive = account.token === activeToken;
+            const accountOnline = account.user.isOnline ?? account.user.online;
+            return (
+              <li key={account.token} className="relative">
+                <button
+                  type="button"
+                  aria-current={isActive}
+                  onClick={() => (isActive ? onAction('profile') : onSwitchAccount(account.token))}
+                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${
+                    accounts.length > 1 ? 'pr-11' : ''
+                  } ${isActive ? 'bg-brand-soft/70' : 'bg-canvas hover:bg-brand-soft/35'}`}
+                >
+                  <Avatar
+                    name={account.user.displayName}
+                    src={account.user.avatarUrl ?? account.user.avatar?.url}
+                    size="sm"
+                    online={accountOnline}
+                    {...avatarProps(account.user, account.user.displayName)}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-ink">
+                      <UserName name={account.user.displayName} user={account.user} />
+                    </p>
+                    <p className="truncate text-[11px] text-muted">
+                      {isActive
+                        ? accountOnline
+                          ? 'в сети'
+                          : 'не в сети'
+                        : accountSubtitle(account)}
+                    </p>
+                  </div>
+                  {isActive && <Check className="h-4 w-4 shrink-0 text-brand" aria-label="Активный аккаунт" />}
+                </button>
+                {accounts.length > 1 && (
+                  <button
+                    type="button"
+                    aria-label={`Выйти из аккаунта ${account.user.displayName}`}
+                    title="Выйти из аккаунта"
+                    onClick={() => onRemoveAccount(account.token)}
+                    className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-muted transition hover:bg-danger/10 hover:text-danger"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </li>
+            );
+          })}
           <li>
             <button
               type="button"
-              onClick={() => onAction('profile')}
-              className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-brand-soft/35"
+              onClick={onAddAccount}
+              className="flex w-full items-center gap-3 rounded-xl bg-canvas px-3 py-2.5 text-left transition hover:bg-brand-soft/35"
             >
-              <Avatar
-                name={currentUser.displayName}
-                src={currentUser.avatarUrl ?? currentUser.avatar?.url}
-                size="sm"
-                online={online}
-              />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-ink">
-                  <UserName name={currentUser.displayName} user={currentUser} />
-                </p>
-                <p className="truncate text-[11px] text-muted">{online ? 'в сети' : 'не в сети'}</p>
-              </div>
-              <span className="rounded-full bg-brand/15 px-1.5 py-0.5 text-[10px] font-bold text-brand" aria-hidden="true">
-                1 TG
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-soft text-brand">
+                <Plus className="h-4 w-4" />
               </span>
+              <span className="text-sm font-semibold text-ink">Добавить аккаунт</span>
             </button>
           </li>
-          {showAddAccount && (
-            <li className="border-t border-line/60">
-              <button
-                type="button"
-                disabled
-                title="Скоро: несколько аккаунтов на одном устройстве"
-                className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-muted transition disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-soft text-brand">
-                  <Plus className="h-4 w-4" />
-                </span>
-                <span className="text-sm font-semibold">Добавить аккаунт</span>
-              </button>
-            </li>
-          )}
         </ul>
 
         {/* Главное меню — иконки и ярлыки как в ТГ. */}
@@ -140,6 +188,13 @@ export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction
           <MenuRow icon={<Bookmark className="h-5 w-5" />} label="Избранное" onClick={() => onAction('favorites')} />
           <MenuRow icon={<Star className="h-5 w-5" />} label="Заметки" onClick={() => onAction('favorites-notes')} />
           <MenuRow icon={<Settings className="h-5 w-5" />} label="Настройки" onClick={() => onAction('settings')} />
+
+          {/* Админ-панель — только владельцу: администрирование чужих аккаунтов
+              стоит рядом с настройками, но это не личные настройки, поэтому
+              отдельным пунктом, а не вкладкой внутри. */}
+          {currentUser.isOwner && (
+            <MenuRow icon={<ShieldCheck className="h-5 w-5" />} label="Админ-панель" onClick={() => onAction('admin')} />
+          )}
 
           {/* Ночной режим — переключатель темы. */}
           <button
@@ -174,8 +229,9 @@ export function AppSidebar({ currentUser, showAddAccount = true, theme, onAction
 
         {/* Подвал с версией сборки — как в Telegram Desktop. */}
         <footer className="border-t border-line/70 px-5 py-3 text-[12px] leading-5 text-muted">
-          <p className="font-semibold text-ink">Yargram Desktop</p>
-          <p>Версия 0.1.0 x64</p>
+          <p className="font-semibold text-ink">Yargram Web</p>
+          {/* ЗБТ — закрытое бета-тестирование: сокращение, расшифровка в подсказке. */}
+          <p title="Закрытое бета-тестирование">Версия 0.1.0 ЗБТ</p>
           <button type="button" className="mt-0.5 font-semibold text-brand transition hover:text-brand-strong">
             О программе
           </button>

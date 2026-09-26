@@ -12,11 +12,22 @@ vi.mock('./api/client', async (importOriginal) => {
 vi.mock('./hooks/useTheme', () => ({ useTheme: () => ({ theme: 'light', toggleTheme: vi.fn() }) }));
 vi.mock('./features/auth/AuthScreen', () => ({ AuthScreen: () => <div>Sign in</div> }));
 vi.mock('./features/messenger/MessengerScreen', () => ({ MessengerScreen: () => <div>Messenger</div> }));
+vi.mock('./features/onboarding/OnboardingScreen', () => ({
+  OnboardingScreen: ({ onDone }: { onDone: () => void }) => (
+    <div>
+      Onboarding
+      <button type="button" onClick={onDone}>Начать</button>
+    </div>
+  ),
+}));
 
 const tokenKey = 'yargram.accessToken';
+const onboardingKey = 'yargram.onboardingDone';
 
 beforeEach(() => {
   localStorage.setItem(tokenKey, 'saved-token');
+  // Возвращающийся посетитель: знакомство уже показано.
+  localStorage.setItem(onboardingKey, '1');
   vi.mocked(api.me).mockReset();
 });
 afterEach(() => {
@@ -60,5 +71,27 @@ describe('session restoration', () => {
     resolveCurrent({ id: 'user-1' } as User);
     expect(await screen.findByText('Messenger')).toBeInTheDocument();
     expect(localStorage.getItem(tokenKey)).toBe('saved-token');
+  });
+});
+
+describe('first visit', () => {
+  it('shows the onboarding once and then the sign-in screen', async () => {
+    localStorage.removeItem(tokenKey);
+    localStorage.removeItem(onboardingKey);
+    render(<App />);
+
+    expect(await screen.findByText('Onboarding')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Начать' }));
+
+    expect(await screen.findByText('Sign in')).toBeInTheDocument();
+    expect(localStorage.getItem(onboardingKey)).toBe('1');
+    expect(api.me).not.toHaveBeenCalled();
+  });
+
+  it('skips the onboarding for a returning visitor', async () => {
+    localStorage.removeItem(tokenKey);
+    render(<App />);
+
+    expect(await screen.findByText('Sign in')).toBeInTheDocument();
   });
 });

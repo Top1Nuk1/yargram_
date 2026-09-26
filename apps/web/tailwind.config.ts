@@ -19,6 +19,8 @@ export default {
         },
         success: 'rgb(var(--success) / <alpha-value>)',
         danger: 'rgb(var(--danger) / <alpha-value>)',
+        /** Янтарный: предупреждение о мошенничестве на карточке SCAM. */
+        warning: 'rgb(var(--warning) / <alpha-value>)',
         /** Фиолетовый акцент: тег владельца группы. */
         owner: 'rgb(var(--accent) / <alpha-value>)',
       },

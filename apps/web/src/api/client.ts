@@ -686,6 +686,16 @@ export const api = {
   },
 
   /**
+   * Отметка SCAM — только владелец. Пока она стоит, рядом с именем горит
+   * красная рамка, а описание заменяется предупреждением о мошенничестве.
+   */
+  adminSetScam(token: string, userId: string, scam: boolean) {
+    return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/scam`, {
+      method: 'POST', token, body: { scam },
+    }).then((result) => ('user' in result ? result.user : result));
+  },
+
+  /**
    * Удаление аккаунта — только владелец. История переписки остаётся у
    * собеседников, сам аккаунт помечается удалённым (почта остаётся занятой).
    */

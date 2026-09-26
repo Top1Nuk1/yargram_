@@ -12,9 +12,14 @@ export function isRemovedAccount(user: AccountLike, fallbackName?: string): bool
   return (user?.displayName ?? fallbackName) === REMOVED_ACCOUNT_NAME;
 }
 
-/** Замороженный аккаунт: тот же текст, но со снежинкой слева. */
-export function isFrozenAccount(user: AccountLike, fallbackName?: string): boolean {
-  return Boolean(user?.isFrozen) && isRemovedAccount(user, fallbackName);
+/**
+ * Замороженный аккаунт помечается снежинкой. Проверяем только флаг, а не имя:
+ * у себя в профиле замороженный видит настоящее имя, аватар и описание —
+ * снежинка ему нужна как пометка, а собеседникам сервер и так отдаёт заглушку
+ * «Удалённый аккаунт» с тем же флагом.
+ */
+export function isFrozenAccount(user: AccountLike): boolean {
+  return Boolean(user?.isFrozen);
 }
 
 /**

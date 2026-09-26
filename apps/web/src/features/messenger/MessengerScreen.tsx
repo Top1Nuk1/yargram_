@@ -28,6 +28,7 @@ import {
   Search,
   SendHorizontal,
   Smile,
+  Snowflake,
   Star,
   StarOff,
   Sun,
@@ -62,6 +63,7 @@ import {
   applyAccountState,
   conversationAvatar,
   conversationPeerDeleted,
+  conversationPeerFrozen,
   conversationTimestamp,
   conversationTitle,
   getConversationPeer,
@@ -85,8 +87,9 @@ import {
   viewerCan,
 } from '../../lib/group';
 import { buildMessageGroups, groupAt, groupSpacing } from '../../lib/messageGroups';
-import { updateUserPresence, type PresencePayload } from '../../lib/presence';
+import { updateUserPresence, mergeUserProfile, type PresencePayload } from '../../lib/presence';
 import { avatarProps } from '../../lib/user';
+import type { StoredAccount } from '../../lib/accounts';
 import {
   showBrowserNotification,
 } from '../../lib/notifications';
@@ -102,6 +105,7 @@ import { MemberTag } from '../groups/MemberTag';
 import { ProfileModal } from '../profile/ProfileModal';
 import { UserProfileSheet } from '../profile/UserProfileSheet';
 import { AppSidebar, type SidebarAction } from '../sidebar/AppSidebar';
+import { AdminPanel } from '../admin/AdminPanel';
 import { AttachmentDraftTray, ImageViewer, MessageAttachments, type DraftAttachment } from './AttachmentUi';
 import {
   EmojiPicker,
@@ -134,6 +138,11 @@ interface MessengerScreenProps {
   onToggleTheme: () => void;
   onLogout: (sessionExpired?: boolean) => void;
   onUserUpdated: (user: User) => void;
+  /** Аккаунты, сохранённые на этом устройстве, для переключателя в боковой панели. */
+  accounts: StoredAccount[];
+  onSwitchAccount: (token: string) => void;
+  onAddAccount: () => void;
+  onRemoveAccount: (token: string) => void;
 }
 
 type LoadingState = 'loading' | 'ready' | 'error';
@@ -263,6 +272,10 @@ export function MessengerScreen({
   onToggleTheme,
   onLogout,
   onUserUpdated,
+  accounts,
+  onSwitchAccount,
+  onAddAccount,
+  onRemoveAccount,
 }: MessengerScreenProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationState, setConversationState] = useState<LoadingState>('loading');
@@ -297,6 +310,8 @@ export function MessengerScreen({
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
   const [profileOpen, setProfileOpen] = useState(false);
+  /** Админ-панель владельца: отдельное окно, не вкладка в настройках. */
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false);
   const [ownProfileOpen, setOwnProfileOpen] = useState(false);
   const [peerProfileOpen, setPeerProfileOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
@@ -353,6 +368,12 @@ export function MessengerScreen({
   const voiceActiveRef = useRef(false);
   const selectedIdRef = useRef<string | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
+  // Эффект сокета зависит только от `currentUser.id`, поэтому свежий профиль
+  // (например, только что появившийся флаг заморозки) берём из ссылки.
+  const currentUserRef = useRef(currentUser);
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -395,7 +416,13 @@ export function MessengerScreen({
   // Удалённый аккаунт не принимает сообщения: история переписки остаётся,
   // а поле ввода прячем — как в Telegram. Заморозка отправку не закрывает.
   const selectedPeerDeleted = conversationPeerDeleted(selectedConversation, currentUser.id);
-  const selectedUnavailable = selectedBlockedByMe || selectedPeerDeleted;
+  // Замороженному собеседнику тоже не пишем: сервер отвечает 403, поэтому поле
+  // ввода закрываем сразу, как и для удалённого.
+  const selectedPeerFrozen = conversationPeerFrozen(selectedConversation, currentUser.id);
+  // Замороженный аккаунт — только читатель: историю видит, но поле ввода закрыто
+  // в любом чате, включая группы и «Избранное».
+  const viewerFrozen = Boolean(currentUser.isFrozen);
+  const selectedUnavailable = selectedBlockedByMe || selectedPeerDeleted || selectedPeerFrozen;
   const peerTyping = Boolean(selectedPeer && typingUserIds.has(selectedPeer.id));
   // Группа: своя шапка, свои запреты на отправку — права важнее блокировок.
   const selectedIsGroup = isGroup(selectedConversation);
@@ -403,7 +430,7 @@ export function MessengerScreen({
   const canSendMedia = !selectedIsGroup || viewerCan(selectedConversation, 'send_media');
   const canSendLinks = !selectedIsGroup || viewerCan(selectedConversation, 'send_links');
   const canSendPolls = !selectedIsGroup || viewerCan(selectedConversation, 'send_polls');
-  const composeBlocked = selectedUnavailable || !canWriteInGroup;
+  const composeBlocked = selectedUnavailable || !canWriteInGroup || viewerFrozen;
   // Мьют со сроком: вместо общей фразы пишем, до какого времени писать нельзя.
   const muteDeadline = selectedIsGroup
     ? mutedUntilText(selectedConversation?.mutedMembers?.[currentUser.id])
@@ -614,9 +641,10 @@ export function MessengerScreen({
     realtimeSocket.on('connect_error', (error) => {
       if (!active) return;
       setSocketState('disconnected');
-      // «frozen» и «no longer exists» — аккаунт заморозили или удалили прямо
-      // во время сессии: сервер уже разорвал сокет, выходим и мы.
-      if (/token|auth|jwt|unauthorized|frozen|deleted|no longer exists/i.test(error.message)) onLogout(true);
+      // «no longer exists» — аккаунт удалили прямо во время сессии: сервер уже
+      // разорвал сокет, выходим и мы. Заморозку сюда не пишем: замороженный
+      // должен остаться внутри и читать историю.
+      if (/token|auth|jwt|unauthorized|deleted|no longer exists/i.test(error.message)) onLogout(true);
     });
     realtimeSocket.on('message:new', (message: Message) => {
       if (!active || !message?.id || !message.conversationId) return;
@@ -785,6 +813,12 @@ export function MessengerScreen({
     });
     realtimeSocket.on('profile:updated', (user: User) => {
       if (!active || !user?.id) return;
+      // Про меня самого: владелец мог выдать или снять отметку SCAM, и тогда
+      // описание подменяется или возвращается. Без этого шага человек увидел бы
+      // новое описание только после перезагрузки.
+      if (user.id === currentUser.id) {
+        onUserUpdated(mergeUserProfile(currentUserRef.current, user));
+      }
       setMessages((current) =>
         current.map((message) => updateMessageProfile(message, user) as Message),
       );
@@ -794,9 +828,16 @@ export function MessengerScreen({
     });
     realtimeSocket.on('account:state', (payload: AccountStatePayload) => {
       if (!active || !payload?.userId) return;
-      // Заморозили или удалили меня — сессия больше недействительна.
+      // Про меня самого: удалили — сессия недействительна, выходим. Заморозили —
+      // остаёмся внутри в режиме чтения и просто помечаем себя снежинкой.
       if (payload.userId === currentUser.id) {
-        if (payload.frozen || payload.removed) onLogout(true);
+        if (payload.removed) {
+          onLogout(true);
+          return;
+        }
+        const me = currentUserRef.current;
+        if (payload.frozen && !me.isFrozen) onUserUpdated({ ...me, isFrozen: true });
+        else if (!payload.frozen && me.isFrozen) onUserUpdated({ ...me, isFrozen: false });
         return;
       }
       const result = applyAccountState(conversationsRef.current, messagesRef.current, payload);
@@ -825,7 +866,7 @@ export function MessengerScreen({
       setSocket((current) => (current === realtimeSocket ? null : current));
       realtimeSocket.disconnect();
     };
-  }, [currentUser.id, loadConversations, markRead, mergeReadReceipt, onLogout, token]);
+  }, [currentUser.id, loadConversations, markRead, mergeReadReceipt, onLogout, onUserUpdated, token]);
 
   const loadMessages = useCallback(
     async (conversationId: string, signal?: AbortSignal) => {
@@ -1073,6 +1114,9 @@ export function MessengerScreen({
         return;
       case 'settings':
         setProfileOpen(true);
+        return;
+      case 'admin':
+        setAdminPanelOpen(true);
         return;
       case 'toggle-theme':
         onToggleTheme();
@@ -1947,7 +1991,18 @@ export function MessengerScreen({
           </div>
         </div>
       )}
-      <div className="flex h-full w-full overflow-hidden bg-surface">
+      <div className="flex h-full w-full flex-col overflow-hidden bg-surface">
+        {viewerFrozen && (
+          <div
+            role="status"
+            className="flex shrink-0 items-center justify-center gap-2 border-b border-line bg-brand-soft px-4 py-2 text-center text-xs font-medium text-brand"
+          >
+            <Snowflake className="h-4 w-4 shrink-0" aria-hidden="true" />
+            Аккаунт заморожен — доступен только просмотр. Отправка сообщений, звонки и изменения
+            недоступны.
+          </div>
+        )}
+        <div className="flex min-h-0 w-full flex-1 overflow-hidden">
         <aside
           className={`${selectedId ? 'hidden md:flex' : 'flex'} chat-sidebar w-full shrink-0 flex-col border-line bg-surface md:w-[340px] md:border-r xl:w-[360px]`}
           aria-label="Список диалогов"
@@ -2255,7 +2310,7 @@ export function MessengerScreen({
                 {/* В группах звонков пока нет: они остаются личными, как в планах. */}
                 {selectedPeer && !selectedIsGroup && <><IconButton
                   label="Аудиозвонок"
-                  disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked}
+                  disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked || selectedPeerFrozen || viewerFrozen}
                   onClick={() =>
                     selectedPeer &&
                     void webRtc.startCall(selectedConversation.id, selectedPeer, 'audio')
@@ -2265,7 +2320,7 @@ export function MessengerScreen({
                 </IconButton>
                 <IconButton
                   label="Видеозвонок"
-                  disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked || selectedPeerDeleted}
+                  disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked || selectedPeerDeleted || selectedPeerFrozen || viewerFrozen}
                   onClick={() =>
                     selectedPeer &&
                     void webRtc.startCall(selectedConversation.id, selectedPeer, 'video')
@@ -2763,10 +2818,22 @@ export function MessengerScreen({
                 )}
                 {composeBlocked ? (
                   <p className="mx-auto flex max-w-[920px] items-center justify-center gap-2 rounded-[1.2rem] border border-line bg-canvas px-4 py-3 text-center text-xs text-muted">
-                    {selectedPeerDeleted ? (
+                    {viewerFrozen ? (
+                      <>
+                        <Snowflake className="h-4 w-4 shrink-0 text-brand" />
+                        Аккаунт заморожен — доступен только просмотр. Отправка сообщений, звонки
+                        и изменения недоступны.
+                      </>
+                    ) : selectedPeerDeleted ? (
                       <>
                         <UserRound className="h-4 w-4 shrink-0 text-muted" />
                         Аккаунт удалён — поле ввода закрыто. Сообщения из истории остаются доступными.
+                      </>
+                    ) : selectedPeerFrozen ? (
+                      <>
+                        <Snowflake className="h-4 w-4 shrink-0 text-brand" />
+                        Аккаунт собеседника заморожен — отправка недоступна. История переписки
+                        остаётся доступной.
                       </>
                     ) : (
                       <>
@@ -2926,6 +2993,7 @@ export function MessengerScreen({
             </>
           )}
         </section>
+        </div>
       </div>
 
       {searchOpen && (
@@ -2980,11 +3048,24 @@ export function MessengerScreen({
           onSaved={onUserUpdated}
         />
       )}
+      {adminPanelOpen && currentUser.isOwner && (
+        <AdminPanel
+          token={token}
+          viewer={currentUser}
+          onClose={() => setAdminPanelOpen(false)}
+          onChanged={() => void loadConversations()}
+        />
+      )}
       {sidebarOpen && (
         <AppSidebar
           currentUser={currentUser}
+          accounts={accounts}
+          activeToken={token}
           theme={theme}
           onAction={handleSidebarAction}
+          onSwitchAccount={onSwitchAccount}
+          onAddAccount={onAddAccount}
+          onRemoveAccount={onRemoveAccount}
           onClose={() => setSidebarOpen(false)}
         />
       )}
