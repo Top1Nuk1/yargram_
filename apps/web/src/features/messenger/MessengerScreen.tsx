@@ -590,7 +590,15 @@ export function MessengerScreen({
     async (conversationId: string) => {
       if (document.visibilityState !== 'visible') return;
       try {
-        mergeReadReceipt(await api.markRead(token, conversationId));
+        const receipt = await api.markRead(token, conversationId);
+        mergeReadReceipt(receipt);
+        // Прочитали беседу сами — на клиенте тоже гасим кружок, иначе он
+        // висит, пока не перезагрузишь страницу (сервер считает unread заново).
+        setConversations((current) =>
+          current.map((conversation) =>
+            conversation.id === conversationId ? { ...conversation, unreadCount: 0 } : conversation,
+          ),
+        );
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) onLogout(true);
       }
@@ -1007,6 +1015,8 @@ export function MessengerScreen({
     if (previousTyping && socket?.connected) socket.emit('typing:stop', { conversationId: previousTyping });
     typingConversationRef.current = null;
     setSelectedId(conversation.id);
+    // Открыли чат — сразу помечаем прочитанным, чтобы кружок не висел.
+    if (document.visibilityState === 'visible') void markRead(conversation.id);
   }
 
   async function openSavedConversation() {
@@ -1337,7 +1347,7 @@ export function MessengerScreen({
         uniqueConversations(
           current.map((conversation) =>
             conversation.id === conversationId
-              ? { ...conversation, lastMessage: message, updatedAt: message.createdAt }
+              ? { ...conversation, lastMessage: message, updatedAt: message.createdAt, unreadCount: 0 }
               : conversation,
           ),
         ),
