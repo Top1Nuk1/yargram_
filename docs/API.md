@@ -117,7 +117,7 @@ Authorization: Bearer <accessToken>
 | DELETE | `/api/conversations/:conversationId/messages/:messageId/favorite` | Убрать из Избранного |
 | GET | `/api/favorites` | Все избранные сообщения |
 
-Допустимые эмодзи реакций: 👍 ❤️ 😂 😎 🔥 😢 😮 (константа `allowedReactionEmojis`).
+Допустимые эмодзи реакций: 👍 ❤️ 😂 😎 🔥 😢 😮 🍓 🍷 (константа `allowedReactionEmojis`).
 
 ### Заметки, черновики, папки, отложенные сообщения
 

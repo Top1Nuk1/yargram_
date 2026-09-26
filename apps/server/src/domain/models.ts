@@ -1,6 +1,6 @@
 import { mediaUrlFor } from "../lib/media-links.js";
 
-export const allowedReactionEmojis = ["👍", "❤️", "😂", "😎", "🔥", "😢", "😮"] as const;
+export const allowedReactionEmojis = ["👍", "❤️", "😂", "😎", "🔥", "😢", "😮", "🍓", "🍷"] as const;
 
 export type ReactionEmoji = (typeof allowedReactionEmojis)[number];
 export type AttachmentKind = "image" | "file" | "avatar";

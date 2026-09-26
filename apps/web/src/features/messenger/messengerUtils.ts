@@ -1,6 +1,6 @@
 import type { Attachment, Conversation, Message } from '../../types';
 
-export const MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😎', '🔥', '😢', '😮'] as const;
+export const MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😎', '🔥', '😢', '😮', '🍓', '🍷'] as const;
 
 export const COMPOSER_EMOJIS = [
   '😀', '😃', '😄', '😁', '😂', '😊', '😍', '🥰', '😎', '🤔',
