@@ -9,7 +9,7 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
-    allowedHosts: ['26.236.251.44'],
+    allowedHosts: ['26.53.76.128'],
     proxy: {
       '/api': {
         target: backendTarget,
@@ -25,7 +25,7 @@ export default defineConfig({
   preview: {
     host: '0.0.0.0',
     port: 4173,
-    allowedHosts: ['26.236.251.44'],
+    allowedHosts: ['26.53.76.128'],
   },
   test: {
     environment: 'jsdom',

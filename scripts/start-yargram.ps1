@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 try { $Host.UI.RawUI.WindowTitle = "Yargram Server" } catch { }
 
 $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$ExpectedIp = "26.236.251.44"
+$ExpectedIp = "26.53.76.128"
 if (-not [string]::IsNullOrWhiteSpace($env:RADMIN_IP)) { $ExpectedIp = $env:RADMIN_IP }
 $ExpectedPort = 3000
 $ExpectedHttpsPort = 3443
@@ -192,6 +192,13 @@ if ($ForceInstall -or -not (Test-Path -LiteralPath $nodeModules -PathType Contai
     Invoke-Npm install --workspaces --include-workspace-root
 }
 
+# Прежняя версия держит порты и продолжает отвечать на /api/health. Если её не
+# погасить, новая сборка не займёт порт, а лаунчер увидит ответ старого сервера
+# и решит, что всё готово — приложение останется на прежнем коде, и новые
+# маршруты будут отвечать 404. Заодно освобождаем apps/web/dist: сборка его чистит.
+Write-Host "Останавливаем прежнюю версию..." -ForegroundColor Cyan
+& (Join-Path $PSScriptRoot "stop-yargram.ps1")
+
 if ($ForceBuild -or (Test-BuildRequired)) {
     Write-Host "Сборка web и server..." -ForegroundColor Cyan
     Invoke-Npm run build
@@ -210,8 +217,21 @@ if ($LASTEXITCODE -ne 0) {
     throw $hint
 }
 
-Write-Host "Подготовка доверенного HTTPS для звонков..." -ForegroundColor Cyan
-& (Join-Path $PSScriptRoot "setup-https.ps1")
+Write-Host "Подготовка HTTPS для звонков (необязательный шаг)..." -ForegroundColor Cyan
+# Запускаем отдельным процессом: если подготовка сертификата завершится
+# ошибкой или вызовом exit, сервер всё равно должен подняться по HTTP.
+$httpsScript = Join-Path $PSScriptRoot "setup-https.ps1"
+$httpsArguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$httpsScript`""
+$httpsProcess = Start-Process `
+    -FilePath "powershell.exe" `
+    -ArgumentList $httpsArguments `
+    -WorkingDirectory $ProjectRoot `
+    -NoNewWindow `
+    -Wait `
+    -PassThru
+if ($httpsProcess.ExitCode -ne 0) {
+    Write-Warning "HTTPS-сертификат подготовить не удалось (код $($httpsProcess.ExitCode)). Yargram продолжит работу по HTTP."
+}
 
 # setup-https.ps1 creates or refreshes TLS values after the web build, which
 # also guarantees that the public certificate archive is restored in dist.
@@ -219,16 +239,38 @@ Import-DotEnvFile -Path $EnvironmentFile
 $env:NODE_ENV = "production"
 $env:HOST = "0.0.0.0"
 $env:PORT = "$ExpectedPort"
-$env:HTTPS_PORT = "$ExpectedHttpsPort"
 $env:CORS_ORIGINS = "http://${ExpectedIp}:3000,https://${ExpectedIp}:${ExpectedHttpsPort},http://localhost:3000,https://localhost:${ExpectedHttpsPort},http://127.0.0.1:3000,https://127.0.0.1:${ExpectedHttpsPort},http://${ExpectedIp}:5173,http://localhost:5173,http://127.0.0.1:5173"
 
-if ([string]::IsNullOrWhiteSpace($env:TLS_PFX_PATH) -or
-    [string]::IsNullOrWhiteSpace($env:TLS_PFX_PASSWORD) -or
-    -not (Test-Path -LiteralPath $env:TLS_PFX_PATH -PathType Leaf)) {
-    throw "HTTPS-сертификат Yargram не подготовлен. Повторите запуск."
+# HTTPS нужен только для звонков. Если сертификат не готов, Yargram работает
+# по HTTP: переписка, файлы и фотографии доступны, звонки — нет.
+$httpsReady = $false
+if (-not [string]::IsNullOrWhiteSpace($env:TLS_PFX_PATH) -and
+    -not [string]::IsNullOrWhiteSpace($env:TLS_PFX_PASSWORD) -and
+    (Test-Path -LiteralPath $env:TLS_PFX_PATH -PathType Leaf)) {
+    # Повреждённый PFX или несовпадающий пароль уронили бы весь сервер целиком,
+    # вместе с HTTP. Поэтому сначала убеждаемся, что файл действительно открывается.
+    try {
+        $null = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Certificate2 `
+            -ArgumentList $env:TLS_PFX_PATH, $env:TLS_PFX_PASSWORD
+        $httpsReady = $true
+    }
+    catch {
+        Write-Warning "HTTPS-сертификат не читается: $($_.Exception.Message)"
+    }
+}
+if ($httpsReady) {
+    $env:HTTPS_PORT = "$ExpectedHttpsPort"
+}
+else {
+    Remove-Item Env:HTTPS_PORT -ErrorAction SilentlyContinue
+    Write-Warning "Yargram запустится без HTTPS. Другу доступна ссылка http://${ExpectedIp}:$ExpectedPort, звонки работать не будут."
 }
 
-foreach ($portToCheck in @($ExpectedPort, $ExpectedHttpsPort)) {
+$portsToCheck = @($ExpectedPort)
+if ($httpsReady) {
+    $portsToCheck += $ExpectedHttpsPort
+}
+foreach ($portToCheck in $portsToCheck) {
     $listener = Get-NetTCPConnection -State Listen -LocalPort $portToCheck -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -ne $listener) {
@@ -244,7 +286,12 @@ if ($firewallRules.Count -lt 2 -or @($firewallRules | Where-Object { $_.Enabled 
 }
 
 Write-Host "Yargram доступен в сети Radmin VPN:" -ForegroundColor Green
-Write-Host "  HTTPS (звонки): https://${ExpectedIp}:$ExpectedHttpsPort" -ForegroundColor Green
-Write-Host "  HTTP (резерв):  http://${ExpectedIp}:$ExpectedPort" -ForegroundColor DarkGray
+Write-Host "  HTTP (друг):    http://${ExpectedIp}:$ExpectedPort" -ForegroundColor Green
+if ($httpsReady) {
+    Write-Host "  HTTPS (звонки): https://${ExpectedIp}:$ExpectedHttpsPort" -ForegroundColor Green
+}
+else {
+    Write-Host "  HTTPS (звонки): недоступен — сертификат не подготовлен" -ForegroundColor DarkGray
+}
 Write-Host "Для остановки нажмите Ctrl+C." -ForegroundColor DarkGray
 Invoke-Npm run start --workspace "@yargram/server"

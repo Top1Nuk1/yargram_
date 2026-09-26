@@ -31,7 +31,7 @@ try {
     }
 }
 catch {
-    throw "Порты Yargram заняты, но процесс не подтвердил, что он является сервером Yargram. Чужой процесс не остановлен."
+    throw "Порты Yargram заняты, но процесс не подтвердил, что он является сервером Yargram. Чужой процесс не остановлен. Причина: $($_.Exception.Message)"
 }
 
 if ($health.service -ne "yargram-server") {
@@ -44,7 +44,14 @@ $processIds = @(
         Select-Object -ExpandProperty OwningProcess -Unique
 )
 foreach ($processId in $processIds) {
-    Stop-Process -Id $processId -Force -ErrorAction Stop
+    try {
+        Stop-Process -Id $processId -Force -ErrorAction Stop
+    }
+    catch {
+        # Процесс мог завершиться сам между проверкой порта и остановкой.
+        # Если порт действительно остался занят, это поймает проверка ниже.
+        Write-Warning "Процесс $processId не удалось остановить: $($_.Exception.Message)"
+    }
 }
 
 for ($attempt = 0; $attempt -lt 24; $attempt++) {

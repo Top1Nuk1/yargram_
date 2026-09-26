@@ -6,7 +6,7 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$expectedIp = "26.236.251.44"
+$expectedIp = "26.53.76.128"
 if ($env:RADMIN_IP) {
     $expectedIp = $env:RADMIN_IP
 }
@@ -35,8 +35,13 @@ foreach ($port in @($httpPort, $httpsPort)) {
     $listener = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $listener) {
-        Write-Host "[ОШИБКА] На порту $port нет сервера." -ForegroundColor Red
-        $problems.Add("Запустите файл 'Запустить Yargram.bat'.")
+        if ($port -eq $httpsPort) {
+            Write-Host "[НЕОБЯЗАТЕЛЬНО] На порту $port нет сервера — звонки будут недоступны." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "[ОШИБКА] На порту $port нет сервера." -ForegroundColor Red
+            $problems.Add("Запустите файл 'Запустить Yargram.bat'.")
+        }
     }
     else {
         Write-Host "[OK] Сервер слушает $($listener.LocalAddress):$port (PID $($listener.OwningProcess))." -ForegroundColor Green
@@ -52,8 +57,13 @@ foreach ($endpoint in @($httpUrl, $httpsUrl)) {
         Write-Host "[OK] API отвечает: $endpoint" -ForegroundColor Green
     }
     catch {
-        Write-Host "[ОШИБКА] API не отвечает: $endpoint" -ForegroundColor Red
-        $problems.Add("Перезапустите Yargram; для HTTPS повторный запуск также подготовит сертификат.")
+        if ($endpoint -eq $httpsUrl) {
+            Write-Host "[НЕОБЯЗАТЕЛЬНО] HTTPS не отвечает: $endpoint — звонки будут недоступны." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "[ОШИБКА] API не отвечает: $endpoint" -ForegroundColor Red
+            $problems.Add("Запустите файл 'Запустить Yargram.bat'.")
+        }
     }
 }
 
@@ -76,8 +86,9 @@ foreach ($requiredRule in $requiredRules) {
 
 Write-Host ""
 if ($problems.Count -eq 0) {
-    Write-Host "Yargram готов. Основная ссылка:" -ForegroundColor Green
-    Write-Host $httpsUrl -ForegroundColor Yellow
+    Write-Host "Yargram готов. Ссылка другу:" -ForegroundColor Green
+    Write-Host $httpUrl -ForegroundColor Yellow
+    Write-Host "Для звонков (если HTTPS отвечает): $httpsUrl" -ForegroundColor DarkGray
     exit 0
 }
 

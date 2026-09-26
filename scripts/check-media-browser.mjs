@@ -6,7 +6,7 @@ const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google
 try {
   const context = await browser.newContext({ ignoreHTTPSErrors: true, permissions: ['microphone', 'camera'] });
   const page = await context.newPage();
-  await page.goto(process.env.PREVIEW_URL || 'https://26.236.251.44:3443');
+  await page.goto(process.env.PREVIEW_URL || 'https://26.53.76.128:3443');
   const result = await page.evaluate(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const chunks = [];

@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $radminIp = $env:RADMIN_IP
 if ($null -eq $radminIp) {
-    $radminIp = "26.236.251.44"
+    $radminIp = "26.53.76.128"
 }
 $httpUrl = "http://${radminIp}:3000"
 $httpsUrl = "https://${radminIp}:3443"
@@ -66,7 +66,13 @@ try {
         }
     }
     if ($accessProcess.ExitCode -ne 0) {
-        throw "Не удалось подготовить доступ (код $($accessProcess.ExitCode)). Откройте scripts\open-firewall.ps1 от имени администратора и посмотрите ошибку."
+        # Без правил Windows Firewall друг не подключится, но локально Yargram
+        # работает. Поэтому не обрываем запуск, а громко предупреждаем.
+        Write-Host ""
+        Write-Host "ВНИМАНИЕ: шаг с правами администратора завершился с кодом $($accessProcess.ExitCode)." -ForegroundColor Yellow
+        Write-Host "Если выше нет строки о добавленном правиле — правил Windows Firewall нет," -ForegroundColor Yellow
+        Write-Host "и друг не сможет подключиться. Yargram всё равно попробует запуститься." -ForegroundColor Yellow
+        Write-Host ""
     }
 
     Write-Host "[2/3] Запускаем новую сборку в отдельном окне..." -ForegroundColor Cyan
@@ -77,41 +83,70 @@ try {
         -ArgumentList $serverArguments `
         -WorkingDirectory $projectRoot | Out-Null
 
-    Write-Host "[3/3] Ждём готовности HTTP и защищённого HTTPS..." -ForegroundColor Cyan
-    $ready = $false
+    Write-Host "[3/3] Ждём готовности сервера..." -ForegroundColor Cyan
+    # HTTP обязателен: именно по нему заходит друг. HTTPS необязателен — он
+    # нужен только для звонков и может не подняться, если нет сертификата.
+    $httpReady = $false
+    $httpsReady = $false
     for ($attempt = 0; $attempt -lt 240; $attempt++) {
-        try {
-            $httpHealth = Invoke-RestMethod -Uri "$httpUrl/api/health" -TimeoutSec 2
-            $httpsHealth = Invoke-RestMethod -Uri "$httpsUrl/api/health" -TimeoutSec 2
-            if ($httpHealth.status -eq "ok" -and
-                $httpsHealth.status -eq "ok" -and
-                $httpsHealth.service -eq "yargram-server") {
-                $page = Invoke-WebRequest -UseBasicParsing -Uri "$httpsUrl/" -TimeoutSec 3
-                $csp = [string]$page.Headers["Content-Security-Policy"]
-                if ($page.StatusCode -eq 200 -and $csp -notmatch "upgrade-insecure-requests") {
-                    $ready = $true
-                    break
+        if (-not $httpReady) {
+            try {
+                $httpHealth = Invoke-RestMethod -Uri "$httpUrl/api/health" -TimeoutSec 2
+                if ($httpHealth.status -eq "ok" -and $httpHealth.service -eq "yargram-server") {
+                    $httpReady = $true
                 }
             }
+            catch {
+                # Server installation and the first build can take a little while.
+            }
         }
-        catch {
-            # Server installation and the first build can take a little while.
+
+        if ($httpReady -and -not $httpsReady) {
+            try {
+                $httpsHealth = Invoke-RestMethod -Uri "$httpsUrl/api/health" -TimeoutSec 2
+                if ($httpsHealth.status -eq "ok" -and $httpsHealth.service -eq "yargram-server") {
+                    $page = Invoke-WebRequest -UseBasicParsing -Uri "$httpsUrl/" -TimeoutSec 3
+                    $csp = [string]$page.Headers["Content-Security-Policy"]
+                    if ($page.StatusCode -eq 200 -and $csp -notmatch "upgrade-insecure-requests") {
+                        $httpsReady = $true
+                    }
+                }
+            }
+            catch {
+                # HTTPS is optional: calls only.
+            }
         }
+
+        if ($httpReady -and ($httpsReady -or $attempt -ge 40)) {
+            break
+        }
+
         Start-Sleep -Milliseconds 500
     }
 
-    if (-not $ready) {
-        throw "Сервер не стал доступен по HTTPS. Посмотрите ошибку в отдельном окне 'Yargram Server'."
+    if (-not $httpReady) {
+        throw "Сервер не отвечает по адресу $httpUrl. Посмотрите ошибку в отдельном окне 'Yargram Server'."
     }
 
     Write-Host ""
     Write-Host "Yargram запущен успешно." -ForegroundColor Green
-    Write-Host "Ваша ссылка:  $httpsUrl" -ForegroundColor Yellow
-    Write-Host "Ссылка другу: $httpsUrl" -ForegroundColor Yellow
+    Write-Host "Ссылка другу: $httpUrl" -ForegroundColor Yellow
+    if ($httpsReady) {
+        Write-Host "Для звонков:  $httpsUrl" -ForegroundColor Green
+    }
+    else {
+        Write-Host "Звонки сейчас недоступны: HTTPS-сертификат не подготовлен." -ForegroundColor DarkGray
+        Write-Host "Переписка, файлы и фотографии работают по ссылке выше." -ForegroundColor DarkGray
+    }
 
     Write-Host ""
     Write-Host "Не закрывайте окно сервера, пока друг пользуется Yargram." -ForegroundColor Magenta
-    Start-Process $httpsUrl
+    if ($httpsReady) {
+        Start-Process $httpsUrl
+    }
+    else {
+        Start-Process $httpUrl
+    }
     Wait-ForEnter
 }
 catch {

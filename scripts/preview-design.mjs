@@ -8,7 +8,7 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 960 
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
-const url = process.env.PREVIEW_URL || 'https://26.236.251.44:3443';
+const url = process.env.PREVIEW_URL || 'https://26.53.76.128:3443';
 await mkdir('runtime/design-preview', { recursive: true });
 await page.goto(url);
 await page.getByRole('button', { name: 'Войти в Yargram', exact: true }).waitFor();

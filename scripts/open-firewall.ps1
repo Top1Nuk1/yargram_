@@ -6,7 +6,7 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$localAddress = "26.236.251.44"
+$localAddress = "26.53.76.128"
 if ($env:RADMIN_IP) {
     $localAddress = $env:RADMIN_IP
 }
@@ -20,6 +20,52 @@ if (-not $principal.IsInRole($administratorRole)) {
     throw "Запустите PowerShell от имени администратора и повторите команду."
 }
 
+function New-YargramFirewallRule {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$DisplayName,
+        [Parameter(Mandatory = $true)][int]$Port
+    )
+
+    New-NetFirewallRule `
+        -Name $Name `
+        -DisplayName $DisplayName `
+        -Description "Temporary Yargram access for peers connected through Radmin VPN." `
+        -Enabled True `
+        -Direction Inbound `
+        -Action Allow `
+        -Profile Any `
+        -Protocol TCP `
+        -LocalPort $Port `
+        -LocalAddress $localAddress `
+        -RemoteAddress $radminAddressRange | Out-Null
+}
+
+# Запасной путь на случай, когда cmdlet-ы Windows не сработали: netsh делает то
+# же самое и присутствует в любой Windows. Имя правила принадлежит Yargram,
+# поэтому удалить прежнее правило с этим именем безопасно.
+function Add-YargramFirewallRuleWithNetsh {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int]$Port
+    )
+
+    & netsh advfirewall firewall delete rule "name=$Name" | Out-Null
+    & netsh advfirewall firewall add rule `
+        "name=$Name" `
+        "dir=in" `
+        "action=allow" `
+        "protocol=TCP" `
+        "localport=$Port" `
+        "localip=$localAddress" `
+        "remoteip=$radminAddressRange" `
+        "profile=any" `
+        "enable=yes" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "netsh не смог создать правило TCP $Port (код $LASTEXITCODE)."
+    }
+}
+
 function Ensure-YargramFirewallRule {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -27,8 +73,14 @@ function Ensure-YargramFirewallRule {
         [Parameter(Mandatory = $true)][int]$Port
     )
 
-    $existingRule = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
-    if ($null -ne $existingRule) {
+    try {
+        $existingRule = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
+        if ($null -eq $existingRule) {
+            New-YargramFirewallRule -Name $Name -DisplayName $DisplayName -Port $Port
+            Write-Host "Добавлено правило: TCP $Port на $localAddress только для Radmin VPN ($radminAddressRange)." -ForegroundColor Green
+            return
+        }
+
         $portFilters = @($existingRule | Get-NetFirewallPortFilter)
         $addressFilters = @($existingRule | Get-NetFirewallAddressFilter)
         $isExpectedRule = $existingRule.Direction -eq "Inbound" -and
@@ -43,30 +95,26 @@ function Ensure-YargramFirewallRule {
                 }).Count -gt 0
 
         if (-not $isExpectedRule) {
-            throw "Правило '$Name' уже существует, но имеет другие параметры. Оно не было изменено."
+            # Адрес Radmin VPN периодически меняется, поэтому правило могло
+            # остаться от прежнего адреса. Пересоздаём его, а не отказываемся
+            # работать: имя правила принадлежит Yargram.
+            Write-Host "Правило '$Name' не подходит адресу $localAddress — пересоздаём." -ForegroundColor Yellow
+            Remove-NetFirewallRule -Name $Name
+            New-YargramFirewallRule -Name $Name -DisplayName $DisplayName -Port $Port
+            Write-Host "Правило обновлено: TCP $Port на $localAddress только для Radmin VPN." -ForegroundColor Green
+            return
         }
 
         if ($existingRule.Enabled -ne "True") {
             Enable-NetFirewallRule -Name $Name | Out-Null
         }
         Write-Host "[OK] Windows Firewall: TCP $Port только через Radmin VPN." -ForegroundColor Green
-        return
     }
-
-    New-NetFirewallRule `
-        -Name $Name `
-        -DisplayName $DisplayName `
-        -Description "Temporary Yargram access for peers connected through Radmin VPN." `
-        -Enabled True `
-        -Direction Inbound `
-        -Action Allow `
-        -Profile Any `
-        -Protocol TCP `
-        -LocalPort $Port `
-        -LocalAddress $localAddress `
-        -RemoteAddress $radminAddressRange | Out-Null
-
-    Write-Host "Добавлено правило: TCP $Port на $localAddress только для Radmin VPN ($radminAddressRange)." -ForegroundColor Green
+    catch {
+        Write-Warning "Не удалось настроить правило '$Name' средствами Windows: $($_.Exception.Message)"
+        Add-YargramFirewallRuleWithNetsh -Name $Name -Port $Port
+        Write-Host "Правило TCP $Port создано через netsh: $localAddress, Radmin VPN ($radminAddressRange)." -ForegroundColor Green
+    }
 }
 
 # Keep the original internal name for compatibility with the already-created

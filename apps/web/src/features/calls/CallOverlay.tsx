@@ -363,9 +363,11 @@ export function CallOverlay({
             <p className="font-bold">Звонок недоступен</p>
             <p className="mt-1 text-sm leading-6 text-muted">{error}</p>
             {!window.isSecureContext && (
-              <a className="mt-2 inline-block text-sm font-semibold text-brand underline" href="/Yargram-HTTPS-Setup.zip" download>
-                Скачать сертификат для HTTPS
-              </a>
+              <p className="mt-2 text-sm leading-6 text-muted">
+                Камера и микрофон работают только на защищённом соединении. Откройте адрес
+                <span className="font-semibold text-brand"> https://{window.location.hostname}:3443 </span>
+                — скачивать и устанавливать ничего не нужно.
+              </p>
             )}
           </div>
           <IconButton label="Закрыть" onClick={onDismissError}><X className="h-5 w-5" /></IconButton>

@@ -35,7 +35,7 @@ const environmentSchema = z
       .default(24 * 60 * 60),
     CORS_ORIGINS: z
       .string()
-      .default("http://26.236.251.44:5173,http://localhost:5173,http://127.0.0.1:5173"),
+      .default("http://26.53.76.128:5173,http://localhost:5173,http://127.0.0.1:5173"),
     DATA_DIR: z.string().min(1).default(resolve(serverRoot, "data")),
     DATABASE_DRIVER: z.enum(["json", "postgres"]).optional(),
     DATABASE_URL: z.preprocess(emptyStringToUndefined, z.string().url().optional()),

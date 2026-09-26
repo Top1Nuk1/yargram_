@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const playwrightPath = process.env.PLAYWRIGHT_MODULE || 'C:/Users/Top1Nuk1/AppData/Local/npm-cache/_npx/420ff84f11983ee5/node_modules/playwright/index.mjs';
 const { chromium } = await import(pathToFileURL(playwrightPath).href);
-const baseURL = process.env.PREVIEW_URL || 'https://26.236.251.44:3443';
+const baseURL = process.env.PREVIEW_URL || 'https://26.53.76.128:3443';
 const browser = await chromium.launch({
   executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true,
   args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],

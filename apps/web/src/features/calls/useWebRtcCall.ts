@@ -175,7 +175,7 @@ const MAX_CANDIDATES_PER_LINK = 64;
 const MEDIA_CHANNEL_NAME = 'yargram-call-state-v1';
 
 function secureContextError(): string {
-  return `Для камеры и микрофона откройте защищённую версию: https://${window.location.hostname}:3443. Если друг подключается впервые, установите сертификат из файла Yargram-HTTPS-Setup.zip.`;
+  return `Для камеры и микрофона откройте защищённую версию: https://${window.location.hostname}:3443. Скачивать ничего не нужно — просто добавьте адрес в браузере.`;
 }
 
 function mediaIsAvailable(): boolean {

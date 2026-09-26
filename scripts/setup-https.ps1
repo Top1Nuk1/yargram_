@@ -11,9 +11,7 @@ $EnvironmentFile = Join-Path $ProjectRoot ".env"
 $HttpsDirectory = Join-Path $ProjectRoot "runtime\https"
 $PfxPath = Join-Path $HttpsDirectory "yargram-server.pfx"
 $CaCertificatePath = Join-Path $HttpsDirectory "Yargram-Local-CA.cer"
-$WebDistDirectory = Join-Path $ProjectRoot "apps\web\dist"
-$SetupArchivePath = Join-Path $WebDistDirectory "Yargram-HTTPS-Setup.zip"
-$ServerIpAddress = "26.236.251.44"
+$ServerIpAddress = "26.53.76.128"
 if ($env:RADMIN_IP) {
     $ServerIpAddress = $env:RADMIN_IP
 }
@@ -22,7 +20,6 @@ $CaSubject = "CN=Yargram Local CA"
 $ServerSubject = "CN=$ServerIpAddress"
 
 $Utf8Bom = New-Object System.Text.UTF8Encoding($true)
-$Ascii = New-Object System.Text.ASCIIEncoding
 
 function New-RandomHex {
     param([ValidateRange(16, 256)][int]$ByteCount = 32)
@@ -367,178 +364,8 @@ function Ensure-CaCertificateTrusted {
     }
 }
 
-function Remove-SafeTemporaryDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        return
-    }
-
-    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
-    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
-    $requiredPrefix = $tempRoot + [System.IO.Path]::DirectorySeparatorChar
-    $leafName = [System.IO.Path]::GetFileName($fullPath)
-    if (-not $fullPath.StartsWith($requiredPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $leafName -notlike "YargramHttpsSetup-*") {
-        throw "Отказ от удаления небезопасного временного пути: $fullPath"
-    }
-
-    Remove-Item -LiteralPath $fullPath -Recurse -Force
-}
-
-function New-PublicSetupArchive {
-    $ca = New-X509CertificateFromFile -Path $CaCertificatePath
-    try {
-        $expectedThumbprint = $ca.Thumbprint.ToUpperInvariant()
-    }
-    finally {
-        $ca.Dispose()
-    }
-
-    if (-not (Test-Path -LiteralPath $WebDistDirectory -PathType Container)) {
-        New-Item -ItemType Directory -Path $WebDistDirectory -Force | Out-Null
-    }
-
-    $stagingDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("YargramHttpsSetup-" + [Guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $stagingDirectory | Out-Null
-    try {
-        $publicCertificateName = "Yargram-Local-CA.cer"
-        $installerBatchName = "Install-Yargram-Certificate.bat"
-        $installerScriptName = "Install-Yargram-Certificate.ps1"
-        $readmeName = "README-RU.txt"
-        $publicCertificateDestination = Join-Path $stagingDirectory $publicCertificateName
-        $installerBatchPath = Join-Path $stagingDirectory $installerBatchName
-        $installerScriptPath = Join-Path $stagingDirectory $installerScriptName
-        $readmePath = Join-Path $stagingDirectory $readmeName
-
-        Copy-Item -LiteralPath $CaCertificatePath -Destination $publicCertificateDestination
-
-        $installerScript = @'
-[CmdletBinding()]
-param()
-
-#Requires -Version 5.1
-
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-
-$CertificatePath = Join-Path $PSScriptRoot "Yargram-Local-CA.cer"
-$ExpectedThumbprint = "__EXPECTED_THUMBPRINT__"
-
-if (-not (Test-Path -LiteralPath $CertificatePath -PathType Leaf)) {
-    throw "Рядом с установщиком не найден файл Yargram-Local-CA.cer."
-}
-
-$certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 `
-    -ArgumentList (, $CertificatePath)
-$store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
-    "Root",
-    [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-)
-try {
-    if ($certificate.Thumbprint.ToUpperInvariant() -ne $ExpectedThumbprint) {
-        throw "Отпечаток сертификата не совпадает. Не устанавливайте файл: попросите владельца перезапустить Yargram и скачайте архив по ссылке заново."
-    }
-
-    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-    $existing = $store.Certificates.Find(
-        [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-        $ExpectedThumbprint,
-        $false
-    )
-    if ($existing.Count -eq 0) {
-        $store.Add($certificate)
-        Write-Host "Сертификат Yargram установлен для текущего пользователя." -ForegroundColor Green
-    }
-    else {
-        Write-Host "Сертификат Yargram уже установлен для текущего пользователя." -ForegroundColor Green
-    }
-
-    Write-Host "Теперь откройте https://${ServerIpAddress}:${HttpsPort}" -ForegroundColor Cyan
-}
-finally {
-    $store.Close()
-    $certificate.Dispose()
-}
-'@
-        $installerScript = $installerScript.Replace("__EXPECTED_THUMBPRINT__", $expectedThumbprint)
-        [System.IO.File]::WriteAllText($installerScriptPath, $installerScript, $Utf8Bom)
-
-        $installerBatch = @'
-@echo off
-setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Yargram-Certificate.ps1"
-if errorlevel 1 (
-  echo Certificate installation failed.
-) else (
-  echo Certificate installation completed.
-)
-pause
-'@
-        [System.IO.File]::WriteAllText($installerBatchPath, $installerBatch, $Ascii)
-
-        $readme = @"
-Yargram: установка сертификата HTTPS
-
-Этот архив нужен для безопасного доступа к звонкам Yargram через Radmin VPN.
-Устанавливайте сертификат только по ссылке сервера, адрес которой подтвердил владелец Yargram.
-
-1. Распакуйте архив в отдельную папку.
-2. Подключитесь к той же сети Radmin VPN, что и владелец сервера.
-3. Запустите Install-Yargram-Certificate.bat обычным двойным щелчком.
-4. Согласитесь с предупреждением Windows об установке доверенного сертификата, если оно появится.
-5. Полностью закройте и снова откройте браузер.
-6. Откройте https://${ServerIpAddress}:${HttpsPort}
-
-Сертификат устанавливается только для текущего пользователя Windows.
-В архиве нет закрытого ключа сервера: только публичный сертификат и установщик.
-Обычный вход без звонков остаётся доступен по адресу http://${ServerIpAddress}:3000
-"@
-        [System.IO.File]::WriteAllText($readmePath, $readme, $Utf8Bom)
-
-        if (Test-Path -LiteralPath $SetupArchivePath -PathType Leaf) {
-            Remove-Item -LiteralPath $SetupArchivePath -Force
-        }
-        Compress-Archive `
-            -LiteralPath @(
-                $publicCertificateDestination,
-                $installerBatchPath,
-                $installerScriptPath,
-                $readmePath
-            ) `
-            -DestinationPath $SetupArchivePath `
-            -CompressionLevel Optimal
-
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        $archive = [System.IO.Compression.ZipFile]::OpenRead($SetupArchivePath)
-        try {
-            $actualEntries = @($archive.Entries | ForEach-Object { $_.FullName })
-            $expectedEntries = @(
-                $publicCertificateName,
-                $installerBatchName,
-                $installerScriptName,
-                $readmeName
-            )
-            $unexpectedEntries = @($actualEntries | Where-Object { $expectedEntries -notcontains $_ })
-            $missingEntries = @($expectedEntries | Where-Object { $actualEntries -notcontains $_ })
-            $privateEntries = @($actualEntries | Where-Object {
-                    $_ -match '(?i)\.(pfx|p12|key|pem)$'
-                })
-            if ($actualEntries.Count -ne $expectedEntries.Count -or
-                $unexpectedEntries.Count -gt 0 -or
-                $missingEntries.Count -gt 0 -or
-                $privateEntries.Count -gt 0) {
-                throw "Публичный HTTPS-архив содержит неверный набор файлов."
-            }
-        }
-        finally {
-            $archive.Dispose()
-        }
-    }
-    finally {
-        Remove-SafeTemporaryDirectory -Path $stagingDirectory
-    }
-}
+# Публичный архив сертификата для друга больше не создаётся: друг заходит по
+# обычной HTTP-ссылке и ничего не скачивает и не устанавливает.
 
 Write-Host "Yargram: подготовка локального HTTPS..." -ForegroundColor Cyan
 
@@ -559,9 +386,7 @@ else {
 Set-TlsDotEnvValues -Path $EnvironmentFile -Password $pfxPassword
 Ensure-CaCertificateTrusted
 Remove-ExportedCertificatesFromPersonalStore -Password $pfxPassword
-New-PublicSetupArchive
 
 Write-Host "Локальный сертификат доверен для текущего пользователя Windows." -ForegroundColor Green
-Write-Host "HTTPS: https://${ServerIpAddress}:${HttpsPort}" -ForegroundColor Green
-Write-Host "Архив для друга: $SetupArchivePath" -ForegroundColor Green
-Write-Host "После каждой новой сборки запускайте этот скрипт снова: сборка очищает apps\web\dist." -ForegroundColor Yellow
+Write-Host "HTTPS для звонков: https://${ServerIpAddress}:${HttpsPort}" -ForegroundColor Green
+Write-Host "Ссылка другу: http://${ServerIpAddress}:3000 (сертификат не нужен)." -ForegroundColor Green
