@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../../api/client';
+import { ScamWarning } from '../../components/ScamWarning';
 import { Avatar, Button } from '../../components/ui';
 import { UserName } from '../../components/UserName';
 import type { MediaSummary, ReportReason, User } from '../../types';
@@ -422,9 +423,11 @@ export function UserProfileSheet({
             <div className="px-5 pt-3">
               <div className="flex gap-2 text-left">
                 <AlertTriangle className="mt-[3px] h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
-                <p className="whitespace-pre-wrap text-sm leading-6 text-ink">
-                  {scamWarningText}
-                </p>
+                {/* Текст выдан владельцем Yargram: выделить и скопировать его нельзя. */}
+                <ScamWarning
+                  text={scamWarningText}
+                  className="whitespace-pre-wrap text-sm leading-6 text-ink"
+                />
               </div>
               <p className="mt-1 text-xs text-muted">О себе</p>
             </div>

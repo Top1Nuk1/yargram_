@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { AtSign, Bell, Camera, FileText, Image, Palette, ShieldCheck, Snowflake, Trash2, UserRound, X } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
+import { scamGuard } from '../../components/ScamWarning';
 import { Avatar, Button, IconButton } from '../../components/ui';
 import { UserName } from '../../components/UserName';
 import { AdditionalHandles } from '../../components/AdditionalHandles';
@@ -329,12 +330,14 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
               <FileText className="absolute left-4 top-3.5 h-5 w-5 text-muted" />
               <textarea
                 id="profile-bio"
-                className={`${fieldClass} h-28 resize-none py-3 disabled:cursor-not-allowed disabled:opacity-70`}
+                className={`${fieldClass} h-28 resize-none py-3 disabled:cursor-not-allowed disabled:opacity-70 ${profileUser.scam ? 'select-none' : ''}`}
                 value={bio}
                 onChange={(event) => setBio(event.target.value)}
                 placeholder="Пара слов о себе"
                 maxLength={280}
                 disabled={profileUser.scam}
+                /* Текст предупреждения выдан владельцем Yargram — не выделяется и не копируется. */
+                {...(profileUser.scam ? scamGuard : {})}
               />
             </div>
             {profileUser.scam && (

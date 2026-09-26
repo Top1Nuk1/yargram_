@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '../../api/client';
+import { ScamWarning } from '../../components/ScamWarning';
 import { Avatar, Button, IconButton, InlineError, Spinner } from '../../components/ui';
 import { UserName } from '../../components/UserName';
 import { AdditionalHandles } from '../../components/AdditionalHandles';
@@ -270,7 +271,15 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
         />
         <p className={`mt-1 text-xs ${presenceTextClass(profile)}`}>{formatLastSeen(profile)}</p>
       </div>
-      {profile.bio && <p className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink">{profile.bio}</p>}
+      {/* Описание помеченного SCAM — предупреждение владельца Yargram, копировать нельзя. */}
+      {profile.scam ? (
+        <ScamWarning
+          text={profile.bio ?? ''}
+          className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink"
+        />
+      ) : (
+        profile.bio && <p className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink">{profile.bio}</p>
+      )}
       <dl className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-line p-3 text-xs">
         <div><dt className="text-muted">Статус</dt><dd className="mt-0.5 font-bold text-ink">{profile.isOnline ?? profile.online ? 'В сети' : 'Не в сети'}</dd></div>
         <div><dt className="text-muted">В Yargram с</dt><dd className="mt-0.5 font-bold text-ink">{profile.createdAt ? new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(profile.createdAt)) : 'Дата неизвестна'}</dd></div>
