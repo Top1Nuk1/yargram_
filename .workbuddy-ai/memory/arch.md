@@ -145,3 +145,16 @@ Monorepo npm workspaces: `apps/web` (React 19 + Vite 7 + Tailwind 3 + socket.io-
   пакет, который нужен **запущенному** приложению, никогда не бывает dev-зависимостью, даже если
   «используется только локально». Проверка: `node -e "console.log(require('./package-lock.json')
   .packages['apps/server'].dependencies['embedded-postgres'])"`.
+- 🔥 **`new Pool()` без обработчика `'error'` роняет процесс** (найдено 04.10.2026 на первой же
+  проверке в GitHub Actions). `pg-pool` на ошибку клиента, простаивающего в пуле, делает
+  `pool.emit('error', err, client)` (`node_modules/pg-pool/index.js`, `makeIdleListener`), а
+  необработанное событие `'error'` в Node — это **падение всего процесса**. Проявляется, когда
+  сервер базы гаснет или перезапускается под работающим приложением: `FATAL 57P01 terminating
+  connection due to administrator command`. В бою это убило бы сервер Yargram целиком. Лечение —
+  `this.pool.on("error", …)` в конструкторе `PostgresDatabase` (пишем в журнал и живём дальше).
+  Сторож — `apps/server/tests/pool-errors.test.ts`. ⚠️ **На Windows не воспроизводится** (база
+  гаснет иначе) — искали только по логу CI.
+- 🔥 **Прогон через `| tail` теряет код возврата** (возвращается код `tail`, а не `npm`). Именно
+  поэтому «`npm run verify` зелёный» оказалось ложью: тесты проходили, но vitest отдавал exit 1 из-за
+  «Unhandled Errors». Проверять так: `npm run verify > /tmp/log 2>&1; echo $?`. Признак, что дело не
+  в тестах: в логе `Test Files … passed`, но рядом `##[error]Process completed with exit code 1`.

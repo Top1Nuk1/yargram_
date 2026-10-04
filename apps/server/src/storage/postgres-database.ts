@@ -82,6 +82,15 @@ export class PostgresDatabase {
 
   constructor(config: string | PoolConfig | Pool) {
     this.pool = config instanceof Pool ? config : new Pool(typeof config === "string" ? { connectionString: config } : config);
+    // 🔥 Пул без обработчика 'error' роняет процесс. pg-pool на ошибку клиента,
+    // который простаивал в пуле (сервер базы перезапустился, сеть оборвалась),
+    // делает pool.emit('error'), а необработанное событие 'error' в Node — это
+    // падение всего сервера Yargram. Ошибка простаивающего соединения ничего не
+    // ломает: следующий запрос возьмёт из пула живое соединение. Поэтому просто
+    // сообщаем в журнал и живём дальше.
+    this.pool.on("error", (error: Error) => {
+      console.error("PostgreSQL: оборвалось соединение из пула —", error.message);
+    });
   }
 
   async initialize(): Promise<void> {
