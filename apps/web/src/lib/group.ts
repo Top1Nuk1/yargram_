@@ -1,9 +1,10 @@
 import { formatMessageTime } from './format';
 import { isUserOnline, presenceBucket,
-  presenceBucketLabels,
+  presenceBucketLabel,
   presenceBucketOrder,
   type PresenceBucket,
 } from './presence';
+import type { TranslateFn } from './i18n';
 import {
   adminOnlyPermissionKeys,
   groupPermissionKeys,
@@ -257,6 +258,7 @@ export interface MemberPresenceSection {
 export function groupMembersByPresence(
   members: GroupMember[],
   now: number = Date.now(),
+  t?: TranslateFn,
 ): MemberPresenceSection[] {
   const sections = new Map<PresenceBucket, GroupMember[]>();
   for (const member of members) {
@@ -275,7 +277,7 @@ export function groupMembersByPresence(
   return presenceBucketOrder.filter((bucket) => sections.has(bucket)).map((bucket) => {
     const list = sections.get(bucket) ?? [];
     if (bucket !== 'online') list.sort((left, right) => seenAt(right) - seenAt(left));
-    return { bucket, label: presenceBucketLabels[bucket], members: list };
+    return { bucket, label: presenceBucketLabel(bucket, t), members: list };
   });
 }
 

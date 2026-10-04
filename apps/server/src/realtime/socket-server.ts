@@ -5,8 +5,10 @@ import type { ServerConfig } from "../config.js";
 import { createSocketCorsOptions } from "../http/cors.js";
 import { sendMessageSchema } from "../http/routes.js";
 import { AppError } from "../lib/errors.js";
+import { describeUserAgent, siteFrom } from "../lib/session-context.js";
 import type { AuthService } from "../services/auth-service.js";
 import type { ChatService, MessageView } from "../services/chat-service.js";
+import { tokenFingerprint } from "../services/session-service.js";
 import type { RealtimeEvents } from "./events.js";
 
 type AuthenticatedSocket = Socket & { data: { userId: string } };
@@ -159,6 +161,8 @@ export function attachSocketServer(
     maxHttpBufferSize: 1_000_000,
   });
   const userSockets = new Map<string, Set<string>>();
+  /** Отпечаток токена каждого подключения: завершённый сеанс рвём по нему. */
+  const socketTokens = new Map<string, string>();
   const offlineTimers = new Map<string, NodeJS.Timeout>();
   const callSessions = new Map<string, CallSession>();
   const pendingWork = createPendingWorkTracker();
@@ -174,7 +178,19 @@ export function attachSocketServer(
             ? header.slice("Bearer ".length).trim()
             : null;
       if (!token) throw new AppError(401, "AUTH_REQUIRED", "Socket access token is required");
-      socket.data.userId = await dependencies.authService.authenticateToken(token);
+      const headers = socket.handshake.headers;
+      socket.data.userId = await dependencies.authService.authenticateToken(token, {
+        site: siteFrom(
+          typeof headers.origin === "string" ? headers.origin : undefined,
+          typeof headers.referer === "string" ? headers.referer : undefined,
+          typeof headers.host === "string" ? headers.host : undefined,
+          "http",
+        ),
+        device: describeUserAgent(
+          typeof headers["user-agent"] === "string" ? headers["user-agent"] : undefined,
+        ),
+      });
+      socketTokens.set(socket.id, tokenFingerprint(token));
       next();
     } catch (error) {
       next(error instanceof Error ? error : new Error("Socket authentication failed"));
@@ -628,6 +644,7 @@ export function attachSocketServer(
         );
       }
 
+      socketTokens.delete(socket.id);
       const remaining = userSockets.get(userId);
       remaining?.delete(socket.id);
       if (remaining?.size) return;
@@ -718,8 +735,7 @@ export function attachSocketServer(
   dependencies.events.onScheduledMessage(({ userId, scheduled }) => {
     io.to(`user:${userId}`).emit("scheduled:updated", scheduled);
   });
-  dependencies.events.onAccountState((event) => {
-    // Всем: собеседники подменят профиль заглушкой прямо в открытом чате.
+  dependencies.events.onAccountState((event) => {    // Всем: собеседники подменят профиль заглушкой прямо в открытом чате.
     io.emit("account:state", event);
     // Удалённый аккаунт из сети убираем — он больше не участник. Замороженный
     // остаётся читателем, поэтому сокет ему не рвём: иначе он перестанет видеть
@@ -729,6 +745,22 @@ export function attachSocketServer(
       io.sockets.sockets.get(socketId)?.disconnect(true);
     }
     userSockets.delete(event.userId);
+  });
+
+  // Дружба: заявку и принятие присылаем лично тому, чей список изменился.
+  dependencies.events.onFriendship((event) => {
+    io.to(`user:${event.userId}`).emit("friendship:changed", event);
+  });
+
+  // Сеанс завершён: его подключения рвём сразу, чтобы чужой вход перестал
+  // получать сообщения, а не дожидался, пока истёкший токен заметят по HTTP.
+  dependencies.events.onSessionTerminated(({ userId, tokenHashes }) => {
+    for (const socketId of userSockets.get(userId) ?? []) {
+      const hash = socketTokens.get(socketId);
+      if (!hash || !tokenHashes.includes(hash)) continue;
+      io.sockets.sockets.get(socketId)?.disconnect(true);
+      socketTokens.delete(socketId);
+    }
   });
 
   pendingWorkTrackers.set(io, pendingWork);

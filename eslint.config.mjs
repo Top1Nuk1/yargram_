@@ -13,6 +13,10 @@ export default tseslint.config(
       'apps/server/data/**',
       'runtime/**',
       'в приложение/**',
+      // Выгрузка ресурсов Telegram, лежит на диске рядом с проектом и не
+      // относится к Yargram: без этой строки `npm run lint` разбирает её
+      // минифицированные скрипты и падает сотней ошибок.
+      '1/**',
     ],
   },
   eslint.configs.recommended,
@@ -35,13 +39,13 @@ export default tseslint.config(
     },
   },
   {
-    files: ['apps/web/*.cjs'],
+    files: ['apps/web/*.cjs', 'apps/landing/*.cjs'],
     languageOptions: {
       globals: globals.node,
     },
   },
   {
-    files: ['apps/web/**/*.{ts,tsx}'],
+    files: ['apps/web/**/*.{ts,tsx}', 'apps/landing/**/*.{ts,tsx}'],
     languageOptions: {
       globals: globals.browser,
     },
@@ -51,6 +55,14 @@ export default tseslint.config(
     rules: {
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'error',
+    },
+  },
+  {
+    // Статические файлы web (service worker и пр.) — браузерный контекст,
+    // там используется `self`. Без этой строки `eslint` падает на no-undef.
+    files: ['apps/web/public/**/*.{js,mjs}'],
+    languageOptions: {
+      globals: globals.browser,
     },
   },
   {

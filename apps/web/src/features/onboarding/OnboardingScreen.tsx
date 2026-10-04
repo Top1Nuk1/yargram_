@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode, type SVGProps } from 
 import { ArrowLeft, ArrowRight, Check, Moon, Sun } from 'lucide-react';
 import { Logo } from '../../components/Logo';
 import { Button, IconButton } from '../../components/ui';
+import { useTranslation } from '../../hooks/useLanguage';
 import type { ThemeMode } from '../../types';
 
 interface OnboardingScreenProps {
@@ -12,8 +13,9 @@ interface OnboardingScreenProps {
 }
 
 interface OnboardingSlide {
-  title: string;
-  text: string;
+  /** Ключи перевода: текст берём из словаря, поэтому слайды не дублируются. */
+  titleKey: string;
+  textKey: string;
   art: ReactNode;
 }
 
@@ -58,8 +60,8 @@ function Person({ x, y, r, color }: { x: number; y: number; r: number; color: st
 
 const slides: OnboardingSlide[] = [
   {
-    title: 'Добро пожаловать в Yargram',
-    text: 'Быстрый и простой мессенджер для своих. Скачивать и устанавливать ничего не нужно — открыли ссылку в браузере и общаетесь.',
+    titleKey: 'onboarding.s1.title',
+    textKey: 'onboarding.s1.text',
     art: (
       <svg {...artProps}>
         <rect x="12" y="18" width="96" height="58" rx="20" fill="rgb(var(--brand))" />
@@ -73,8 +75,8 @@ const slides: OnboardingSlide[] = [
     ),
   },
   {
-    title: 'Личные переписки',
-    text: 'Отвечайте, редактируйте и удаляйте сообщения, ставьте реакции, ищите по истории и закрепляйте важное.',
+    titleKey: 'onboarding.s2.title',
+    textKey: 'onboarding.s2.text',
     art: (
       <svg {...artProps}>
         <rect x="10" y="16" width="92" height="44" rx="16" fill="rgb(var(--surface))" stroke="rgb(var(--line))" strokeWidth="3" />
@@ -87,8 +89,8 @@ const slides: OnboardingSlide[] = [
     ),
   },
   {
-    title: 'Фото, файлы и голосовые',
-    text: 'Отправляйте фотографии до 20 МБ и файлы до 100 МБ, записывайте голосовые сообщения и видеокружки.',
+    titleKey: 'onboarding.s3.title',
+    textKey: 'onboarding.s3.text',
     art: (
       <svg {...artProps}>
         <rect x="10" y="16" width="84" height="66" rx="14" fill="rgb(var(--surface))" stroke="rgb(var(--line))" strokeWidth="3" />
@@ -103,8 +105,8 @@ const slides: OnboardingSlide[] = [
     ),
   },
   {
-    title: 'Группы и роли',
-    text: 'Собирайте группы, выдавайте права участникам, ставьте теги и назначайте администраторов.',
+    titleKey: 'onboarding.s4.title',
+    textKey: 'onboarding.s4.text',
     art: (
       <svg {...artProps}>
         <rect x="104" y="4" width="50" height="18" rx="9" fill="rgb(var(--brand-soft))" stroke="rgb(var(--brand))" strokeWidth="3" />
@@ -116,8 +118,8 @@ const slides: OnboardingSlide[] = [
     ),
   },
   {
-    title: 'Звонки и экран',
-    text: 'Аудио- и видеозвонки, демонстрация экрана, выбор устройств и громкость собеседника — прямо в браузере.',
+    titleKey: 'onboarding.s5.title',
+    textKey: 'onboarding.s5.text',
     art: (
       <svg {...artProps}>
         <rect x="10" y="28" width="94" height="68" rx="14" fill="rgb(var(--surface))" stroke="rgb(var(--line))" strokeWidth="3" />
@@ -129,8 +131,8 @@ const slides: OnboardingSlide[] = [
     ),
   },
   {
-    title: 'Свои настройки',
-    text: 'Светлая и тёмная тема, акцентный цвет, обои чата, папки, черновики и уведомления — всё под себя.',
+    titleKey: 'onboarding.s6.title',
+    textKey: 'onboarding.s6.text',
     art: (
       <svg {...artProps}>
         <rect x="12" y="36" width="96" height="44" rx="22" fill="rgb(var(--brand-soft))" stroke="rgb(var(--brand))" strokeWidth="3" />
@@ -149,6 +151,7 @@ const slides: OnboardingSlide[] = [
  * точками-индикаторами и переключателем темы. Показывается один раз.
  */
 export function OnboardingScreen({ theme, onToggleTheme, onDone }: OnboardingScreenProps) {
+  const t = useTranslation();
   const [index, setIndex] = useState(0);
   const isLast = index === slides.length - 1;
 
@@ -171,15 +174,15 @@ export function OnboardingScreen({ theme, onToggleTheme, onDone }: OnboardingScr
   const slide = slides[index]!;
 
   return (
-    <main className="relative flex min-h-[100dvh] flex-col bg-canvas text-ink" aria-label="Знакомство с Yargram">
+    <main className="relative flex min-h-[100dvh] flex-col bg-canvas text-ink" aria-label={t('onboarding.ariaLabel')}>
       <header className="flex items-center justify-between gap-3 px-5 pt-[max(1rem,env(safe-area-inset-top))] sm:px-8">
         <Logo />
         <div className="flex items-center gap-1">
-          <IconButton label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'} onClick={onToggleTheme}>
+          <IconButton label={theme === 'dark' ? t('auth.toggleLight') : t('auth.toggleDark')} onClick={onToggleTheme}>
             {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </IconButton>
           <Button variant="ghost" className="px-3 text-[13px]" onClick={onDone}>
-            Пропустить
+            {t('onboarding.skip')}
           </Button>
         </div>
       </header>
@@ -191,21 +194,21 @@ export function OnboardingScreen({ theme, onToggleTheme, onDone }: OnboardingScr
           aria-live="polite"
         >
           <Art>{slide.art}</Art>
-          <h1 className="mt-7 text-[22px] font-bold leading-[1.25] tracking-[-0.02em] sm:text-[27px]">{slide.title}</h1>
-          <p className="mt-3 max-w-[330px] text-[13.5px] leading-[1.65] text-muted sm:max-w-[370px] sm:text-[15px]">{slide.text}</p>
+          <h1 className="mt-7 text-[22px] font-bold leading-[1.25] tracking-[-0.02em] sm:text-[27px]">{t(slide.titleKey)}</h1>
+          <p className="mt-3 max-w-[330px] text-[13.5px] leading-[1.65] text-muted sm:max-w-[370px] sm:text-[15px]">{t(slide.textKey)}</p>
         </section>
       </div>
 
       <footer className="px-6 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto flex w-full max-w-[380px] flex-col gap-4">
-          <div className="flex items-center justify-center gap-1.5" role="tablist" aria-label="Слайды">
+          <div className="flex items-center justify-center gap-1.5" role="tablist" aria-label={t('onboarding.slidesLabel')}>
             {slides.map((item, dotIndex) => (
               <button
-                key={item.title}
+                key={item.titleKey}
                 type="button"
                 role="tab"
                 aria-selected={dotIndex === index}
-                aria-label={`Слайд ${dotIndex + 1}: ${item.title}`}
+                aria-label={t('onboarding.slideAria', { index: dotIndex + 1, title: t(item.titleKey) })}
                 onClick={() => setIndex(dotIndex)}
                 className={`h-1.5 rounded-full transition-all ${
                   dotIndex === index ? 'w-5 bg-brand' : 'w-1.5 bg-line hover:bg-brand/40'
@@ -216,7 +219,7 @@ export function OnboardingScreen({ theme, onToggleTheme, onDone }: OnboardingScr
 
           <div className="flex items-center gap-2.5">
             <IconButton
-              label="Назад"
+              label={t('common.back')}
               className="h-12 w-12 border border-line bg-elevated"
               onClick={goBack}
               disabled={index === 0}
@@ -226,11 +229,11 @@ export function OnboardingScreen({ theme, onToggleTheme, onDone }: OnboardingScr
             {isLast ? (
               <Button className="min-h-12 flex-1" onClick={onDone}>
                 <Check className="h-5 w-5" />
-                Начать
+                {t('onboarding.start')}
               </Button>
             ) : (
               <Button className="min-h-12 flex-1" onClick={goNext}>
-                Далее
+                {t('onboarding.next')}
                 <ArrowRight className="h-5 w-5" />
               </Button>
             )}

@@ -23,13 +23,23 @@ export async function readMultipartFile(
 
   const chunks: Buffer[] = [];
   let received = 0;
+  let oversized = false;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     received += buffer.length;
     if (received > options.maxBodyBytes) {
-      throw new AppError(413, "UPLOAD_TOO_LARGE", "The uploaded request is too large");
+      // Решение принято, но поток нельзя просто бросить: если выйти из цикла с
+      // недочитанным телом, Node уничтожит сокет и ответ 413 до клиента не
+      // дойдёт (supertest видит ECONNRESET, браузер — «сеть недоступна»).
+      // Дочитываем остаток и только потом отвечаем.
+      oversized = true;
+      chunks.length = 0;
+      continue;
     }
-    chunks.push(buffer);
+    if (!oversized) chunks.push(buffer);
+  }
+  if (oversized) {
+    throw new AppError(413, "UPLOAD_TOO_LARGE", "The uploaded request is too large");
   }
 
   const body = Buffer.concat(chunks);

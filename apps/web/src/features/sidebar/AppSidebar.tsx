@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   CircleHelp,
+  LifeBuoy,
   LogOut,
   Moon,
   Phone,
@@ -18,12 +19,14 @@ import {
 import { useEffect, type ReactNode } from 'react';
 import { Avatar } from '../../components/ui';
 import { UserName } from '../../components/UserName';
-import { accountSubtitle, type StoredAccount } from '../../lib/accounts';
+import { accountLimit, accountSubtitle, type StoredAccount } from '../../lib/accounts';
 import { avatarProps } from '../../lib/user';
+import { useTranslation } from '../../hooks/useLanguage';
 import type { User } from '../../types';
 
 export type SidebarAction =
   | 'profile'
+  | 'friends'
   | 'create-group'
   | 'create-channel'
   | 'blocked'
@@ -32,6 +35,7 @@ export type SidebarAction =
   | 'favorites-notes'
   | 'settings'
   | 'admin'
+  | 'support'
   | 'toggle-theme'
   | 'logout';
 
@@ -64,6 +68,7 @@ export function AppSidebar({
   onRemoveAccount,
   onClose,
 }: SidebarProps) {
+  const t = useTranslation();
   // Esc закрывает панель — так же, как и в остальных модалках.
   useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
@@ -72,6 +77,10 @@ export function AppSidebar({
   }, [onClose]);
 
   const online = currentUser.isOnline ?? currentUser.online;
+  // Предел считаем по сохранённым аккаунтам: значок «Yargram» или галочка
+  // поднимают его с трёх до четырёх, у владельца предела нет.
+  const limit = accountLimit(accounts);
+  const limitReached = accounts.length >= limit;
 
   return (
     <div
@@ -81,7 +90,7 @@ export function AppSidebar({
     >
       <aside
         role="dialog"
-        aria-label="Меню"
+        aria-label={t('sidebar.menuLabel')}
         className="relative flex h-full w-[88vw] max-w-[360px] animate-slide-up flex-col bg-surface shadow-float sm:max-w-[400px]"
       >
         {/* Шапка: аватар, имя, статус и переключатель аккаунтов */}
@@ -100,12 +109,12 @@ export function AppSidebar({
               </p>
               {/* Эмодзи-статуса пока нет — показываем просто состояние подключения. */}
               <p className="mt-0.5 truncate text-[13px] font-semibold text-muted">
-                {online ? 'в сети' : 'не в сети'}
+                {online ? t('sidebar.online') : t('sidebar.offline')}
               </p>
             </div>
             <button
               type="button"
-              aria-label="Свернуть"
+              aria-label={t('sidebar.collapse')}
               onClick={onClose}
               className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-muted transition hover:bg-canvas hover:text-ink"
             >
@@ -143,18 +152,18 @@ export function AppSidebar({
                     <p className="truncate text-[11px] text-muted">
                       {isActive
                         ? accountOnline
-                          ? 'в сети'
-                          : 'не в сети'
+                          ? t('sidebar.online')
+                          : t('sidebar.offline')
                         : accountSubtitle(account)}
                     </p>
                   </div>
-                  {isActive && <Check className="h-4 w-4 shrink-0 text-brand" aria-label="Активный аккаунт" />}
+                  {isActive && <Check className="h-4 w-4 shrink-0 text-brand" aria-label={t('sidebar.activeAccount')} />}
                 </button>
                 {accounts.length > 1 && (
                   <button
                     type="button"
-                    aria-label={`Выйти из аккаунта ${account.user.displayName}`}
-                    title="Выйти из аккаунта"
+                    aria-label={t('sidebar.logoutAccount', { name: account.user.displayName })}
+                    title={t('sidebar.logoutAccountShort')}
                     onClick={() => onRemoveAccount(account.token)}
                     className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-muted transition hover:bg-danger/10 hover:text-danger"
                   >
@@ -168,32 +177,44 @@ export function AppSidebar({
             <button
               type="button"
               onClick={onAddAccount}
-              className="flex w-full items-center gap-3 rounded-xl bg-canvas px-3 py-2.5 text-left transition hover:bg-brand-soft/35"
+              disabled={limitReached}
+              className={`flex w-full items-center gap-3 rounded-xl bg-canvas px-3 py-2.5 text-left transition ${
+                limitReached ? 'cursor-not-allowed opacity-60' : 'hover:bg-brand-soft/35'
+              }`}
             >
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-soft text-brand">
                 <Plus className="h-4 w-4" />
               </span>
-              <span className="text-sm font-semibold text-ink">Добавить аккаунт</span>
+              <span className="text-sm font-semibold text-ink">{t('sidebar.addAccount')}</span>
             </button>
+            {/* Объясняем предел словами: молча неактивная кнопка выглядит поломкой. */}
+            {limitReached && (
+              <p className="mt-1.5 px-3 text-[11px] leading-snug text-muted">
+                {t('sidebar.accountLimit', { limit: String(limit) })}
+              </p>
+            )}
           </li>
         </ul>
 
         {/* Главное меню — иконки и ярлыки как в ТГ. */}
-        <nav className="mt-5 flex-1 overflow-y-auto px-2" aria-label="Главное меню">
-          <MenuRow icon={<UserPlus className="h-5 w-5" />} label="Мой профиль" onClick={() => onAction('profile')} />
-          <MenuRow icon={<UsersRound className="h-5 w-5" />} label="Создать группу" muted onClick={() => onAction('create-group')} />
-          <MenuRow icon={<CircleHelp className="h-5 w-5" />} label="Создать канал" muted onClick={() => onAction('create-channel')} />
-          <MenuRow icon={<ShieldBan className="h-5 w-5" />} label="Заблокированные" onClick={() => onAction('blocked')} />
-          <MenuRow icon={<Phone className="h-5 w-5" />} label="Звонки" muted onClick={() => onAction('calls')} />
-          <MenuRow icon={<Bookmark className="h-5 w-5" />} label="Избранное" onClick={() => onAction('favorites')} />
-          <MenuRow icon={<Star className="h-5 w-5" />} label="Заметки" onClick={() => onAction('favorites-notes')} />
-          <MenuRow icon={<Settings className="h-5 w-5" />} label="Настройки" onClick={() => onAction('settings')} />
+        <nav className="mt-5 flex-1 overflow-y-auto px-2" aria-label={t('sidebar.mainMenu')}>
+          <MenuRow icon={<UserPlus className="h-5 w-5" />} label={t('sidebar.myProfile')} onClick={() => onAction('profile')} />
+          <MenuRow icon={<UsersRound className="h-5 w-5" />} label={t('sidebar.friends')} onClick={() => onAction('friends')} />
+          <MenuRow icon={<UsersRound className="h-5 w-5" />} label={t('sidebar.createGroup')} muted onClick={() => onAction('create-group')} />
+          <MenuRow icon={<CircleHelp className="h-5 w-5" />} label={t('sidebar.createChannel')} muted onClick={() => onAction('create-channel')} />
+          <MenuRow icon={<ShieldBan className="h-5 w-5" />} label={t('sidebar.blocked')} onClick={() => onAction('blocked')} />
+          <MenuRow icon={<Phone className="h-5 w-5" />} label={t('sidebar.calls')} muted onClick={() => onAction('calls')} />
+          <MenuRow icon={<Bookmark className="h-5 w-5" />} label={t('sidebar.favorites')} onClick={() => onAction('favorites')} />
+          <MenuRow icon={<Star className="h-5 w-5" />} label={t('sidebar.notes')} onClick={() => onAction('favorites-notes')} />
+          <MenuRow icon={<Settings className="h-5 w-5" />} label={t('sidebar.settings')} onClick={() => onAction('settings')} />
+          {/* Поддержка — рядом с настройками: это тоже про «помогите мне». */}
+          <MenuRow icon={<LifeBuoy className="h-5 w-5" />} label={t('sidebar.support')} onClick={() => onAction('support')} />
 
           {/* Админ-панель — только владельцу: администрирование чужих аккаунтов
               стоит рядом с настройками, но это не личные настройки, поэтому
               отдельным пунктом, а не вкладкой внутри. */}
           {currentUser.isOwner && (
-            <MenuRow icon={<ShieldCheck className="h-5 w-5" />} label="Админ-панель" onClick={() => onAction('admin')} />
+            <MenuRow icon={<ShieldCheck className="h-5 w-5" />} label={t('sidebar.admin')} onClick={() => onAction('admin')} />
           )}
 
           {/* Ночной режим — переключатель темы. */}
@@ -203,7 +224,7 @@ export function AppSidebar({
             className="mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold text-ink transition hover:bg-brand-soft/45"
           >
             <Moon className="h-5 w-5" />
-            <span className="flex-1">Ночной режим</span>
+            <span className="flex-1">{t('sidebar.nightMode')}</span>
             <span
               role="switch"
               aria-checked={theme === 'dark'}
@@ -223,7 +244,7 @@ export function AppSidebar({
             className="mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-semibold text-danger transition hover:bg-danger/10"
           >
             <LogOut className="h-5 w-5" />
-            <span className="flex-1">Выйти</span>
+            <span className="flex-1">{t('sidebar.logout')}</span>
           </button>
         </nav>
 
@@ -231,16 +252,16 @@ export function AppSidebar({
         <footer className="border-t border-line/70 px-5 py-3 text-[12px] leading-5 text-muted">
           <p className="font-semibold text-ink">Yargram Web</p>
           {/* ЗБТ — закрытое бета-тестирование: сокращение, расшифровка в подсказке. */}
-          <p title="Закрытое бета-тестирование">Версия 0.1.0 ЗБТ</p>
+          <p title={t('sidebar.betaTip')}>{t('sidebar.version', { version: '0.1.0', channel: 'ЗБТ' })}</p>
           <button type="button" className="mt-0.5 font-semibold text-brand transition hover:text-brand-strong">
-            О программе
+            {t('sidebar.about')}
           </button>
         </footer>
 
         {/* Кнопка закрытия поверх — на мобильном шеврон может перекрываться свайпом. */}
         <button
           type="button"
-          aria-label="Закрыть меню"
+          aria-label={t('sidebar.closeMenu')}
           onClick={onClose}
           className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full text-muted transition hover:bg-canvas hover:text-ink sm:hidden"
         >

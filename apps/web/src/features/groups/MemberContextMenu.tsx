@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { KeyRound, MinusCircle, ShieldCheck, ShieldMinus, Tag, UserRound } from 'lucide-react';
+import { useTranslation } from '../../hooks/useLanguage';
 import { memberActionAllowed, type MemberAction } from '../../lib/group';
 import type { Conversation, GroupMember } from '../../types';
 
@@ -30,6 +31,7 @@ export function MemberContextMenu({
   onClose,
   onAction,
 }: MemberContextMenuProps) {
+  const t = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -54,22 +56,22 @@ export function MemberContextMenu({
 
   const isAdmin = member.role === 'admin';
   const items: Array<{ action: MemberAction; label: string; icon: typeof Tag; danger?: boolean }> = [
-    { action: 'profile', label: 'Показать профиль', icon: UserRound },
-    { action: 'tag', label: 'Изменить тег участника', icon: Tag },
+    { action: 'profile', label: t('groups.menuProfile'), icon: UserRound },
+    { action: 'tag', label: t('groups.changeMemberTag'), icon: Tag },
     {
       action: 'admin',
-      label: isAdmin ? 'Снять администратора' : 'Назначить администратором',
+      label: isAdmin ? t('groups.demoteAdmin') : t('groups.makeAdmin'),
       icon: isAdmin ? ShieldMinus : ShieldCheck,
     },
-    { action: 'restrict', label: 'Ограничить пользователя', icon: KeyRound },
-    { action: 'remove', label: 'Удалить из группы', icon: MinusCircle, danger: true },
+    { action: 'restrict', label: t('groups.menuRestrict'), icon: KeyRound },
+    { action: 'remove', label: t('groups.removeFromGroupLong'), icon: MinusCircle, danger: true },
   ];
 
   return (
     <div
       ref={menuRef}
       role="menu"
-      aria-label={`Действия с участником ${member.user.displayName}`}
+      aria-label={t('groups.menuLabel', { name: member.user.displayName })}
       className="fixed z-[90] animate-fade-in rounded-2xl border border-line bg-elevated p-1.5 shadow-float"
       style={{ left, top, width: MENU_WIDTH }}
       onMouseDown={(event) => event.stopPropagation()}

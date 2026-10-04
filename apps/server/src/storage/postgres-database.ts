@@ -14,6 +14,7 @@ const entityTables = [
   ["drafts", "drafts"],
   ["folders", "folders"],
   ["scheduled_messages", "scheduledMessages"],
+  ["sessions", "sessions"],
 ] as const;
 
 const columns: Record<(typeof entityTables)[number][0], string> = {
@@ -39,6 +40,9 @@ const columns: Record<(typeof entityTables)[number][0], string> = {
     conversation_id text GENERATED ALWAYS AS (payload->>'conversationId') STORED NOT NULL,
     send_at text GENERATED ALWAYS AS (payload->>'sendAt') STORED NOT NULL,
     status text GENERATED ALWAYS AS (payload->>'status') STORED NOT NULL`,
+  sessions: `user_id text GENERATED ALWAYS AS (payload->>'userId') STORED NOT NULL,
+    last_seen_at text GENERATED ALWAYS AS (payload->>'lastSeenAt') STORED,
+    token_hashes jsonb GENERATED ALWAYS AS (payload->'tokenHashes') STORED`,
 };
 
 /** Version-one schema is embedded so compiled deployments need no copied SQL asset. */
@@ -68,6 +72,9 @@ export const postgresSchemaSql = `${entityTables.map(([table]) => `
   CREATE INDEX IF NOT EXISTS folders_user_idx ON folders (user_id, sequence);
   CREATE INDEX IF NOT EXISTS scheduled_messages_user_idx ON scheduled_messages (user_id, send_at, sequence);
   CREATE INDEX IF NOT EXISTS scheduled_messages_due_idx ON scheduled_messages (status, send_at, sequence);
+  -- Поиск сеанса по отпечатку токена: он нужен на каждом запросе.
+  CREATE INDEX IF NOT EXISTS sessions_tokens_idx ON sessions USING gin (token_hashes);
+  CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id, last_seen_at DESC, sequence);
 `;
 
 export class PostgresDatabase {

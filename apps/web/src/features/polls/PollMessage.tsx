@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Check, CheckCircle2, Plus, Square, SquareCheck, XCircle } from 'lucide-react';
+import { useTranslation } from '../../hooks/useLanguage';
 import type { PollOption, PollView, User } from '../../types';
 
 interface PollMessageProps {
@@ -42,6 +43,7 @@ export function PollMessage({
   onAddOption,
   onClosePoll,
 }: PollMessageProps) {
+  const t = useTranslation();
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
   const [showVoters, setShowVoters] = useState(false);
@@ -129,7 +131,7 @@ export function PollMessage({
                 <p className="mt-0.5 pl-3 text-[11px] leading-4 text-muted">
                   {Object.entries(poll.votes)
                     .filter(([, picks]) => picks.includes(option.id))
-                    .map(([userId]) => nameOf(userId)?.displayName ?? 'Участник')
+                    .map(([userId]) => nameOf(userId)?.displayName ?? t('polls.voterFallback'))
                     .join(', ')}
                 </p>
               )}
@@ -145,8 +147,8 @@ export function PollMessage({
             value={draft}
             maxLength={100}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder="Свой вариант"
-            aria-label="Свой вариант ответа"
+            placeholder={t('polls.myOption')}
+            aria-label={t('polls.myOptionAria')}
             className="h-9 min-w-0 flex-1 rounded-xl border border-line bg-canvas px-3 text-sm text-ink outline-none focus:border-brand/60"
           />
           <button
@@ -159,7 +161,7 @@ export function PollMessage({
             }}
             className="shrink-0 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-brand disabled:opacity-50"
           >
-            Добавить
+            {t('common.add')}
           </button>
         </div>
       ) : (
@@ -171,15 +173,15 @@ export function PollMessage({
             onClick={() => setAdding(true)}
             className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-brand transition hover:opacity-80"
           >
-            <Plus className="h-3.5 w-3.5" /> Добавить вариант
+            <Plus className="h-3.5 w-3.5" /> {t('polls.addOption')}
           </button>
         )
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
         <span>
-          {poll.closed ? 'Опрос завершён · ' : ''}
-          Проголосовало: {poll.totalVoters}
+          {poll.closed ? t('polls.closed') : ''}
+          {t('polls.votedCount', { count: poll.totalVoters })}
         </span>
         {poll.settings.showNames && poll.totalVoters > 0 && (
           <button
@@ -187,10 +189,10 @@ export function PollMessage({
             onClick={() => setShowVoters((open) => !open)}
             className="font-semibold text-brand transition hover:opacity-80"
           >
-            {showVoters ? 'Скрыть имена' : 'Показать имена'}
+            {showVoters ? t('polls.hideNames') : t('polls.showNamesAction')}
           </button>
         )}
-        {quiz && voted && <span>Правильный ответ отмечен галочкой</span>}
+        {quiz && voted && <span>{t('polls.correctAnswerMarked')}</span>}
         {!poll.closed && isAuthor && (
           <button
             type="button"
@@ -198,12 +200,12 @@ export function PollMessage({
             onClick={onClosePoll}
             className="font-semibold text-danger transition hover:opacity-80 disabled:opacity-50"
           >
-            Остановить опрос
+            {t('polls.stop')}
           </button>
         )}
       </div>
       {voted && !poll.closed && !poll.settings.changeVote && (
-        <p className="mt-1 text-[11px] text-muted">Ответ отправлен — изменить его нельзя.</p>
+        <p className="mt-1 text-[11px] text-muted">{t('polls.answerLocked')}</p>
       )}
     </div>
   );

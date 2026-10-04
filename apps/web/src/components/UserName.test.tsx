@@ -98,10 +98,45 @@ describe('UserName', () => {
     expect(labels).toContain('Подтверждено');
   });
 
+  it('renders the «бот» box next to the name of the service bot', () => {
+    const { container } = render(<UserName name="Yargram Support" user={{ isBot: true }} />);
+    const box = container.querySelector('[role="img"]');
+    expect(box).not.toBeNull();
+    expect(box?.textContent).toBe('бот');
+    expect(box?.getAttribute('aria-label')).toBe('Служебный аккаунт бота');
+    expect(container.textContent).toBe('Yargram Supportбот');
+  });
+
   it('renders no SCAM box for a plain or explicitly unmarked account', () => {
     expect(render(<UserName name="Алиса" />).container.querySelector('[role="img"]')).toBeNull();
     expect(
       render(<UserName name="Алиса" user={{ scam: false }} />).container.querySelector('[role="img"]'),
+    ).toBeNull();
+  });
+
+  it('renders the FAKE box next to the name of an impersonating account', () => {
+    const { container } = render(<UserName name="Борис" user={{ fake: true }} />);
+    const box = container.querySelector('[role="img"]');
+    expect(box).not.toBeNull();
+    expect(box?.textContent).toBe('FAKE');
+    expect(box?.getAttribute('aria-label')).toBe(
+      'Отметка FAKE: аккаунт выдаёт себя за официальный',
+    );
+    // Метка стоит после имени, а не вместо него.
+    expect(container.textContent).toBe('БорисFAKE');
+  });
+
+  it('renders both the SCAM and FAKE boxes when both marks are set', () => {
+    const { container } = render(<UserName name="Борис" user={{ scam: true, fake: true }} />);
+    const marks = Array.from(container.querySelectorAll('[role="img"]')).map((node) => node.textContent);
+    expect(marks).toEqual(['SCAM', 'FAKE']);
+    expect(container.textContent).toBe('БорисSCAMFAKE');
+  });
+
+  it('renders no FAKE box for a plain or explicitly unmarked account', () => {
+    expect(render(<UserName name="Алиса" />).container.querySelector('[role="img"]')).toBeNull();
+    expect(
+      render(<UserName name="Алиса" user={{ fake: false }} />).container.querySelector('[role="img"]'),
     ).toBeNull();
   });
 

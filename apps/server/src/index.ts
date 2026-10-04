@@ -9,12 +9,17 @@ import { openStorage } from "./storage/open-storage.js";
 import { RealtimeEvents } from "./realtime/events.js";
 import { attachSocketServer } from "./realtime/socket-server.js";
 import { AuthService } from "./services/auth-service.js";
+import { MailService } from "./services/mail-service.js";
 import { AdminService } from "./services/admin-service.js";
 import { ChatService } from "./services/chat-service.js";
 import { GroupService } from "./services/group-service.js";
 import { DraftService } from "./services/draft-service.js";
 import { FolderService } from "./services/folder-service.js";
 import { ScheduledMessageService } from "./services/scheduled-message-service.js";
+import { RegistrationCleanupService } from "./services/registration-cleanup-service.js";
+import { FriendService } from "./services/friend-service.js";
+import { SessionService } from "./services/session-service.js";
+import { SupportBotService } from "./services/support-bot-service.js";
 
 type ApplicationServer =
   | ReturnType<typeof createHttpServer>
@@ -45,10 +50,15 @@ async function main(): Promise<void> {
   const { repositories, crypto } = storage;
   console.log(`Yargram storage: ${config.databaseDriver}`);
   try {
+  const mailService = new MailService(config.mail);
   const authService = new AuthService(repositories.users, {
     jwtSecret: config.jwtSecret,
     jwtExpiresIn: config.jwtExpiresIn,
     bcryptRounds: config.bcryptRounds,
+    mail: mailService,
+    emailConfirmation: config.emailConfirmation,
+    emailCodeTtlSeconds: config.emailCodeTtlSeconds,
+    sessions: repositories.sessions,
   });
   const chatService = new ChatService(repositories);
   const events = new RealtimeEvents();
@@ -57,6 +67,14 @@ async function main(): Promise<void> {
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);
   const scheduledMessageService = new ScheduledMessageService(repositories, chatService, events);
+  // Брошенные регистрации: код не ввели — аккаунта будто не было. Уборщик
+  // освобождает почту и ник, чтобы на них можно было зарегистрироваться заново.
+  const registrationCleanupService = new RegistrationCleanupService(repositories.users);
+  const friendService = new FriendService(repositories, events);
+  const sessionService = new SessionService(repositories.sessions, repositories.users, events);
+  // Бот поддержки: слушает поток сообщений — обращения в своей переписке и
+  // ответы владельцев в служебной группе.
+  const supportBotService = new SupportBotService(repositories, chatService, events);
   const app = createApp({
     config,
     repositories,
@@ -67,12 +85,17 @@ async function main(): Promise<void> {
     draftService,
     folderService,
     scheduledMessageService,
+    friendService,
+    sessionService,
+    supportBotService,
     events,
     crypto,
   });
   const httpServer = createHttpServer(app);
   const io = attachSocketServer(httpServer, { config, authService, chatService, events });
   scheduledMessageService.start();
+  registrationCleanupService.start();
+  supportBotService.start();
 
   let httpsServer: ReturnType<typeof createHttpsServer> | null = null;
   if (config.httpsPort && config.tlsPfxPath && config.tlsPfxPassword) {
@@ -106,6 +129,8 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.log(`${signal} received, shutting down`);
     scheduledMessageService.stop();
+    registrationCleanupService.stop();
+    supportBotService.stop();
 
     await new Promise<void>((resolve) => io.close(() => resolve()));
     const results = await Promise.allSettled([

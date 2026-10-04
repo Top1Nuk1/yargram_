@@ -5,6 +5,7 @@ import { Avatar, Button, IconButton, InlineError, Spinner } from '../../componen
 import { UserName } from '../../components/UserName';
 import { avatarProps } from '../../lib/user';
 import type { Conversation, User } from '../../types';
+import { useTranslation } from '../../hooks/useLanguage';
 
 interface UserSearchModalProps {
   token: string;
@@ -28,6 +29,7 @@ function displayHandle(user: User, query: string): string {
 }
 
 export function UserSearchModal({ token, currentUserId, onClose, onConversation }: UserSearchModalProps) {
+  const t = useTranslation();
   const [query, setQuery] = useState('');
   const [users, setUsers] = useState<User[]>([]);
   const [state, setState] = useState<SearchState>('idle');
@@ -68,7 +70,7 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
         setState('success');
       } catch (reason) {
         if (reason instanceof DOMException && reason.name === 'AbortError') return;
-        setError(reason instanceof ApiError ? reason.message : 'Не удалось выполнить поиск.');
+        setError(reason instanceof ApiError ? reason.message : t('modals.searchFailed'));
         setState('error');
       }
     }, 320);
@@ -77,7 +79,7 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [currentUserId, query, token]);
+  }, [currentUserId, query, token, t]);
 
   async function createConversation(user: User) {
     setCreatingUserId(user.id);
@@ -89,7 +91,7 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
         otherUser: conversation.otherUser ?? user,
       });
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : 'Не удалось создать диалог.');
+      setError(reason instanceof ApiError ? reason.message : t('modals.createChatFailed'));
     } finally {
       setCreatingUserId(null);
     }
@@ -111,16 +113,16 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
       >
         <header className="flex items-start justify-between px-5 pb-4 pt-5 sm:px-6 sm:pt-6">
           <div>
-            <h2 id="user-search-title" className="text-xl font-extrabold tracking-[-0.025em] text-ink">Новый диалог</h2>
-            <p className="mt-1 text-sm text-muted">Найдите человека по его @username — основному или дополнительному</p>
+            <h2 id="user-search-title" className="text-xl font-extrabold tracking-[-0.025em] text-ink">{t('modals.newChat')}</h2>
+            <p className="mt-1 text-sm text-muted">{t('modals.searchSubtitle')}</p>
           </div>
-          <IconButton label="Закрыть" onClick={onClose}>
+          <IconButton label={t('modals.close')} onClick={onClose}>
             <X className="h-5 w-5" />
           </IconButton>
         </header>
 
         <div className="px-5 sm:px-6">
-          <label htmlFor="user-search" className="sr-only">Поиск пользователей</label>
+          <label htmlFor="user-search" className="sr-only">{t('modals.searchUsersLabel')}</label>
           <div className="relative">
             <Search className="pointer-events-none absolute left-4 top-3.5 h-5 w-5 text-muted" aria-hidden="true" />
             <input
@@ -130,7 +132,7 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               className="h-12 w-full rounded-xl border border-line bg-canvas pl-11 pr-4 text-[15px] text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
-              placeholder="Например, @top1nuk1"
+              placeholder={t('modals.searchExample')}
               autoComplete="off"
             />
           </div>
@@ -143,8 +145,8 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
                 <span className="mx-auto grid h-16 w-16 place-items-center rounded-[1.4rem] bg-brand-soft text-brand">
                   <UserPlus className="h-7 w-7" aria-hidden="true" />
                 </span>
-                <p className="mt-4 font-semibold text-ink">Кого найдём?</p>
-                <p className="mt-1 text-sm leading-6 text-muted">Введите хотя бы три символа username.</p>
+                <p className="mt-4 font-semibold text-ink">{t('modals.whoToFind')}</p>
+                <p className="mt-1 text-sm leading-6 text-muted">{t('modals.enterThreeChars')}</p>
               </div>
             </div>
           )}
@@ -153,7 +155,7 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
             <div className="grid min-h-[245px] place-items-center text-brand" role="status">
               <div className="text-center">
                 <Spinner className="mx-auto h-7 w-7" />
-                <p className="mt-3 text-sm text-muted">Ищем людей…</p>
+                <p className="mt-3 text-sm text-muted">{t('modals.searching')}</p>
               </div>
             </div>
           )}
@@ -163,14 +165,14 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
           {state === 'success' && users.length === 0 && (
             <div className="grid min-h-[245px] place-items-center px-8 text-center">
               <div>
-                <p className="font-semibold text-ink">Никого не нашли</p>
-                <p className="mt-1 text-sm leading-6 text-muted">Проверьте запрос или попробуйте другой username.</p>
+                <p className="font-semibold text-ink">{t('modals.noResults')}</p>
+                <p className="mt-1 text-sm leading-6 text-muted">{t('modals.noResultsHint')}</p>
               </div>
             </div>
           )}
 
           {state === 'success' && users.length > 0 && (
-            <ul className="space-y-1" aria-label="Найденные пользователи">
+            <ul className="space-y-1" aria-label={t('modals.foundUsers')}>
               {users.map((user) => (
                 <li key={user.id}>
                   <div className="flex items-center gap-3 rounded-xl p-2.5 transition hover:bg-brand-soft/35">
@@ -191,7 +193,7 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
                       disabled={creatingUserId !== null}
                       onClick={() => createConversation(user)}
                     >
-                      Написать
+                      {t('modals.write')}
                     </Button>
                   </div>
                 </li>

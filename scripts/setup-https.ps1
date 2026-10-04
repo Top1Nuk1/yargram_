@@ -12,10 +12,17 @@ $HttpsDirectory = Join-Path $ProjectRoot "runtime\https"
 $PfxPath = Join-Path $HttpsDirectory "yargram-server.pfx"
 $CaCertificatePath = Join-Path $HttpsDirectory "Yargram-Local-CA.cer"
 $ServerIpAddress = "26.53.76.128"
-if ($env:RADMIN_IP) {
+if (-not [string]::IsNullOrWhiteSpace($env:RADMIN_IP)) {
     $ServerIpAddress = $env:RADMIN_IP
 }
+$HttpPort = 3000
+if (-not [string]::IsNullOrWhiteSpace($env:PORT)) {
+    $HttpPort = [int]$env:PORT
+}
 $HttpsPort = 3443
+if (-not [string]::IsNullOrWhiteSpace($env:HTTPS_PORT)) {
+    $HttpsPort = [int]$env:HTTPS_PORT
+}
 $CaSubject = "CN=Yargram Local CA"
 $ServerSubject = "CN=$ServerIpAddress"
 
@@ -82,11 +89,11 @@ function Set-TlsDotEnvValues {
         $sourceLines = @(
             "NODE_ENV=production",
             "HOST=0.0.0.0",
-            "PORT=3000",
+            "PORT=$HttpPort",
             "JWT_SECRET=$jwtSecret",
             "JWT_EXPIRES_IN=7d",
             "BCRYPT_ROUNDS=10",
-            "CORS_ORIGINS=http://${ServerIpAddress}:3000,https://${ServerIpAddress}:${HttpsPort},http://localhost:3000,https://localhost:${HttpsPort},http://127.0.0.1:3000,https://127.0.0.1:${HttpsPort}"
+            "CORS_ORIGINS=http://${ServerIpAddress}:${HttpPort},https://${ServerIpAddress}:${HttpsPort},http://localhost:${HttpPort},https://localhost:${HttpsPort},http://127.0.0.1:${HttpPort},https://127.0.0.1:${HttpsPort}"
         )
     }
 
@@ -96,7 +103,7 @@ function Set-TlsDotEnvValues {
         HTTPS_PORT = "$HttpsPort"
         TLS_PFX_PATH = $portablePfxPath
         TLS_PFX_PASSWORD = $Password
-        CORS_ORIGINS = "http://${ServerIpAddress}:3000,https://${ServerIpAddress}:${HttpsPort},http://localhost:3000,https://localhost:${HttpsPort},http://127.0.0.1:3000,https://127.0.0.1:${HttpsPort},http://${ServerIpAddress}:5173,http://localhost:5173,http://127.0.0.1:5173"
+        CORS_ORIGINS = "http://${ServerIpAddress}:${HttpPort},https://${ServerIpAddress}:${HttpsPort},http://localhost:${HttpPort},https://localhost:${HttpsPort},http://127.0.0.1:${HttpPort},https://127.0.0.1:${HttpsPort},http://${ServerIpAddress}:5173,http://localhost:5173,http://127.0.0.1:5173"
     }
     $written = @{}
     $outputLines = New-Object System.Collections.Generic.List[string]
@@ -389,4 +396,4 @@ Remove-ExportedCertificatesFromPersonalStore -Password $pfxPassword
 
 Write-Host "Локальный сертификат доверен для текущего пользователя Windows." -ForegroundColor Green
 Write-Host "HTTPS для звонков: https://${ServerIpAddress}:${HttpsPort}" -ForegroundColor Green
-Write-Host "Ссылка другу: http://${ServerIpAddress}:3000 (сертификат не нужен)." -ForegroundColor Green
+Write-Host "Ссылка другу: http://${ServerIpAddress}:${HttpPort} (сертификат не нужен)." -ForegroundColor Green

@@ -1,3 +1,4 @@
+import { randomInt, randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import jwt, { type JwtPayload, type SignOptions } from "jsonwebtoken";
 import { AppError } from "../lib/errors.js";
@@ -6,7 +7,22 @@ import {
   type UpdateUserInput,
   type UserRepository,
 } from "../repositories/types.js";
-import { toCurrentUser, type CurrentUser, type User } from "../domain/models.js";
+import {
+  isFailedRegistration,
+  toCurrentUser,
+  type CurrentUser,
+  type EmailCodePurpose,
+  type User,
+} from "../domain/models.js";
+import type { SessionContext } from "../lib/session-context.js";
+import type { SessionRepository } from "../repositories/types.js";
+import {
+  attachSession,
+  sessionIsExpired,
+  shouldTouch,
+  tokenFingerprint,
+} from "./session-service.js";
+import type { MailService } from "./mail-service.js";
 
 export type RegisterInput = {
   email: string;
@@ -15,10 +31,27 @@ export type RegisterInput = {
   username?: string;
 };
 
+/** Откуда человек вошёл: сайт и браузер. По ним ведём список сеансов. */
+export type AuthContext = SessionContext;
+
 export type AuthResult = {
   accessToken: string;
   user: CurrentUser;
 };
+
+/**
+ * Ответ вместо токена: доступ ещё не выдан, ждём код из письма.
+ * `expiresInSeconds` нужен клиенту, чтобы показать обратный отсчёт.
+ */
+export type EmailCodeChallenge = {
+  status: "code_sent";
+  email: string;
+  purpose: EmailCodePurpose;
+  expiresInSeconds: number;
+};
+
+/** Сколько неверных попыток ввода кода допустимо, прежде чем код сгорит. */
+const EMAIL_CODE_MAX_ATTEMPTS = 5;
 
 export class AuthService {
   constructor(
@@ -27,10 +60,22 @@ export class AuthService {
       jwtSecret: string;
       jwtExpiresIn: string;
       bcryptRounds: number;
+      /** Отправка писем. Без него код выдаётся, но письмо не уходит — на этом
+       *  держатся тесты и разработка с драйвером `console`. */
+      mail?: MailService;
+      /** Требовать код из письма при регистрации и входе. */
+      emailConfirmation?: boolean;
+      /** Срок жизни кода; по умолчанию 10 минут. */
+      emailCodeTtlSeconds?: number;
+      /** Сеансы: по ним токен находит свой вход и его можно завершить. */
+      sessions: SessionRepository;
     },
   ) {}
 
-  async register(input: RegisterInput): Promise<AuthResult> {
+  async register(
+    input: RegisterInput,
+    context?: AuthContext,
+  ): Promise<AuthResult | EmailCodeChallenge> {
     const email = input.email.trim().toLowerCase();
     const username = input.username?.trim().replace(/^@/, "");
 
@@ -44,10 +89,24 @@ export class AuthService {
       if (byEmail.isFrozen) {
         throw new AppError(409, "EMAIL_RESERVED", "Эта почта принадлежит замороженному аккаунту");
       }
-      throw new AppError(409, "EMAIL_TAKEN", "Аккаунт с такой почтой уже существует");
+      // Брошенная регистрация на этой же почте — не помеха: код так и не ввели,
+      // аккаунта будто не было. Стираем и продолжаем, как будто почта свободна,
+      // — ждать тика уборщика нельзя, иначе человек получил бы «почта занята»
+      // на собственную же попытку зарегистрироваться заново.
+      if (isFailedRegistration(byEmail)) {
+        await this.users.delete(byEmail.id);
+      } else {
+        throw new AppError(409, "EMAIL_TAKEN", "Аккаунт с такой почтой уже существует");
+      }
     }
-    if (username && (await this.users.findByUsername(username))) {
-      throw new AppError(409, "USERNAME_TAKEN", "Этот ник уже занят");
+    if (username) {
+      const byUsername = await this.users.findByUsername(username);
+      // Ник брошенной регистрации освобождаем по тому же правилу.
+      if (byUsername && isFailedRegistration(byUsername)) {
+        await this.users.delete(byUsername.id);
+      } else if (byUsername) {
+        throw new AppError(409, "USERNAME_TAKEN", "Этот ник уже занят");
+      }
     }
 
     const passwordHash = await bcrypt.hash(input.password, this.options.bcryptRounds);
@@ -58,6 +117,9 @@ export class AuthService {
         passwordHash,
         displayName: input.displayName.trim(),
         ...(username ? { username } : {}),
+        // Подтверждение включено — аккаунт рождается неподтверждённым и не
+        // получает токен, пока человек не введёт код из письма.
+        emailVerified: !this.options.emailConfirmation,
       });
     } catch (error) {
       if (error instanceof RepositoryConflictError) {
@@ -71,12 +133,36 @@ export class AuthService {
       throw error;
     }
 
-    return this.createResult(user);
+    if (!this.options.emailConfirmation) return this.createResult(user, context);
+    const registerTtl = await this.issueCode(user, "register");
+    return {
+      status: "code_sent",
+      email: user.email,
+      purpose: "register",
+      expiresInSeconds: registerTtl,
+    };
   }
 
-  async login(emailInput: string, password: string): Promise<AuthResult> {
+  async login(
+    emailInput: string,
+    password: string,
+    context?: AuthContext,
+  ): Promise<AuthResult | EmailCodeChallenge> {
     const user = await this.users.findByEmail(emailInput.trim().toLowerCase());
+    // Служебный аккаунт бота — это адрес поддержки, а не человек. Пароль у него
+    // случайный, но запрет нужен явно: иначе однажды кто-то задал бы ему пароль
+    // и вошёл в него как в обычный аккаунт.
+    if (user?.isBot) {
+      throw new AppError(403, "BOT_ACCOUNT", "В служебный аккаунт бота войти нельзя");
+    }
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+      throw new AppError(401, "INVALID_CREDENTIALS", "Неверный email или пароль");
+    }
+    // Брошенную регистрацию не оживляем входом: код так и не ввели, аккаунта
+    // будто не было. Иначе попытка войти вернула бы к жизни запись, которая
+    // уже освободила бы почту и ник, — а пароль её владелец и так знает.
+    if (isFailedRegistration(user)) {
+      await this.users.delete(user.id);
       throw new AppError(401, "INVALID_CREDENTIALS", "Неверный email или пароль");
     }
     // Замороженного пускаем внутрь: он читает историю, но ничего не отправляет
@@ -84,7 +170,16 @@ export class AuthService {
     if (user.isDeleted) {
       throw new AppError(403, "ACCOUNT_DELETED", "Этот аккаунт удалён владельцем Yargram");
     }
-    return this.createResult(user);
+    // Подтверждение включено: пароль принят, но токен выдаём только после кода
+    // из письма. Это второй шаг входа, как в Telegram, — сам пароль уже проверен.
+    if (!this.options.emailConfirmation) return this.createResult(user, context);
+    const loginTtl = await this.issueCode(user, "login");
+    return {
+      status: "code_sent",
+      email: user.email,
+      purpose: "login",
+      expiresInSeconds: loginTtl,
+    };
   }
 
   async getCurrentUser(userId: string): Promise<CurrentUser> {
@@ -99,7 +194,9 @@ export class AuthService {
     // Помеченному SCAM описание не меняем. Поле не отклоняем, а тихо
     // игнорируем: форма профиля отправляет его вместе с остальными
     // настройками, и отказ закрыл бы человеку и смену темы, и день рождения.
-    const bioLocked = Boolean(existing.scam);
+    // Описание заперто и при SCAM, и при FAKE: оба подменяют его на чтении,
+    // так что правка всё равно не была бы видна.
+    const bioLocked = Boolean(existing.scam || existing.fake);
     const username = input.username?.trim().replace(/^@/, "");
 
     // Занятым считается и основной ник, и любой дополнительный: поиск идёт по
@@ -128,8 +225,30 @@ export class AuthService {
       ...(input.showLastSeen === undefined ? {} : { showLastSeen: input.showLastSeen }),
       ...(input.notificationSoundEnabled === undefined ? {} : { notificationSoundEnabled: input.notificationSoundEnabled }),
       ...(input.themeColor === undefined ? {} : { themeColor: input.themeColor }),
-      ...(input.wallpaperUrl === undefined ? {} : { wallpaperUrl: input.wallpaperUrl }),
+      ...(input.wallpaperUrl === undefined
+        ? {}
+        : {
+            wallpaperUrl: input.wallpaperUrl,
+            // Тип приходит только вместе с загрузкой файла. Вписали ссылку
+            // руками — считаем её картинкой: иначе прежний «video/mp4» заставил
+            // бы рисовать <video> поверх чужой картинки, а пустая строка —
+            // это «фон убран».
+            wallpaperMimeType: input.wallpaperMimeType ?? "",
+          }),
+      // Пустая строка и null означают «убрать заливку» — тогда баннер не рисуется.
+      ...(input.bannerColor === undefined
+        ? {}
+        : { bannerColor: input.bannerColor === "" ? null : input.bannerColor }),
+      // Прямая ссылка на баннер: пустая строка и null — «убрать».
+      ...(input.bannerUrl === undefined
+        ? {}
+        : { bannerUrl: input.bannerUrl === "" ? null : input.bannerUrl }),
       ...(input.birthday === undefined ? {} : { birthday: input.birthday }),
+      // Срок автозавершения сеансов. `null` — «никогда», его тоже сохраняем:
+      // иначе переключатель вернулся бы в «никогда» после перезахода.
+      ...(input.sessionAutoTerminateDays === undefined
+        ? {}
+        : { sessionAutoTerminateDays: input.sessionAutoTerminateDays }),
     };
 
     try {
@@ -142,7 +261,7 @@ export class AuthService {
     }
   }
 
-  async authenticateToken(token: string): Promise<string> {
+  async authenticateToken(token: string, context?: AuthContext): Promise<string> {
     let payload: string | JwtPayload;
     try {
       payload = jwt.verify(token, this.options.jwtSecret);
@@ -161,17 +280,227 @@ export class AuthService {
     if (user.isDeleted) {
       throw new AppError(403, "ACCOUNT_DELETED", "Этот аккаунт удалён владельцем Yargram");
     }
+
+    // Токен без сеанса — это токен, выданный до того, как сеансы появились.
+    // Запись заводим на месте: иначе после обновления разом вылетели бы все,
+    // кто уже вошёл. Дальше токен проверяется как обычный.
+    const hash = tokenFingerprint(token);
+    const session =
+      (await this.options.sessions.findByTokenHash(hash)) ??
+      (await attachSession(this.options.sessions, user.id, hash, context));
+    if (session.terminatedAt) {
+      throw new AppError(401, "SESSION_ENDED", "Этот сеанс завершён. Войдите снова.");
+    }
+    // Автозавершение: сеанс, который не использовался дольше срока из настроек,
+    // умирает сам. Помечаем завершённым, а не стираем — стёртый токен при
+    // следующем запросе приняли бы за новый вход.
+    if (sessionIsExpired(session, user)) {
+      await this.options.sessions.update(session.id, { terminatedAt: new Date().toISOString() });
+      throw new AppError(401, "SESSION_ENDED", "Сеанс завершён: им давно не пользовались. Войдите снова.");
+    }
+    if (shouldTouch(session)) {
+      await this.options.sessions.update(session.id, { lastSeenAt: new Date().toISOString() });
+    }
     return user.id;
   }
 
-  private createResult(user: User): AuthResult {
+  /**
+   * Выдаёт новый код и отправляет его письмом. В базу кладём хеш, а не сам
+   * код: утечка базы не должна дарить готовый код для входа.
+   * Возвращает срок жизни кода в секундах.
+   *
+   * `rotate` — повторная отправка. Письмо уходит со следующего ящика: если
+   * предыдущее не дошло (улетело в спам, потерялось), повтор по тому же пути
+   * попал бы в ту же папку «Спам». См. `MailService`.
+   */
+  private async issueCode(
+    user: User,
+    purpose: EmailCodePurpose,
+    options: { rotate?: boolean } = {},
+  ): Promise<number> {
+    const ttlSeconds = this.options.emailCodeTtlSeconds ?? 600;
+    const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+    await this.users.update(user.id, {
+      emailCodeHash: await bcrypt.hash(code, this.options.bcryptRounds),
+      emailCodePurpose: purpose,
+      emailCodeExpiresAt: expiresAt,
+      emailCodeAttempts: 0,
+    });
+    await this.options.mail?.sendCode({
+      to: user.email,
+      code,
+      minutes: Math.max(1, Math.round(ttlSeconds / 60)),
+      purpose,
+      ...(options.rotate ? { rotate: true } : {}),
+    });
+    return ttlSeconds;
+  }
+
+  /** Стирает действующий код: принять его больше нельзя. */
+  private async clearCode(userId: string): Promise<void> {
+    await this.users.update(userId, {
+      emailCodeHash: null,
+      emailCodePurpose: null,
+      emailCodeExpiresAt: null,
+      emailCodeAttempts: 0,
+    });
+  }
+
+  /** Находит владельца действующего кода или объясняет, почему код не подходит. */
+  private async findUserForCode(emailInput: string, purpose: EmailCodePurpose): Promise<User> {
+    const user = await this.users.findByEmail(emailInput.trim().toLowerCase());
+    if (!user || user.isDeleted) {
+      throw new AppError(400, "CODE_NOT_FOUND", "Запросите код заново");
+    }
+    // Брошенная регистрация: код так и не ввели, срок вышел. Аккаунта будто не
+    // было — стираем и отвечаем как на незнакомую почту. Проверяем **до** кода:
+    // просроченный код при этом уже стёрт, и по одному лишь коду отличить
+    // брошенную регистрацию от чужого запроса было бы нельзя.
+    if (isFailedRegistration(user)) {
+      await this.users.delete(user.id);
+      throw new AppError(400, "CODE_NOT_FOUND", "Запросите код заново");
+    }
+    // Назначение сверяем обязательно: код, выданный на вход, не должен
+    // подтверждать регистрацию и тем более сбрасывать пароль.
+    if (!user.emailCodeHash || !user.emailCodeExpiresAt || user.emailCodePurpose !== purpose) {
+      throw new AppError(400, "CODE_NOT_FOUND", "Запросите код заново");
+    }
+    if (new Date(user.emailCodeExpiresAt).getTime() <= Date.now()) {
+      await this.clearCode(user.id);
+      throw new AppError(400, "CODE_EXPIRED", "Срок действия кода истёк. Запросите новый.");
+    }
+    if ((user.emailCodeAttempts ?? 0) >= EMAIL_CODE_MAX_ATTEMPTS) {
+      await this.clearCode(user.id);
+      throw new AppError(429, "CODE_ATTEMPTS_EXCEEDED", "Слишком много неверных попыток. Запросите новый код.");
+    }
+    return user;
+  }
+
+  private async assertCodeMatches(user: User, code: string): Promise<void> {
+    if (!(await bcrypt.compare(code.trim(), user.emailCodeHash as string))) {
+      await this.users.update(user.id, { emailCodeAttempts: (user.emailCodeAttempts ?? 0) + 1 });
+      throw new AppError(400, "INVALID_CODE", "Неверный код");
+    }
+  }
+
+  /**
+   * Проверяет код и выдаёт токен. Код из письма подтверждает владение почтой,
+   * поэтому заодно выставляем `emailVerified`.
+   */
+  async confirmCode(
+    emailInput: string,
+    code: string,
+    purpose: EmailCodePurpose,
+    context?: AuthContext,
+  ): Promise<AuthResult> {
+    const user = await this.findUserForCode(emailInput, purpose);
+    await this.assertCodeMatches(user, code);
+    const updated = await this.users.update(user.id, {
+      emailCodeHash: null,
+      emailCodePurpose: null,
+      emailCodeExpiresAt: null,
+      emailCodeAttempts: 0,
+      emailVerified: true,
+    });
+    return this.createResult(updated, context);
+  }
+
+  /**
+   * Повторная отправка: предыдущий код сгорает, действует только свежий.
+   * Письмо уходит со следующего ящика — см. `issueCode`.
+   */
+  async resendCode(emailInput: string, purpose: EmailCodePurpose): Promise<EmailCodeChallenge> {
+    const user = await this.findUserForCode(emailInput, purpose);
+    const expiresInSeconds = await this.issueCode(user, purpose, { rotate: true });
+    return { status: "code_sent", email: user.email, purpose, expiresInSeconds };
+  }
+
+  /**
+   * Запрос на сброс пароля. Если почты в базе нет — отвечаем так же, как при
+   * успехе: иначе по ответу можно узнать, существует ли такой аккаунт.
+   */
+  async requestPasswordReset(emailInput: string): Promise<EmailCodeChallenge> {
+    const email = emailInput.trim().toLowerCase();
+    const purpose: EmailCodePurpose = "reset";
+    const user = await this.users.findByEmail(email);
+    if (!user || user.isDeleted) {
+      // Письмо не уходит, но ответ ничем не отличается от успешного.
+      return {
+        status: "code_sent",
+        email,
+        purpose,
+        expiresInSeconds: this.options.emailCodeTtlSeconds ?? 600,
+      };
+    }
+    // Брошенная регистрация: сброс пароля её не оживляет — стираем и молчим,
+    // как про незнакомую почту. Иначе «забыли пароль» продлевало бы жизнь
+    // записи, которую мы только что считали несостоявшейся.
+    if (isFailedRegistration(user)) {
+      await this.users.delete(user.id);
+      return {
+        status: "code_sent",
+        email,
+        purpose,
+        expiresInSeconds: this.options.emailCodeTtlSeconds ?? 600,
+      };
+    }
+    const expiresInSeconds = await this.issueCode(user, purpose);
+    return { status: "code_sent", email: user.email, purpose, expiresInSeconds };
+  }
+
+  /** Сброс пароля по коду из письма: код списывается, сразу выдаётся токен. */
+  async resetPassword(
+    emailInput: string,
+    code: string,
+    newPassword: string,
+    context?: AuthContext,
+  ): Promise<AuthResult> {
+    const user = await this.findUserForCode(emailInput, "reset");
+    await this.assertCodeMatches(user, code);
+    const passwordHash = await bcrypt.hash(newPassword, this.options.bcryptRounds);
+    const updated = await this.users.update(user.id, {
+      passwordHash,
+      emailCodeHash: null,
+      emailCodePurpose: null,
+      emailCodeExpiresAt: null,
+      emailCodeAttempts: 0,
+      emailVerified: true,
+    });
+    return this.createResult(updated, context);
+  }
+
+  private async createResult(user: User, context?: AuthContext): Promise<AuthResult> {
     const signOptions: SignOptions = {
       subject: user.id,
       expiresIn: this.options.jwtExpiresIn as NonNullable<SignOptions["expiresIn"]>,
+      // У каждого входа свой `jti`. Без него два входа в одну и ту же секунду
+      // дали бы два полностью одинаковых токена: сеансы нельзя было бы
+      // различить, и вход с чужого сайта выглядел бы как свой.
+      jwtid: randomUUID(),
     };
-    return {
-      accessToken: jwt.sign({}, this.options.jwtSecret, signOptions),
-      user: toCurrentUser(user),
-    };
+    const accessToken = jwt.sign({}, this.options.jwtSecret, signOptions);
+    await this.registerSession(user, accessToken, context);
+    return { accessToken, user: toCurrentUser(user) };
+  }
+
+  /**
+   * Привязывает выданный токен к сеансу — существующему или новому.
+   *
+   * Вход с незнакомого сайта помечаем: владельцу покажут окно «новый вход».
+   * На самый первый вход в аккаунт пометку не ставим — сравнивать ещё не с чем,
+   * и пугать человека окном про его же собственный вход незачем.
+   */
+  private async registerSession(user: User, token: string, context?: AuthContext): Promise<void> {
+    if (!context) return;
+    const live = (await this.options.sessions.listForUser(user.id)).filter(
+      (session) => !session.terminatedAt,
+    );
+    const known = live.some(
+      (session) => session.site === context.site && session.device === context.device,
+    );
+    await attachSession(this.options.sessions, user.id, tokenFingerprint(token), context, {
+      newDevice: live.length > 0 && !known,
+    });
   }
 }

@@ -36,6 +36,18 @@ export type DraftEvent = { userId: string; draft: ConversationDraft | null };
 export type FoldersEvent = { userId: string; folders: ConversationFolder[] };
 export type ScheduledMessageEvent = { userId: string; scheduled: ScheduledMessage };
 /**
+ * Изменилось что-то в дружбе: заявку прислали, приняли, отклонили или дружбу
+ * прекратили. Рассылаем обоим участникам — заявка должна появиться у человека
+ * сразу, а не после перезагрузки страницы.
+ */
+export type FriendshipEvent = {
+  /** Кому адресовано обновление — владельцу списка. */
+  userId: string;
+  /** С кем связано изменение: его профиль клиент перерисует. */
+  peer: PublicUser;
+  kind: "request" | "accepted" | "declined" | "removed";
+};
+/**
  * Аккаунт заморозили, разморозили или удалили. Рассылаем всем: собеседники
  * должны увидеть «Удалённый аккаунт» сразу, а не после перезагрузки.
  */
@@ -45,6 +57,17 @@ export type AccountStateEvent = {
   removed: boolean;
   /** Публичный вид: настоящий профиль (разморозка) или заглушка. */
   user: PublicUser;
+};
+
+/**
+ * Сеанс завершён — владелец закрыл его сам или выгнал всех остальных.
+ * Сокеты завершённого сеанса рвём сразу: иначе чужой вход продолжал бы
+ * получать сообщения, хотя токен уже мёртв.
+ */
+export type SessionTerminatedEvent = {
+  userId: string;
+  /** Отпечатки токенов завершённых сеансов: по ним находим их сокеты. */
+  tokenHashes: string[];
 };
 
 export class RealtimeEvents {
@@ -144,6 +167,22 @@ export class RealtimeEvents {
 
   onAccountState(listener: (event: AccountStateEvent) => void): () => void {
     return this.subscribe("account:state", listener);
+  }
+
+  publishFriendship(event: FriendshipEvent): void {
+    this.emitter.emit("friendship:changed", event);
+  }
+
+  onFriendship(listener: (event: FriendshipEvent) => void): () => void {
+    return this.subscribe("friendship:changed", listener);
+  }
+
+  publishSessionTerminated(event: SessionTerminatedEvent): void {
+    this.emitter.emit("session:terminated", event);
+  }
+
+  onSessionTerminated(listener: (event: SessionTerminatedEvent) => void): () => void {
+    return this.subscribe("session:terminated", listener);
   }
 
   private subscribe<T>(eventName: string, listener: (event: T) => void): () => void {

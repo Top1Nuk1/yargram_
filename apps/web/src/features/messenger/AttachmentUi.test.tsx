@@ -58,14 +58,31 @@ describe('voice metadata and playback', () => {
     unmount();
     expect(revoke).toHaveBeenCalledWith('blob:repaired');
   });
-  it('renders video circles with accessible native inline playback', () => {
+  it('renders a round video circle with its own controls, not the rectangular native bar', () => {
     const { container } = render(<MessageAttachments attachments={[{ ...attachment, mediaKind: 'video_circle' } as Attachment]} mine onOpenImage={vi.fn()} />);
     const video = container.querySelector('video')!;
-    expect(video.controls).toBe(true);
+    // Нативные controls рисуют прямоугольную панель поверх круглого кадра —
+    // именно из-за неё кружок выглядел квадратом. Управление теперь своё.
+    expect(video.controls).toBe(false);
     expect(video.playsInline).toBe(true);
     expect(video.preload).toBe('metadata');
     expect(video.getAttribute('aria-label')).toContain('Видеосообщение');
+    expect(screen.getByRole('button').getAttribute('aria-label')).toContain('видеокружок');
+    // Круглый кадр: рамка обрезает видео по кругу, иначе виден квадрат.
+    const frame = video.parentElement!;
+    expect(frame.className).toContain('rounded-full');
+    expect(frame.className).toContain('aspect-square');
     expect(container.querySelector('audio')).toBeNull();
     expect(container.querySelector('a')).toBeNull();
+  });
+
+  it('toggles video circle playback from the overlay', () => {
+    const play = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(play);
+    const { container } = render(<MessageAttachments attachments={[{ ...attachment, mediaKind: 'video_circle' } as Attachment]} mine onOpenImage={vi.fn()} />);
+    const video = container.querySelector('video')!;
+    Object.defineProperty(video, 'paused', { configurable: true, value: true });
+    fireEvent.click(screen.getByRole('button'));
+    expect(play).toHaveBeenCalled();
   });
 });

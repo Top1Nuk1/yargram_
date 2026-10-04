@@ -3,6 +3,7 @@ import { Ban, BellOff, Clock, Crown, Shield, ShieldCheck, Tag, Trash2 } from 'lu
 import { Dialog, Switch } from '../../components/Dialog';
 import { Avatar, Button } from '../../components/ui';
 import { UserName } from '../../components/UserName';
+import { useTranslation, type TranslateFn } from '../../hooks/useLanguage';
 import {
   allGroupPermissions,
   groupMemberMuted,
@@ -26,6 +27,7 @@ import {
 import { MemberTag } from './MemberTag';
 
 function MemberHead({ member }: { member: GroupMember }) {
+  const t = useTranslation();
   return (
     <div className="flex flex-col items-center px-5 py-4 text-center">
       <Avatar
@@ -40,20 +42,22 @@ function MemberHead({ member }: { member: GroupMember }) {
         <MemberTag tag={member.tag} role={member.role} className="text-xs" />
       </p>
       <p className="mt-1 text-xs text-muted">
-        {member.user.isOnline ? 'в сети' : 'был(а) недавно'}
+        {member.user.isOnline ? t('groups.onlineNow') : t('groups.recently')}
       </p>
     </div>
   );
 }
 
-/** Сроки мьюта: null — бессрочно. */
-export const muteOptions: Array<{ label: string; hours: number | null }> = [
-  { label: '1 час', hours: 1 },
-  { label: '8 часов', hours: 8 },
-  { label: '1 день', hours: 24 },
-  { label: '1 неделя', hours: 24 * 7 },
-  { label: 'Навсегда', hours: null },
-];
+/** Сроки мьюта: null — бессрочно. Подписи переводим в момент отрисовки. */
+function muteOptionList(t: TranslateFn): Array<{ label: string; hours: number | null }> {
+  return [
+    { label: t('groups.mute1h'), hours: 1 },
+    { label: t('groups.mute8h'), hours: 8 },
+    { label: t('groups.mute1d'), hours: 24 },
+    { label: t('groups.mute1w'), hours: 24 * 7 },
+    { label: t('groups.muteForever'), hours: null },
+  ];
+}
 
 /**
  * Карточка участника — отдельным окном, как профиль или настройки, чтобы
@@ -86,17 +90,19 @@ export function MemberCardDialog({
   onUnmute: () => void;
   onRemove: () => void;
 }) {
+  const t = useTranslation();
   const muted = groupMemberMuted(member);
   const canRemove = memberActionAllowed(conversation, currentUserId, member, 'remove');
+  const muteOptions = muteOptionList(t);
 
   return (
     <Dialog
-      title="Участник"
+      title={t('groups.memberDialogTitle')}
       onClose={onClose}
       footer={
         canRemove ? (
           <Button type="button" variant="danger" className="min-h-10 w-full" disabled={busy} onClick={onRemove}>
-            <Trash2 className="h-4 w-4" /> Удалить из группы
+            <Trash2 className="h-4 w-4" /> {t('groups.removeFromGroupLong')}
           </Button>
         ) : undefined
       }
@@ -124,7 +130,7 @@ export function MemberCardDialog({
           {groupRoleLabel(member.role)}
         </p>
         {muted && (
-          <p className="mt-1 text-xs text-danger">Заглушён · {mutedUntilLabel(member.mutedUntil)}</p>
+          <p className="mt-1 text-xs text-danger">{t('groups.mutedStatus', { until: mutedUntilLabel(member.mutedUntil) })}</p>
         )}
       </div>
 
@@ -138,9 +144,9 @@ export function MemberCardDialog({
           >
             <Shield className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
             <span className="min-w-0 flex-1 text-sm font-semibold text-ink">
-              {member.role === 'admin' ? 'Права администратора' : 'Назначить администратором'}
+              {member.role === 'admin' ? t('groups.adminRights') : t('groups.makeAdmin')}
             </span>
-            <span className="shrink-0 text-xs font-semibold text-brand">Настроить</span>
+            <span className="shrink-0 text-xs font-semibold text-brand">{t('groups.configure')}</span>
           </button>
         )}
 
@@ -153,12 +159,12 @@ export function MemberCardDialog({
           >
             <Tag className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />
             <span className="min-w-0 flex-1 text-sm font-semibold text-ink">
-              Изменить тег участника
+              {t('groups.changeMemberTag')}
             </span>
             {member.tag ? (
               <MemberTag tag={member.tag} role={member.role} />
             ) : (
-              <span className="shrink-0 text-xs text-muted">без тега</span>
+              <span className="shrink-0 text-xs text-muted">{t('groups.noTag')}</span>
             )}
           </button>
         )}
@@ -167,7 +173,7 @@ export function MemberCardDialog({
           <>
             <section className="overflow-hidden rounded-xl bg-canvas">
               <p className="px-4 pt-3 text-xs font-bold uppercase tracking-wide text-muted">
-                Разрешения участника
+                {t('groups.memberPermissions')}
               </p>
               {/* Участнику управляющие права не выдать — их и не показываем. */}
               {(member.role === 'admin' ? groupPermissionKeys : memberPermissionKeys).map((permission) => (
@@ -187,7 +193,7 @@ export function MemberCardDialog({
 
             <section className="overflow-hidden rounded-xl bg-canvas">
               <p className="flex items-center gap-1.5 px-4 pt-3 text-xs font-bold uppercase tracking-wide text-muted">
-                <BellOff className="h-3.5 w-3.5" aria-hidden="true" /> Мьют
+                <BellOff className="h-3.5 w-3.5" aria-hidden="true" /> {t('groups.mute')}
               </p>
               {muted ? (
                 <button
@@ -197,7 +203,7 @@ export function MemberCardDialog({
                   className="mt-2 flex w-full items-center gap-2 border-t border-line/60 px-4 py-3 text-left text-sm font-semibold text-brand transition hover:bg-brand-soft/40 disabled:opacity-60"
                 >
                   <Clock className="h-4 w-4" aria-hidden="true" />
-                  Снять мьют
+                  {t('groups.unmute')}
                 </button>
               ) : (
                 <div className="mt-2 flex flex-wrap gap-1.5 border-t border-line/60 p-3">
@@ -220,7 +226,7 @@ export function MemberCardDialog({
 
         {!canManage && member.user.id !== currentUserId && (
           <p className="px-1 text-center text-xs leading-5 text-muted">
-            Управлять участниками могут владелец и администраторы группы.
+            {t('groups.manageHint')}
           </p>
         )}
       </div>
@@ -248,6 +254,7 @@ export function AdminRightsDialog({
   /** Снять администратора — доступно, если он им уже является. */
   onDemote?: () => void;
 }) {
+  const t = useTranslation();
   const promoting = member.role !== 'admin';
   // Права администратора: его собственные, иначе общие для администраторов.
   const [draft, setDraft] = useState<GroupPermissions>(() => ({
@@ -262,10 +269,10 @@ export function AdminRightsDialog({
 
   return (
     <Dialog
-      title={promoting ? 'Добавить администратора' : 'Права администратора'}
+      title={promoting ? t('groups.addAdminTitle') : t('groups.adminRights')}
       subtitle={
         <p className="mt-1 text-sm text-muted">
-          Возможности администратора включаются по отдельности.
+          {t('groups.adminCapabilitiesHint')}
         </p>
       }
       onClose={onClose}
@@ -279,11 +286,11 @@ export function AdminRightsDialog({
               disabled={busy}
               onClick={onDemote}
             >
-              Снять администратора
+              {t('groups.demoteAdmin')}
             </Button>
           )}
           <Button type="button" variant="ghost" className="min-h-10" onClick={onClose}>
-            Отмена
+            {t('common.cancel')}
           </Button>
           <Button
             type="button"
@@ -291,14 +298,14 @@ export function AdminRightsDialog({
             loading={busy}
             onClick={() => onSubmit(draft)}
           >
-            Сохранить
+            {t('common.save')}
           </Button>
         </>
       }
     >
       <MemberHead member={member} />
 
-      <p className="px-1 pb-2 text-sm font-semibold text-brand">Возможности администратора:</p>
+      <p className="px-1 pb-2 text-sm font-semibold text-brand">{t('groups.adminCapabilities')}</p>
       <section className="overflow-hidden rounded-xl bg-canvas">
         {groupPermissionKeys.map((permission) => {
           // Выдать больше, чем есть у себя, нельзя — владелец может всё.
@@ -329,8 +336,8 @@ export function AdminRightsDialog({
 
       <p className="mx-1 mt-3 rounded-xl bg-canvas px-3 py-2 text-xs leading-5 text-muted">
         {draft.add_admins
-          ? 'Этот администратор сможет назначать новых администраторов.'
-          : 'Этот администратор не сможет добавлять новых администраторов.'}
+          ? t('groups.adminCanAddAdmins')
+          : t('groups.adminCannotAddAdmins')}
       </p>
     </Dialog>
   );
@@ -351,6 +358,7 @@ export function MemberTagDialog({
   onClose: () => void;
   onSubmit: (tag: string) => void;
 }) {
+  const t = useTranslation();
   const [value, setValue] = useState(member.tag ?? '');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -362,12 +370,12 @@ export function MemberTagDialog({
 
   return (
     <Dialog
-      title="Изменить тег участника"
+      title={t('groups.changeMemberTag')}
       onClose={onClose}
       footer={
         <>
           <Button type="button" variant="ghost" className="min-h-10" onClick={onClose}>
-            Отмена
+            {t('common.cancel')}
           </Button>
           <Button
             type="button"
@@ -375,7 +383,7 @@ export function MemberTagDialog({
             loading={busy}
             onClick={() => onSubmit(preview)}
           >
-            Сохранить
+            {t('common.save')}
           </Button>
         </>
       }
@@ -384,32 +392,30 @@ export function MemberTagDialog({
 
       {/* Превью: так подпись будет выглядеть рядом с именем. */}
       <div className="mx-1 mb-3 rounded-xl bg-canvas px-4 py-3">
-        <p className="text-[11px] font-bold uppercase tracking-wide text-muted">Как это выглядит</p>
+        <p className="text-[11px] font-bold uppercase tracking-wide text-muted">{t('groups.tagPreview')}</p>
         <p className="mt-1.5 inline-flex max-w-full items-center gap-2 text-sm font-bold text-ink">
           <UserName name={member.user.displayName} user={member.user} size="sm" />
           {preview ? (
             <MemberTag tag={preview} role={member.role} />
           ) : (
-            <span className="text-xs font-normal text-muted">без тега</span>
+            <span className="text-xs font-normal text-muted">{t('groups.noTag')}</span>
           )}
         </p>
       </div>
 
       <label className="block px-1">
-        <span className="sr-only">Тег участника</span>
+        <span className="sr-only">{t('groups.memberTagLabel')}</span>
         <input
           ref={inputRef}
           value={value}
           maxLength={24}
           onChange={(event) => setValue(event.target.value)}
-          placeholder="Например, #смирнёха"
+          placeholder={t('groups.tagExample')}
           className="h-11 w-full rounded-xl border border-line bg-canvas px-3.5 text-[15px] text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
         />
       </label>
       <p className="mt-2 px-1 text-xs leading-5 text-muted">
-        Вы можете указать тег, который будет отображаться рядом с именем. Цвет подписи зависит от
-        роли: у владельца фиолетовый, у администратора зелёный, у участника серый. Пустое поле
-        снимает тег.
+        {t('groups.tagHelp')}
       </p>
     </Dialog>
   );

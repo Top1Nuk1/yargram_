@@ -18,6 +18,9 @@ apps/server/data/*.json
 # the local PostgreSQL cluster, previews, e2e and test output, launch logs.
 runtime/
 apps/server/data/uploads/
+# Удалённые пользовательские вложения: это данные, а не исходники — в репозиторий
+# им нельзя (внутри может лежать чужая фотография).
+apps/server/data/_removed/
 apps/server/data/*.backup-*
 
 # Logs
@@ -38,3 +41,4 @@ Desktop.ini
 # Local leftovers: kept on disk, not part of the Yargram project
 Ошибки/
 в приложение/
+1/

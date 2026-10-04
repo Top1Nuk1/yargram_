@@ -114,3 +114,32 @@ export function accountSubtitle(account: StoredAccount): string {
   // доступен только просмотр.
   return account.user.isFrozen ? `${base} · заморожен` : base;
 }
+
+/** Сколько аккаунтов помещается на устройство обычному человеку. */
+export const DEFAULT_ACCOUNT_LIMIT = 3;
+/** Предел, когда среди аккаунтов устройства есть значок «Yargram» или галочка. */
+export const MARKED_ACCOUNT_LIMIT = 4;
+
+/**
+ * Сколько аккаунтов разрешено держать на этом устройстве.
+ *
+ * Считаем по уже сохранённым аккаунтам: обычному человеку — три, чтобы было
+ * что переключать. Значок «Yargram» или галочка хотя бы на одном из них
+ * поднимают предел до четырёх, а владельцу счёт не ведём вовсе.
+ *
+ * Проверка живёт на клиенте: устройство серверу не известно, и предела на
+ * число сессий у него нет. Это правило интерфейса, а не защита — токены
+ * по-прежнему выдаются всем.
+ */
+export function accountLimit(accounts: StoredAccount[]): number {
+  if (accounts.some((account) => account.user.isOwner)) return Number.POSITIVE_INFINITY;
+  if (accounts.some((account) => Boolean(account.user.badge) || account.user.isVerified)) {
+    return MARKED_ACCOUNT_LIMIT;
+  }
+  return DEFAULT_ACCOUNT_LIMIT;
+}
+
+/** Поместится ли на устройство ещё один аккаунт. */
+export function canAddAccount(accounts: StoredAccount[]): boolean {
+  return accounts.length < accountLimit(accounts);
+}

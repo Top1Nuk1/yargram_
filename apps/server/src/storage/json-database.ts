@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import { allowedReactionEmojis, groupPermissions, type DatabaseState } from "../domain/models.js";
 
-const attachmentKindSchema = z.enum(["image", "file", "avatar"]);
+const attachmentKindSchema = z.enum(["image", "file", "avatar", "banner", "wallpaper"]);
 const attachmentSchema = z.object({
   id: z.string(),
   ownerId: z.string(),
@@ -37,11 +37,32 @@ const userSchema = z
     showLastSeen: z.boolean().default(true),
     themeColor: z.string().optional(),
     wallpaperUrl: z.string().optional(),
+    // Тип фона: без этой строки хранилище молча вырезало бы поле при чтении,
+    // и видеофон после перезапуска снова рисовался бы как картинка.
+    wallpaperMimeType: z.string().optional(),
+    // Баннер профиля: заливка или картинка. Без этих строк хранилище молча
+    // вырезало бы новые поля при чтении — баннер «работал» бы и пропадал.
+    bannerColor: z.string().optional(),
+    banner: attachmentViewSchema.optional(),
+    bannerUrl: z.string().optional(),
     isVerified: z.boolean().optional(),
     badge: z.enum(["yargram"]).nullable().optional(),
     scam: z.boolean().optional(),
+    // Отметка FAKE: аккаунт выдаёт себя за официальный. Без строки схема
+    // вырезала бы флаг при чтении, и отметка пропадала бы после перезапуска.
+    fake: z.boolean().optional(),
     usernames: z.array(z.string()).optional(),
     adminUserIds: z.array(z.string()).optional(),
+    // Дружба: без этих строк хранилище молча вырезало бы списки при чтении,
+    // и друзья пропадали бы после перезапуска сервера.
+    friendIds: z.array(z.string()).optional(),
+    outgoingFriendRequestIds: z.array(z.string()).optional(),
+    incomingFriendRequestIds: z.array(z.string()).optional(),
+    isApp: z.boolean().optional(),
+    // Служебный аккаунт бота. Без этой строки схема вырезала бы метку при
+    // чтении: бот перестал бы считаться ботом после перезапуска сервера —
+    // у него пропала бы плашка «бот», а вход в него снова открылся бы.
+    isBot: z.boolean().optional(),
     isOwner: z.boolean().optional(),
     isBanned: z.boolean().optional(),
     isFrozen: z.boolean().optional(),
@@ -49,6 +70,16 @@ const userSchema = z
     deletedAt: z.string().optional(),
     // Год необязателен: «MM-DD» — день рождения без возраста.
     birthday: z.string().regex(/^(?:\d{4}-)?\d{2}-\d{2}$/, "Birthday must be a YYYY-MM-DD or MM-DD date").optional(),
+    // Код подтверждения почты. Без этих строк схема вырезала бы поля при
+    // чтении: код «выдавался» бы и тут же пропадал после перезапуска.
+    emailVerified: z.boolean().optional(),
+    emailCodeHash: z.string().nullable().optional(),
+    emailCodePurpose: z.enum(["register", "login", "reset"]).nullable().optional(),
+    emailCodeExpiresAt: z.string().nullable().optional(),
+    emailCodeAttempts: z.number().int().min(0).optional(),
+    // Автозавершение сеансов. Без этой строки схема вырезала бы поле при
+    // чтении: настройка сохранялась бы и пропадала после перезапуска.
+    sessionAutoTerminateDays: z.number().int().min(1).max(365).nullable().optional(),
     createdAt: z.string(),
   })
   .transform((user) => ({
@@ -96,6 +127,17 @@ const pollSchema = z.object({
   closed: z.boolean().default(false),
 });
 
+// Кнопки бота и привязка обращения. Без этих строк схема вырезала бы их при
+// чтении: кнопки пропадали бы после перезапуска, а ответ владельца не находил
+// бы адресата — обращение оставалось бы без ответа.
+const botButtonSchema = z.object({ label: z.string(), action: z.string() });
+const botKeyboardSchema = z.array(z.array(botButtonSchema));
+const supportTicketSchema = z.object({
+  userId: z.string(),
+  category: z.string(),
+  topic: z.string().optional(),
+});
+
 const conversationSchema = z
   .object({
     id: z.string(),
@@ -128,6 +170,13 @@ const conversationSchema = z
     isVerified: z.boolean().optional(),
     badge: z.enum(["yargram"]).nullable().optional(),
     scam: z.boolean().optional(),
+    // Отметка FAKE у группы: без строки схема вырезала бы флаг при чтении,
+    // и отметка пропадала бы после перезапуска.
+    fake: z.boolean().optional(),
+    // Служебная группа поддержки. Без этой строки схема вырезала бы метку при
+    // чтении: бот перестал бы находить свою группу и заводил бы новую на
+    // каждое обращение, а сама группа вернулась бы в поиск и статистику.
+    isSupportInbox: z.boolean().optional(),
   })
   .transform((conversation) => {
     const pinnedMessageIds = [...new Set(conversation.pinnedMessageIds ?? [])];
@@ -165,10 +214,12 @@ const messageSchema = z
     conversationId: z.string(),
     senderId: z.string(),
     text: z.string(),
-    kind: z.enum(["user", "system", "poll"]).default("user"),
+    kind: z.enum(["user", "system", "poll", "bot"]).default("user"),
     systemEvent: z.enum(["call", "user_joined", "user_left"]).optional(),
     call: callMessageSchema.optional(),
     poll: pollSchema.optional(),
+    keyboard: botKeyboardSchema.optional(),
+    supportTicket: supportTicketSchema.optional(),
     createdAt: z.string(),
     editedAt: z.string().optional(),
     replyToId: z.string().optional(),
@@ -260,6 +311,19 @@ const scheduledMessageSchema = z.object({
   failureReason: z.string().optional(),
 });
 
+const sessionSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  tokenHashes: z.array(z.string()).default([]),
+  site: z.string().default(""),
+  device: z.string().default(""),
+  createdAt: z.string(),
+  lastSeenAt: z.string(),
+  newDevice: z.boolean().optional(),
+  acknowledgedAt: z.string().nullable().optional(),
+  terminatedAt: z.string().nullable().optional(),
+});
+
 export const databaseSchema = z.object({
   version: z.literal(1),
   users: z.array(userSchema),
@@ -272,6 +336,7 @@ export const databaseSchema = z.object({
   drafts: z.array(draftSchema).default([]),
   folders: z.array(folderSchema).default([]),
   scheduledMessages: z.array(scheduledMessageSchema).default([]),
+  sessions: z.array(sessionSchema).default([]),
 });
 
 const emptyState = (): DatabaseState => ({
@@ -286,6 +351,7 @@ const emptyState = (): DatabaseState => ({
   drafts: [],
   folders: [],
   scheduledMessages: [],
+  sessions: [],
 });
 
 export class JsonDatabase {

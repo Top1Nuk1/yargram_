@@ -23,6 +23,8 @@ import { avatarProps } from '../../lib/user';
 import type { Conversation, Message, ReportReason, User, FavoriteNote } from '../../types';
 import { formatLastSeen, messageSummary } from './messengerUtils';
 import { presenceTextClass } from '../../lib/presence';
+import { useTranslation } from '../../hooks/useLanguage';
+import { translateScamWarning } from '../../lib/i18n';
 
 interface ModalProps {
   title: string;
@@ -32,7 +34,10 @@ interface ModalProps {
   width?: string;
 }
 
-function Modal({ title, description, onClose, children, width = 'sm:max-w-[560px]' }: ModalProps) {
+/** Общая оболочка модалок. Экспортируем: ею пользуется и экран «Друзья»,
+ *  чтобы все окна выглядели одинаково, а не заводили свою копию. */
+export function Modal({ title, description, onClose, children, width = 'sm:max-w-[560px]' }: ModalProps) {
+  const t = useTranslation();
   useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
     document.addEventListener('keydown', close);
@@ -46,7 +51,7 @@ function Modal({ title, description, onClose, children, width = 'sm:max-w-[560px
             <h2 className="truncate text-lg font-extrabold tracking-[-0.02em] text-ink">{title}</h2>
             {description && <p className="mt-0.5 text-xs leading-5 text-muted">{description}</p>}
           </div>
-          <IconButton label="Закрыть" onClick={onClose}><X className="h-5 w-5" /></IconButton>
+          <IconButton label={t('modals.close')} onClick={onClose}><X className="h-5 w-5" /></IconButton>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-5">{children}</div>
       </section>
@@ -65,13 +70,14 @@ interface ForwardMessageModalProps {
 }
 
 export function ForwardMessageModal({ token, message, conversations, currentUserId, onClose, onForwarded, onUnauthorized }: ForwardMessageModalProps) {
+  const t = useTranslation();
   const [query, setQuery] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const visible = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase('ru-RU');
-    return conversations.filter((conversation) => !conversation.archived && (!normalized || conversationTitle(conversation, currentUserId).toLocaleLowerCase('ru-RU').includes(normalized)));
-  }, [conversations, currentUserId, query]);
+    return conversations.filter((conversation) => !conversation.archived && (!normalized || conversationTitle(conversation, currentUserId, t).toLocaleLowerCase('ru-RU').includes(normalized)));
+  }, [conversations, currentUserId, query, t]);
 
   async function forward(conversation: Conversation) {
     setBusyId(conversation.id);
@@ -85,35 +91,35 @@ export function ForwardMessageModal({ token, message, conversations, currentUser
         onUnauthorized();
         return;
       }
-      setError(reason instanceof ApiError ? reason.message : 'Не удалось переслать сообщение.');
+      setError(reason instanceof ApiError ? reason.message : t('modals.forwardFailed'));
     } finally {
       setBusyId(null);
     }
   }
 
   return (
-    <Modal title="Переслать сообщение" description={messageSummary(message)} onClose={onClose}>
+    <Modal title={t('modals.forwardMessage')} description={messageSummary(message)} onClose={onClose}>
       <label className="relative block">
         <Search className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-muted" />
-        <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} className="h-11 w-full rounded-xl border border-line bg-canvas pl-10 pr-4 text-sm outline-none focus:border-brand/50 focus:ring-4 focus:ring-brand/10" placeholder="Найти диалог" />
+        <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} className="h-11 w-full rounded-xl border border-line bg-canvas pl-10 pr-4 text-sm outline-none focus:border-brand/50 focus:ring-4 focus:ring-brand/10" placeholder={t('modals.findDialog')} />
       </label>
       {error && <p className="mt-3 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>}
       <ul className="mt-3 space-y-1">
         {visible.map((conversation) => {
           const peer = getConversationPeer(conversation, currentUserId);
-          const title = conversationTitle(conversation, currentUserId);
+          const title = conversationTitle(conversation, currentUserId, t);
           return (
             <li key={conversation.id}>
               <button type="button" disabled={busyId !== null} onClick={() => void forward(conversation)} className="flex w-full items-center gap-3 rounded-xl p-2.5 text-left transition hover:bg-brand-soft/45 disabled:opacity-55">
                 <Avatar name={title} src={peer?.avatarUrl} size="sm" online={peer?.isOnline ?? peer?.online} {...avatarProps(peer, title)} />
-                <span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold">{title}</span><span className="block truncate text-xs text-muted">{peer?.username ? `@${peer.username}` : 'Личный диалог'}</span></span>
+                <span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold">{title}</span><span className="block truncate text-xs text-muted">{peer?.username ? `@${peer.username}` : t('modals.directDialog')}</span></span>
                 {busyId === conversation.id ? <Spinner className="h-4 w-4 text-brand" /> : <Forward className="h-4 w-4 text-muted" />}
               </button>
             </li>
           );
         })}
       </ul>
-      {visible.length === 0 && <p className="py-10 text-center text-sm text-muted">Подходящих диалогов нет.</p>}
+      {visible.length === 0 && <p className="py-10 text-center text-sm text-muted">{t('modals.noSuitableDialogs')}</p>}
     </Modal>
   );
 }
@@ -127,6 +133,7 @@ interface FavoritesModalProps {
 }
 
 export function FavoritesModal({ token, currentUserId, onClose, onOpenMessage, onUnauthorized }: FavoritesModalProps) {
+  const t = useTranslation();
   const [items, setItems] = useState<Message[]>([]);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState('');
@@ -141,25 +148,25 @@ export function FavoritesModal({ token, currentUserId, onClose, onOpenMessage, o
         onUnauthorized();
         return;
       }
-      setError(reason instanceof ApiError ? reason.message : 'Не удалось загрузить избранное.');
+      setError(reason instanceof ApiError ? reason.message : t('modals.favoritesLoadFailed'));
       setState('error');
     });
     return () => controller.abort();
-  }, [onUnauthorized, token]);
+  }, [onUnauthorized, t, token]);
 
   return (
-    <Modal title="Избранные сообщения" description="Сохранённые сообщения доступны после перезапуска" onClose={onClose}>
+    <Modal title={t('modals.favoritesTitle')} description={t('modals.favoritesSubtitle')} onClose={onClose}>
       {state === 'loading' && <div className="grid min-h-52 place-items-center"><Spinner className="h-7 w-7 text-brand" /></div>}
       {state === 'error' && <InlineError message={error} />}
       {state === 'ready' && items.length === 0 && (
-        <div className="grid min-h-52 place-items-center text-center"><div><span className="mx-auto grid h-16 w-16 place-items-center rounded-xl bg-brand-soft text-brand"><Star className="h-7 w-7" /></span><p className="mt-4 font-bold">Здесь пока пусто</p><p className="mt-1 text-sm text-muted">Добавьте сообщение через меню действий.</p></div></div>
+        <div className="grid min-h-52 place-items-center text-center"><div><span className="mx-auto grid h-16 w-16 place-items-center rounded-xl bg-brand-soft text-brand"><Star className="h-7 w-7" /></span><p className="mt-4 font-bold">{t('modals.favoritesEmpty')}</p><p className="mt-1 text-sm text-muted">{t('modals.favoritesEmptyHint')}</p></div></div>
       )}
       {state === 'ready' && items.length > 0 && (
         <ul className="space-y-2">
           {items.map((message) => (
             <li key={message.id}>
               <button type="button" className="w-full rounded-xl border border-line bg-canvas p-3 text-left transition hover:border-brand/35 hover:bg-brand-soft/20" onClick={() => { onOpenMessage(message.conversationId, message.id); onClose(); }}>
-                <span className="flex items-center gap-2 text-[11px] font-bold text-brand"><Star className="h-3.5 w-3.5 fill-current" /><UserName size="sm" name={messageSenderId(message) === currentUserId ? 'Вы' : message.sender?.displayName ?? message.author?.displayName ?? 'Собеседник'} user={messageSenderId(message) === currentUserId ? null : message.sender ?? message.author} /><span className="ml-auto font-medium text-muted">{formatMessageTime(message.createdAt)}</span></span>
+                <span className="flex items-center gap-2 text-[11px] font-bold text-brand"><Star className="h-3.5 w-3.5 fill-current" /><UserName size="sm" name={messageSenderId(message) === currentUserId ? t('modals.you') : message.sender?.displayName ?? message.author?.displayName ?? t('modals.peer')} user={messageSenderId(message) === currentUserId ? null : message.sender ?? message.author} /><span className="ml-auto font-medium text-muted">{formatMessageTime(message.createdAt)}</span></span>
                 <span className="mt-1.5 line-clamp-3 block whitespace-pre-wrap text-sm leading-5 text-ink">{messageSummary(message)}</span>
               </button>
             </li>
@@ -170,11 +177,11 @@ export function FavoritesModal({ token, currentUserId, onClose, onOpenMessage, o
   );
 }
 
-const REPORT_REASONS: { value: ReportReason; label: string }[] = [
-  { value: 'spam', label: 'Спам' },
-  { value: 'abuse', label: 'Оскорбления' },
-  { value: 'fraud', label: 'Мошенничество' },
-  { value: 'other', label: 'Другое' },
+const REPORT_REASONS: { value: ReportReason; labelKey: string }[] = [
+  { value: 'spam', labelKey: 'modals.reportSpam' },
+  { value: 'abuse', labelKey: 'modals.reportAbuse' },
+  { value: 'fraud', labelKey: 'modals.reportFraud' },
+  { value: 'other', labelKey: 'modals.reportOther' },
 ];
 
 interface PeerProfileModalProps {
@@ -190,6 +197,7 @@ interface PeerProfileModalProps {
 }
 
 export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onAudioCall, onVideoCall, onBlockedChange, onUnauthorized }: PeerProfileModalProps) {
+  const t = useTranslation();
   const [profile, setProfile] = useState(user);
   const [isBlocked, setIsBlocked] = useState(blocked || Boolean(user.blockedByMe));
   // Удалённый аккаунт: историю можно читать, но писать и звонить нельзя.
@@ -221,7 +229,7 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
   }, [token, user.id]);
 
   async function toggleBlock() {
-    if (!isBlocked && !window.confirm(`Заблокировать @${profile.username ?? profile.displayName}? Он не сможет писать и звонить вам.`)) return;
+    if (!isBlocked && !window.confirm(t('modals.confirmBlock', { name: profile.username ?? profile.displayName }))) return;
     setBusy(true);
     setError('');
     try {
@@ -229,10 +237,10 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
       const next = !isBlocked;
       setIsBlocked(next);
       onBlockedChange(next, result.user);
-      setNotice(next ? 'Пользователь заблокирован.' : 'Пользователь разблокирован.');
+      setNotice(next ? t('modals.userBlocked') : t('modals.userUnblocked'));
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized();
-      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось изменить блокировку.');
+      setError(reasonError instanceof ApiError ? reasonError.message : t('modals.blockChangeFailed'));
     } finally {
       setBusy(false);
     }
@@ -244,18 +252,18 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
     try {
       await api.reportUser(token, profile.id, reason, details);
       setReportOpen(false);
-      setNotice('Жалоба отправлена и сохранена.');
+      setNotice(t('modals.reportSent'));
       setDetails('');
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized();
-      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось отправить жалобу.');
+      setError(reasonError instanceof ApiError ? reasonError.message : t('modals.reportFailed'));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <Modal title="Профиль" onClose={onClose} width="sm:max-w-[520px]">
+    <Modal title={t('modals.profileTitle')} onClose={onClose} width="sm:max-w-[520px]">
       <div className="text-center">
         <Avatar name={profile.displayName} src={profile.avatarUrl ?? profile.avatar?.url} size="xl" online={profile.isOnline ?? profile.online} className="justify-center" {...avatarProps(profile)} />
         <h3 className="mt-4 text-xl font-black tracking-[-0.025em]">
@@ -269,38 +277,39 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
           primaryUsername={profile.username}
           className="mt-0.5 block text-center text-muted"
         />
-        <p className={`mt-1 text-xs ${presenceTextClass(profile)}`}>{formatLastSeen(profile)}</p>
+        <p className={`mt-1 text-xs ${presenceTextClass(profile)}`}>{formatLastSeen(profile, t)}</p>
       </div>
-      {/* Описание помеченного SCAM — предупреждение владельца Yargram, копировать нельзя. */}
-      {profile.scam ? (
+      {/* Описание помеченного SCAM или FAKE — предупреждение владельца Yargram,
+          копировать нельзя; текст переводим на язык интерфейса по совпадению. */}
+      {profile.scam || profile.fake ? (
         <ScamWarning
-          text={profile.bio ?? ''}
+          text={translateScamWarning(profile.bio ?? '', t)}
           className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink"
         />
       ) : (
         profile.bio && <p className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink">{profile.bio}</p>
       )}
       <dl className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-line p-3 text-xs">
-        <div><dt className="text-muted">Статус</dt><dd className="mt-0.5 font-bold text-ink">{profile.isOnline ?? profile.online ? 'В сети' : 'Не в сети'}</dd></div>
-        <div><dt className="text-muted">В Yargram с</dt><dd className="mt-0.5 font-bold text-ink">{profile.createdAt ? new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(profile.createdAt)) : 'Дата неизвестна'}</dd></div>
+        <div><dt className="text-muted">{t('modals.statusLabel')}</dt><dd className="mt-0.5 font-bold text-ink">{profile.isOnline ?? profile.online ? t('modals.online') : t('modals.offline')}</dd></div>
+        <div><dt className="text-muted">{t('modals.yargramSince')}</dt><dd className="mt-0.5 font-bold text-ink">{profile.createdAt ? new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(profile.createdAt)) : t('modals.dateUnknown')}</dd></div>
       </dl>
       <div className="mt-4 grid grid-cols-3 gap-2">
-        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isDeleted} onClick={onMessage}><MessageCircle className="h-4 w-4" />Написать</Button>
-        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isBlocked || isDeleted} onClick={onAudioCall}><Phone className="h-4 w-4" />Позвонить</Button>
-        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isBlocked || isDeleted} onClick={onVideoCall}><Video className="h-4 w-4" />Видео</Button>
+        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isDeleted} onClick={onMessage}><MessageCircle className="h-4 w-4" />{t('modals.write')}</Button>
+        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isBlocked || isDeleted} onClick={onAudioCall}><Phone className="h-4 w-4" />{t('modals.call')}</Button>
+        <Button variant="secondary" className="min-h-12 flex-col gap-0.5 px-2 text-xs" disabled={isBlocked || isDeleted} onClick={onVideoCall}><Video className="h-4 w-4" />{t('modals.video')}</Button>
       </div>
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <Button variant={isBlocked ? 'secondary' : 'danger'} loading={busy && !reportOpen} onClick={() => void toggleBlock()}>{isBlocked ? <ShieldCheck className="h-4 w-4" /> : <Ban className="h-4 w-4" />}{isBlocked ? 'Разблокировать' : 'Заблокировать'}</Button>
-        <Button variant="secondary" onClick={() => setReportOpen((value) => !value)}><Flag className="h-4 w-4" />Пожаловаться</Button>
+        <Button variant={isBlocked ? 'secondary' : 'danger'} loading={busy && !reportOpen} onClick={() => void toggleBlock()}>{isBlocked ? <ShieldCheck className="h-4 w-4" /> : <Ban className="h-4 w-4" />}{isBlocked ? t('modals.unblock') : t('modals.block')}</Button>
+        <Button variant="secondary" onClick={() => setReportOpen((value) => !value)}><Flag className="h-4 w-4" />{t('modals.report')}</Button>
       </div>
       {reportOpen && (
         <div className="mt-3 animate-slide-up rounded-xl border border-line bg-canvas p-3 text-left">
-          <p className="text-xs font-bold">Причина жалобы</p>
+          <p className="text-xs font-bold">{t('modals.reportReason')}</p>
           <div className="mt-2 grid grid-cols-2 gap-1.5">
-            {REPORT_REASONS.map((item) => <button key={item.value} type="button" className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${reason === item.value ? 'border-brand bg-brand-soft text-brand' : 'border-line bg-surface text-ink'}`} onClick={() => setReason(item.value)}>{reason === item.value && <Check className="h-3.5 w-3.5" />}{item.label}</button>)}
+            {REPORT_REASONS.map((item) => <button key={item.value} type="button" className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${reason === item.value ? 'border-brand bg-brand-soft text-brand' : 'border-line bg-surface text-ink'}`} onClick={() => setReason(item.value)}>{reason === item.value && <Check className="h-3.5 w-3.5" />}{t(item.labelKey)}</button>)}
           </div>
-          {reason === 'other' && <textarea value={details} onChange={(event) => setDetails(event.target.value.slice(0, 1000))} className="mt-2 min-h-20 w-full resize-none rounded-xl border border-line bg-surface p-3 text-sm outline-none focus:border-brand/50" placeholder="Опишите проблему" />}
-          <Button className="mt-2 w-full" loading={busy && reportOpen} onClick={() => void submitReport()}><Flag className="h-4 w-4" />Отправить жалобу</Button>
+          {reason === 'other' && <textarea value={details} onChange={(event) => setDetails(event.target.value.slice(0, 1000))} className="mt-2 min-h-20 w-full resize-none rounded-xl border border-line bg-surface p-3 text-sm outline-none focus:border-brand/50" placeholder={t('modals.describeProblem')} />}
+          <Button className="mt-2 w-full" loading={busy && reportOpen} onClick={() => void submitReport()}><Flag className="h-4 w-4" />{t('modals.submitReport')}</Button>
         </div>
       )}
       {notice && <p className="mt-3 rounded-xl bg-success/10 px-3 py-2 text-center text-xs font-semibold text-success">{notice}</p>}
@@ -316,6 +325,7 @@ interface BlockedUsersModalProps {
 }
 
 export function BlockedUsersModal({ token, onClose, onUnauthorized }: BlockedUsersModalProps) {
+  const t = useTranslation();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -324,10 +334,10 @@ export function BlockedUsersModal({ token, onClose, onUnauthorized }: BlockedUse
     const controller = new AbortController();
     void api.blockedUsers(token, controller.signal).then((result) => setUsers(result.items)).catch((reason: unknown) => {
       if (reason instanceof ApiError && reason.status === 401) onUnauthorized();
-      else if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError('Не удалось загрузить список.');
+      else if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(t('modals.listLoadFailed'));
     }).finally(() => setLoading(false));
     return () => controller.abort();
-  }, [onUnauthorized, token]);
+  }, [onUnauthorized, t, token]);
 
   async function unblock(user: User) {
     setBusyId(user.id);
@@ -336,17 +346,17 @@ export function BlockedUsersModal({ token, onClose, onUnauthorized }: BlockedUse
       await api.unblockUser(token, user.id);
       setUsers((current) => current.filter((item) => item.id !== user.id));
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : 'Не удалось разблокировать.');
+      setError(reason instanceof ApiError ? reason.message : t('modals.unblockFailed'));
     } finally {
       setBusyId(null);
     }
   }
 
   return (
-    <Modal title="Заблокированные" description="Эти пользователи не могут писать и звонить вам" onClose={onClose}>
+    <Modal title={t('modals.blockedUsersTitle')} description={t('modals.blockedUsersSubtitle')} onClose={onClose}>
       {loading && <div className="grid min-h-48 place-items-center"><Spinner className="h-7 w-7 text-brand" /></div>}
-      {!loading && users.length === 0 && <div className="grid min-h-48 place-items-center text-center"><div><ShieldCheck className="mx-auto h-9 w-9 text-success" /><p className="mt-3 font-bold">Список пуст</p></div></div>}
-      <ul className="space-y-1">{users.map((user) => <li key={user.id} className="flex items-center gap-3 rounded-xl p-2.5 hover:bg-brand-soft/35"><Avatar name={user.displayName} src={user.avatarUrl} size="sm" {...avatarProps(user)} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold"><UserName name={user.displayName} user={user} size="sm" /></span><span className="block truncate text-xs text-muted">{user.username ? `@${user.username}` : ''}</span></span><Button variant="secondary" className="min-h-9 rounded-xl px-3 text-xs" loading={busyId === user.id} onClick={() => void unblock(user)}>Разблокировать</Button></li>)}</ul>
+      {!loading && users.length === 0 && <div className="grid min-h-48 place-items-center text-center"><div><ShieldCheck className="mx-auto h-9 w-9 text-success" /><p className="mt-3 font-bold">{t('modals.blockedUsersEmpty')}</p></div></div>}
+      <ul className="space-y-1">{users.map((user) => <li key={user.id} className="flex items-center gap-3 rounded-xl p-2.5 hover:bg-brand-soft/35"><Avatar name={user.displayName} src={user.avatarUrl} size="sm" {...avatarProps(user)} /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold"><UserName name={user.displayName} user={user} size="sm" /></span><span className="block truncate text-xs text-muted">{user.username ? `@${user.username}` : ''}</span></span><Button variant="secondary" className="min-h-9 rounded-xl px-3 text-xs" loading={busyId === user.id} onClick={() => void unblock(user)}>{t('modals.unblock')}</Button></li>)}</ul>
       {error && <p className="mt-3 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>}
     </Modal>
   );
@@ -362,6 +372,7 @@ export function NotesModal({
   onClose: () => void;
   onUnauthorized: () => void;
 }) {
+  const t = useTranslation();
   const [notes, setNotes] = useState<FavoriteNote[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -372,10 +383,10 @@ export function NotesModal({
     const controller = new AbortController();
     void api.getNotes(token, controller.signal).then((result) => setNotes(result.items)).catch((reason: unknown) => {
       if (reason instanceof ApiError && reason.status === 401) onUnauthorized();
-      else setError('Не удалось загрузить заметки.');
+      else setError(t('modals.notesLoadFailed'));
     }).finally(() => setLoading(false));
     return () => controller.abort();
-  }, [token, onUnauthorized]);
+  }, [token, onUnauthorized, t]);
 
   async function addNote() {
     if (!newContent.trim()) return;
@@ -386,7 +397,7 @@ export function NotesModal({
       setNotes((prev) => [note, ...prev]);
       setNewContent('');
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : 'Не удалось создать заметку.');
+      setError(reason instanceof ApiError ? reason.message : t('modals.noteCreateFailed'));
     } finally {
       setBusyId(null);
     }
@@ -399,7 +410,7 @@ export function NotesModal({
       const note = await api.updateNote(token, id, content);
       setNotes((prev) => prev.map((n) => (n.id === id ? note : n)));
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : 'Не удалось обновить заметку.');
+      setError(reason instanceof ApiError ? reason.message : t('modals.noteUpdateFailed'));
     } finally {
       setBusyId(null);
     }
@@ -412,19 +423,19 @@ export function NotesModal({
       await api.deleteNote(token, id);
       setNotes((prev) => prev.filter((n) => n.id !== id));
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : 'Не удалось удалить заметку.');
+      setError(reason instanceof ApiError ? reason.message : t('modals.noteDeleteFailed'));
     } finally {
       setBusyId(null);
     }
   }
 
   return (
-    <Modal title="Избранные заметки" onClose={onClose}>
+    <Modal title={t('modals.notesTitle')} onClose={onClose}>
       <div className="mb-4">
         <textarea
           className="w-full rounded border px-2 py-1"
           rows={3}
-          placeholder="Новая заметка..."
+          placeholder={t('modals.newNotePlaceholder')}
           value={newContent}
           onChange={(e) => setNewContent(e.target.value)}
         />
@@ -433,7 +444,7 @@ export function NotesModal({
           loading={busyId === 'new'}
           onClick={addNote}
         >
-          Добавить
+          {t('modals.add')}
         </Button>
       </div>
       {loading && <Spinner className="h-7 w-7 text-brand" />}
@@ -456,7 +467,7 @@ export function NotesModal({
               loading={busyId === note.id}
               onClick={() => void deleteNote(note.id)}
             >
-              Удалить
+              {t('modals.delete')}
             </Button>
           </li>
         ))}

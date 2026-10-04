@@ -56,17 +56,6 @@ export const errorHandler: ErrorRequestHandler = (error, _request, response, _ne
     return;
   }
 
-  if (
-    error instanceof Error &&
-    "status" in error &&
-    (error as Error & { status?: number }).status === 413
-  ) {
-    response.status(413).json({
-      error: { code: "PAYLOAD_TOO_LARGE", message: "Request body is too large" },
-    });
-    return;
-  }
-
   if (error instanceof AppError) {
     response.status(error.status).json({
       error: {
@@ -74,6 +63,20 @@ export const errorHandler: ErrorRequestHandler = (error, _request, response, _ne
         message: error.message,
         ...(error.details === undefined ? {} : { details: error.details }),
       },
+    });
+    return;
+  }
+
+  // Тело запроса больше лимита парсера (express.json и подобные). Проверяем
+  // после AppError: у загрузчиков свой лимит и своё понятное сообщение, и
+  // раньше эта ветка съедала его, подменяя общим «Request body is too large».
+  if (
+    error instanceof Error &&
+    "status" in error &&
+    (error as Error & { status?: number }).status === 413
+  ) {
+    response.status(413).json({
+      error: { code: "PAYLOAD_TOO_LARGE", message: "Request body is too large" },
     });
     return;
   }

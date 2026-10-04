@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { defaultAdminPermissions } from "../domain/models.js";
+import { defaultAdminPermissions, isFailedRegistration } from "../domain/models.js";
 import type {
   Attachment,
   CallRecord,
@@ -10,6 +10,7 @@ import type {
   Poll,
   ReactionEmoji,
   ScheduledMessage,
+  Session,
   User,
   FavoriteNote,
   UserReport,
@@ -29,7 +30,10 @@ import type {
   Repositories,
   ReportRepository,
   ScheduledMessageRepository,
+  SessionRepository,
+  CreateSessionInput,
   UpdateConversationInput,
+  UpdateSessionInput,
   UpdateUserInput,
   UserRepository,
 } from "./types.js";
@@ -65,6 +69,12 @@ class JsonUserRepository implements UserRepository {
         notificationSoundEnabled: true,
         showLastSeen: true,
         createdAt: now,
+        // 🔥 Поле обязано доехать до записи: без него «неподтверждённый» аккаунт
+        // выглядел бы подтверждённым (отсутствие поля считается `true`), и вся
+        // проверка кода из письма на этом драйвере превращалась бы в фикцию —
+        // брошенные регистрации никто бы не убирал. Postgres-драйвер кладёт
+        // поле вместе с остальными (`...input`), здесь его нужно назвать.
+        ...(input.emailVerified === undefined ? {} : { emailVerified: input.emailVerified }),
       };
       state.users.push(user);
       return user;
@@ -84,6 +94,19 @@ class JsonUserRepository implements UserRepository {
 
   async findByUsername(username: string): Promise<User | null> {
     const normalized = username.toLowerCase();
+    return this.database.read(
+      (state) =>
+        state.users.find(
+          (user) =>
+            user.username?.toLowerCase() === normalized ||
+            user.usernames?.some((alias) => alias.toLowerCase() === normalized),
+        ) ?? null,
+    );
+  }
+
+  async findByHandle(handle: string): Promise<User | null> {
+    const normalized = handle.trim().replace(/^@/, "").toLowerCase();
+    if (!normalized) return null;
     return this.database.read(
       (state) =>
         state.users.find(
@@ -116,10 +139,18 @@ class JsonUserRepository implements UserRepository {
       else if (input.avatar !== undefined) user.avatar = input.avatar;
       if (input.themeColor !== undefined) user.themeColor = input.themeColor;
       if (input.wallpaperUrl !== undefined) user.wallpaperUrl = input.wallpaperUrl;
+      if (input.wallpaperMimeType !== undefined) user.wallpaperMimeType = input.wallpaperMimeType;
+      if (input.bannerColor === null) delete user.bannerColor;
+      else if (input.bannerColor !== undefined) user.bannerColor = input.bannerColor;
+      if (input.banner === null) delete user.banner;
+      else if (input.banner !== undefined) user.banner = input.banner;
+      if (input.bannerUrl === null) delete user.bannerUrl;
+      else if (input.bannerUrl !== undefined) user.bannerUrl = input.bannerUrl;
       if (input.notificationSoundEnabled !== undefined) user.notificationSoundEnabled = input.notificationSoundEnabled;
       if (input.isVerified !== undefined) user.isVerified = input.isVerified;
       if (input.badge !== undefined) user.badge = input.badge;
       if (input.scam !== undefined) user.scam = input.scam;
+      if (input.fake !== undefined) user.fake = input.fake;
       if (input.usernames !== undefined) user.usernames = input.usernames;
       if (input.adminUserIds !== undefined) user.adminUserIds = input.adminUserIds;
       if (input.isOwner !== undefined) user.isOwner = input.isOwner;
@@ -127,9 +158,36 @@ class JsonUserRepository implements UserRepository {
       if (input.isFrozen !== undefined) user.isFrozen = input.isFrozen;
       if (input.isDeleted !== undefined) user.isDeleted = input.isDeleted;
       if (input.deletedAt !== undefined) user.deletedAt = input.deletedAt;
+      if (input.friendIds !== undefined) user.friendIds = input.friendIds;
+      if (input.outgoingFriendRequestIds !== undefined) user.outgoingFriendRequestIds = input.outgoingFriendRequestIds;
+      if (input.incomingFriendRequestIds !== undefined) user.incomingFriendRequestIds = input.incomingFriendRequestIds;
+      if (input.isApp !== undefined) user.isApp = input.isApp;
+      if (input.isBot !== undefined) user.isBot = input.isBot;
       if (input.birthday !== undefined) {
         if (input.birthday === null) delete user.birthday;
         else user.birthday = input.birthday;
+      }
+      if (input.emailVerified !== undefined) user.emailVerified = input.emailVerified;
+      if (input.passwordHash !== undefined) user.passwordHash = input.passwordHash;
+      // Код подтверждения: `null` стирает поле, чтобы в записи не осталось
+      // даже просроченного кода.
+      if (input.emailCodeHash !== undefined) {
+        if (input.emailCodeHash === null) delete user.emailCodeHash;
+        else user.emailCodeHash = input.emailCodeHash;
+      }
+      if (input.emailCodePurpose !== undefined) {
+        if (input.emailCodePurpose === null) delete user.emailCodePurpose;
+        else user.emailCodePurpose = input.emailCodePurpose;
+      }
+      if (input.emailCodeExpiresAt !== undefined) {
+        if (input.emailCodeExpiresAt === null) delete user.emailCodeExpiresAt;
+        else user.emailCodeExpiresAt = input.emailCodeExpiresAt;
+      }
+      if (input.emailCodeAttempts !== undefined) user.emailCodeAttempts = input.emailCodeAttempts;
+      // Автозавершение сеансов: `null` — никогда, число — срок бездействия.
+      if (input.sessionAutoTerminateDays !== undefined) {
+        if (input.sessionAutoTerminateDays === null) delete user.sessionAutoTerminateDays;
+        else user.sessionAutoTerminateDays = input.sessionAutoTerminateDays;
       }
       return user;
     });
@@ -192,6 +250,25 @@ class JsonUserRepository implements UserRepository {
   async findManyByIds(ids: string[]): Promise<User[]> {
     const idSet = new Set(ids);
     return this.database.read((state) => state.users.filter((user) => idSet.has(user.id)));
+  }
+
+  /** Все аккаунты, включая удалённые и замороженные, свежие сверху. */
+  async listAll(): Promise<User[]> {
+    return this.database.read((state) =>
+      [...state.users].sort((first, second) => second.createdAt.localeCompare(first.createdAt)),
+    );
+  }
+
+  /** Все аккаунты, включая удалённые и замороженные: удаление мягкое. */
+  async count(): Promise<number> {
+    return this.database.read((state) => state.users.length);
+  }
+
+  /** Незавершённые регистрации, которые уже не завершатся. */
+  async listFailedRegistrations(now: string): Promise<User[]> {
+    return this.database.read((state) =>
+      state.users.filter((user) => isFailedRegistration(user, new Date(now))),
+    );
   }
 
   async delete(id: string): Promise<User | null> {
@@ -277,10 +354,19 @@ class JsonConversationRepository implements ConversationRepository {
         history: [
           { id: randomUUID(), at: now, actorId: input.ownerId, kind: "created", detail: input.title },
         ],
+        ...(input.isSupportInbox ? { isSupportInbox: true } : {}),
       };
       state.conversations.push(conversation);
       return conversation;
     });
+  }
+
+  /** Служебная группа поддержки: помечена `isSupportInbox`, ищется напрямую. */
+  async findSupportInbox(): Promise<Conversation | null> {
+    return this.database.read(
+      (state) =>
+        state.conversations.find((conversation) => conversation.isSupportInbox === true) ?? null,
+    );
   }
 
   async findByInviteCode(code: string): Promise<Conversation | null> {
@@ -295,6 +381,8 @@ class JsonConversationRepository implements ConversationRepository {
     return this.database.read((state) =>
       state.conversations
         .filter((conversation) => conversation.type === "group")
+        // Служебная группа поддержки в поиске не показывается: она не для людей.
+        .filter((conversation) => conversation.isSupportInbox !== true)
         .filter((conversation) => {
           if (!wanted) return true;
           return (
@@ -304,6 +392,17 @@ class JsonConversationRepository implements ConversationRepository {
           );
         })
         .slice(0, limit),
+    );
+  }
+
+  /** Группы без личных диалогов и «Избранного». Служебная группа поддержки
+   *  в счёт не идёт: владелец видит статистику по людским группам. */
+  async countGroups(): Promise<number> {
+    return this.database.read(
+      (state) =>
+        state.conversations.filter(
+          (conversation) => conversation.type === "group" && conversation.isSupportInbox !== true,
+        ).length,
     );
   }
 
@@ -329,6 +428,7 @@ class JsonConversationRepository implements ConversationRepository {
       if (input.isVerified !== undefined) conversation.isVerified = input.isVerified;
       if (input.badge !== undefined) conversation.badge = input.badge;
       if (input.scam !== undefined) conversation.scam = input.scam;
+      if (input.fake !== undefined) conversation.fake = input.fake;
       conversation.updatedAt = new Date().toISOString();
       return conversation;
     });
@@ -446,6 +546,8 @@ class JsonMessageRepository implements MessageRepository {
         ...(input.systemEvent === undefined ? {} : { systemEvent: input.systemEvent }),
         ...(input.call === undefined ? {} : { call: input.call }),
         ...(input.poll === undefined ? {} : { poll: input.poll }),
+        ...(input.keyboard === undefined ? {} : { keyboard: input.keyboard }),
+        ...(input.supportTicket === undefined ? {} : { supportTicket: input.supportTicket }),
         createdAt: new Date().toISOString(),
         ...(input.replyToId === undefined ? {} : { replyToId: input.replyToId }),
         ...(input.forwardedFromId === undefined ? {} : { forwardedFromId: input.forwardedFromId }),
@@ -1002,6 +1104,74 @@ class JsonScheduledMessageRepository implements ScheduledMessageRepository {
   }
 }
 
+class JsonSessionRepository implements SessionRepository {
+  constructor(private readonly database: JsonDatabase) {}
+
+  async create(input: CreateSessionInput): Promise<Session> {
+    return this.database.transaction((state) => {
+      const timestamp = new Date().toISOString();
+      const session: Session = {
+        id: randomUUID(),
+        userId: input.userId,
+        tokenHashes: [...new Set(input.tokenHashes)],
+        site: input.site,
+        device: input.device,
+        createdAt: timestamp,
+        lastSeenAt: timestamp,
+        ...(input.newDevice === undefined ? {} : { newDevice: input.newDevice }),
+      };
+      state.sessions.push(session);
+      return session;
+    });
+  }
+
+  async findById(id: string): Promise<Session | null> {
+    return this.database.read((state) => state.sessions.find((session) => session.id === id) ?? null);
+  }
+
+  async findByTokenHash(hash: string): Promise<Session | null> {
+    return this.database.read(
+      (state) => state.sessions.find((session) => session.tokenHashes.includes(hash)) ?? null,
+    );
+  }
+
+  async listForUser(userId: string): Promise<Session[]> {
+    return this.database.read((state) =>
+      state.sessions
+        .filter((session) => session.userId === userId)
+        .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt)),
+    );
+  }
+
+  async update(id: string, input: UpdateSessionInput): Promise<Session> {
+    return this.database.transaction((state) => {
+      const session = state.sessions.find((candidate) => candidate.id === id);
+      if (!session) throw new Error("Session was not found");
+      if (input.tokenHashes !== undefined) session.tokenHashes = [...new Set(input.tokenHashes)];
+      if (input.site !== undefined) session.site = input.site;
+      if (input.device !== undefined) session.device = input.device;
+      if (input.lastSeenAt !== undefined) session.lastSeenAt = input.lastSeenAt;
+      if (input.acknowledgedAt !== undefined) session.acknowledgedAt = input.acknowledgedAt;
+      if (input.terminatedAt !== undefined) session.terminatedAt = input.terminatedAt;
+      return session;
+    });
+  }
+
+  async delete(id: string): Promise<Session | null> {
+    return this.database.transaction((state) => {
+      const index = state.sessions.findIndex((session) => session.id === id);
+      if (index < 0) return null;
+      return state.sessions.splice(index, 1)[0] ?? null;
+    });
+  }
+
+  async deleteForUser(userId: string): Promise<void> {
+    await this.database.transaction((state) => {
+      state.sessions = state.sessions.filter((session) => session.userId !== userId);
+    });
+  }
+}
+
 export function createJsonRepositories(database: JsonDatabase): Repositories {
   return {
     users: new JsonUserRepository(database),
@@ -1014,5 +1184,6 @@ export function createJsonRepositories(database: JsonDatabase): Repositories {
     drafts: new JsonDraftRepository(database),
     folders: new JsonFolderRepository(database),
     scheduledMessages: new JsonScheduledMessageRepository(database),
+    sessions: new JsonSessionRepository(database),
   };
 }

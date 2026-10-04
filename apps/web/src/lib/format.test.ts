@@ -3,10 +3,36 @@ import {
   formatConversationTime,
   formatDayLabel,
   formatMessageTime,
+  formatShortDate,
   initials,
   plural,
   safeDate,
 } from './format';
+import { LANGUAGES, LANGUAGE_LOCALES } from './i18n';
+
+describe('formatShortDate', () => {
+  it('пишет дату на языке интерфейса, а не всегда по-русски', () => {
+    const value = '2026-01-02T10:00:00.000Z';
+    // Без локали — русский по умолчанию: так звали прежние вызовы.
+    expect(formatShortDate(value)).toContain('январ');
+    // Английский месяц появляется только при явной локали — иначе поле
+    // «заходил» оставалось бы русским на всех языках интерфейса.
+    expect(formatShortDate(value, 'en-US')).toContain('January');
+    expect(formatShortDate(value, 'en-US')).not.toContain('январ');
+  });
+
+  it('для каждого языка интерфейса есть своя локаль', () => {
+    // Новый язык без строки в LANGUAGE_LOCALES молча получил бы русские даты.
+    for (const language of LANGUAGES) {
+      expect(LANGUAGE_LOCALES[language]).toBeTruthy();
+    }
+  });
+
+  it('пустое и битое значение дают пустую строку', () => {
+    expect(formatShortDate(null)).toBe('');
+    expect(formatShortDate('не дата')).toBe('');
+  });
+});
 
 describe('plural', () => {
   it('склоняет по числу', () => {

@@ -1,6 +1,7 @@
 import { Pin, PinOff, SmilePlus, X } from 'lucide-react';
 import { memo, useEffect, useRef, type ReactNode } from 'react';
 import { IconButton } from '../../components/ui';
+import { useTranslation } from '../../hooks/useLanguage';
 import type { Message, MessageReaction } from '../../types';
 import { COMPOSER_EMOJIS, MESSAGE_REACTIONS } from './messengerUtils';
 
@@ -12,6 +13,7 @@ interface EmojiPickerProps {
 }
 
 export function EmojiPicker({ mode = 'composer', onSelect, onClose, className = '' }: EmojiPickerProps) {
+  const t = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   const emojis = mode === 'reaction' ? MESSAGE_REACTIONS : COMPOSER_EMOJIS;
   useEffect(() => {
@@ -35,7 +37,7 @@ export function EmojiPicker({ mode = 'composer', onSelect, onClose, className = 
       ref={ref}
       className={`z-50 w-max max-w-[min(92vw,22rem)] animate-slide-up rounded-2xl border border-line bg-elevated p-2 shadow-float ${className}`}
       role="dialog"
-      aria-label={mode === 'reaction' ? 'Выбор реакции' : 'Выбор эмодзи'}
+      aria-label={mode === 'reaction' ? t('modals.reactionPickerLabel') : t('modals.emojiPickerLabel')}
     >
       <div className="grid grid-cols-7 gap-1">
         {emojis.map((emoji) => (
@@ -44,7 +46,7 @@ export function EmojiPicker({ mode = 'composer', onSelect, onClose, className = 
             type="button"
             className="grid h-10 w-full min-w-0 place-items-center rounded-xl text-[22px] leading-none transition hover:scale-110 hover:bg-brand-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
             onClick={() => onSelect(emoji)}
-            aria-label={`Выбрать ${emoji}`}
+            aria-label={t('modals.selectEmoji', { emoji })}
           >
             <span className="emoji">{emoji}</span>
           </button>
@@ -85,6 +87,7 @@ interface ReactionBarProps {
 }
 
 export const ReactionBar = memo(function ReactionBar({ reactions, currentUserId, mine, disabled, onToggle, onAdd }: ReactionBarProps) {
+  const t = useTranslation();
   return (
     <div className={`mt-1.5 flex flex-wrap items-center gap-1 ${mine ? 'justify-end' : 'justify-start'}`}>
       {reactions.filter((reaction) => reaction.count > 0).map((reaction) => {
@@ -96,13 +99,13 @@ export const ReactionBar = memo(function ReactionBar({ reactions, currentUserId,
             disabled={disabled}
             className={`inline-flex min-h-7 items-center gap-1 rounded-full border px-2 text-xs font-bold transition hover:-translate-y-0.5 ${active ? 'border-brand bg-brand-soft text-brand' : 'border-line bg-surface text-ink'}`}
             onClick={() => onToggle(reaction.emoji, active)}
-            title={active ? 'Убрать реакцию' : 'Поставить реакцию'}
+            title={active ? t('extras.removeReaction') : t('extras.addReaction')}
           >
             <span className="emoji text-[15px]">{reaction.emoji}</span><span>{reaction.count}</span>
           </button>
         );
       })}
-      <button type="button" disabled={disabled} className="grid h-7 w-7 place-items-center rounded-full border border-line bg-surface text-muted transition hover:border-brand/40 hover:text-brand" onClick={onAdd} aria-label="Добавить реакцию">
+      <button type="button" disabled={disabled} className="grid h-7 w-7 place-items-center rounded-full border border-line bg-surface text-muted transition hover:border-brand/40 hover:text-brand" onClick={onAdd} aria-label={t('extras.addReactionAria')}>
         <SmilePlus className="h-3.5 w-3.5" />
       </button>
     </div>
@@ -118,6 +121,7 @@ interface PinnedMessagesBarProps {
 }
 
 export function PinnedMessagesBar({ messages, activeIndex, onChangeIndex, onJump, onUnpin }: PinnedMessagesBarProps) {
+  const t = useTranslation();
   const message = messages[Math.min(activeIndex, messages.length - 1)];
   if (!message) return null;
   return (
@@ -125,16 +129,16 @@ export function PinnedMessagesBar({ messages, activeIndex, onChangeIndex, onJump
       <Pin className="h-4 w-4 shrink-0 text-brand" />
       <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onJump(message.id)}>
         <span className="block text-[11px] font-bold text-brand">
-          Закреплённые сообщения · {activeIndex + 1} из {messages.length}
+          {t('extras.pinnedMessages', { index: activeIndex + 1, total: messages.length })}
         </span>
-        <span className="block truncate text-xs text-muted">{message.text || 'Вложение'}</span>
+        <span className="block truncate text-xs text-muted">{message.text || t('extras.attachment')}</span>
       </button>
       {messages.length > 1 && (
-        <button type="button" className="rounded-lg bg-brand-soft px-2 py-1 text-[11px] font-bold text-brand" onClick={() => onChangeIndex((activeIndex + 1) % messages.length)} aria-label="Следующее закреплённое сообщение">
+        <button type="button" className="rounded-lg bg-brand-soft px-2 py-1 text-[11px] font-bold text-brand" onClick={() => onChangeIndex((activeIndex + 1) % messages.length)} aria-label={t('extras.nextPinned')}>
           {activeIndex + 1}/{messages.length}
         </button>
       )}
-      <IconButton label="Открепить сообщение" className="h-8 w-8 rounded-xl" onClick={() => onUnpin(message)}>
+      <IconButton label={t('extras.unpin')} className="h-8 w-8 rounded-xl" onClick={() => onUnpin(message)}>
         <PinOff className="h-4 w-4" />
       </IconButton>
     </div>
@@ -142,22 +146,23 @@ export function PinnedMessagesBar({ messages, activeIndex, onChangeIndex, onJump
 }
 
 export function SystemMessage({ message, currentUserId }: { message: Message; currentUserId?: string }) {
+  const t = useTranslation();
   const call = message.call;
   const outcome = call?.outcome ?? call?.status;
   const mine = Boolean(call?.callerId && call.callerId === currentUserId);
   const callIcon = call?.mode === 'video' ? '📹' : '📞';
-  let label = message.text || message.systemEvent || 'Системное событие';
+  let label = message.text || message.systemEvent || t('extras.systemEvent');
   if (call) {
     if (outcome === 'completed') {
       label = mine
-        ? `${callIcon} Вы позвонили`
-        : `${callIcon} Входящий ${call.mode === 'video' ? 'видеозвонок' : 'аудиозвонок'} завершён`;
+        ? `${callIcon} ${t('extras.youCalled')}`
+        : `${callIcon} ${call.mode === 'video' ? t('extras.incomingVideoDone') : t('extras.incomingAudioDone')}`;
     } else if (outcome === 'declined') {
-      label = mine ? '❌ Звонок отклонён' : '⛔ Вы отклонили звонок';
+      label = mine ? `❌ ${t('extras.callDeclined')}` : `⛔ ${t('extras.youDeclined')}`;
     } else if (outcome === 'missed') {
-      label = mine ? '📵 Вы пытались позвонить' : '❌ Пропущенный звонок';
+      label = mine ? `📵 ${t('extras.youTriedToCall')}` : `❌ ${t('extras.missedCall')}`;
     } else if (outcome === 'unanswered') {
-      label = mine ? '📵 Вы пытались позвонить' : '📵 Не отвечено';
+      label = mine ? `📵 ${t('extras.youTriedToCall')}` : `📵 ${t('extras.unanswered')}`;
     }
   }
   return (
@@ -165,7 +170,7 @@ export function SystemMessage({ message, currentUserId }: { message: Message; cu
       <div className="max-w-[90%] rounded-2xl border border-line/70 bg-surface/85 px-3.5 py-2 text-center text-xs text-muted shadow-sm backdrop-blur">
         <span className="font-semibold text-ink">{label}</span>
         {message.call?.durationSeconds !== undefined && message.call.durationSeconds > 0 && (
-          <span className="mt-0.5 block text-[10px]">Длительность: {Math.floor(message.call.durationSeconds / 60).toString().padStart(2, '0')}:{(message.call.durationSeconds % 60).toString().padStart(2, '0')}</span>
+          <span className="mt-0.5 block text-[10px]">{t('extras.duration', { value: `${Math.floor(message.call.durationSeconds / 60).toString().padStart(2, '0')}:${(message.call.durationSeconds % 60).toString().padStart(2, '0')}` })}</span>
         )}
       </div>
     </div>
@@ -173,8 +178,9 @@ export function SystemMessage({ message, currentUserId }: { message: Message; cu
 }
 
 export function CloseButton({ onClick }: { onClick: () => void }) {
+  const t = useTranslation();
   return (
-    <IconButton label="Закрыть" onClick={onClick}>
+    <IconButton label={t('common.close')} onClick={onClick}>
       <X className="h-5 w-5" />
     </IconButton>
   );

@@ -17,6 +17,9 @@ import type { GroupService } from "./services/group-service.js";
 import type { FolderService } from "./services/folder-service.js";
 import type { DraftService } from "./services/draft-service.js";
 import type { ScheduledMessageService } from "./services/scheduled-message-service.js";
+import type { FriendService } from "./services/friend-service.js";
+import type { SessionService } from "./services/session-service.js";
+import type { SupportBotService } from "./services/support-bot-service.js";
 import { UploadService } from "./services/upload-service.js";
 
 export function createApp(dependencies: {
@@ -28,6 +31,9 @@ export function createApp(dependencies: {
   draftService: DraftService;
   folderService: FolderService;
   scheduledMessageService: ScheduledMessageService;
+  friendService: FriendService;
+  sessionService: SessionService;
+  supportBotService: SupportBotService;
   repositories: Repositories;
   events: RealtimeEvents;
   crypto: AtRestCrypto;
@@ -42,6 +48,16 @@ export function createApp(dependencies: {
   // Удаление аккаунта должно стирать и файлы с диска — этим занимается UploadService.
   dependencies.adminService.setAvatarCleanup((userId) => uploadService.deleteUserAvatars(userId));
   app.disable("x-powered-by");
+  // 🔥 За обратным прокси (Cloudflare Tunnel, nginx) соединение до сервера идёт
+  // по HTTP, и без этой строки `request.protocol` всегда отвечает `http`.
+  // По нему `sessionContext` собирает название сеанса, поэтому вход по HTTPS
+  // показывался бы в «Активных сеансах» как `http://…`.
+  //
+  // Значение берётся из `TRUST_PROXY` и по умолчанию выключено: доверять
+  // заголовку `X-Forwarded-For` можно только тогда, когда перед сервером
+  // действительно стоит ваш прокси. Иначе адрес клиента подделывается, а по
+  // нему у нас работает ограничитель попыток входа.
+  app.set("trust proxy", dependencies.config.trustProxy);
   app.use(
     helmet({
       crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -74,6 +90,7 @@ export function createApp(dependencies: {
   app.use(
     "/api",
     createApiRouter({
+      config: dependencies.config,
       authService: dependencies.authService,
       adminService: dependencies.adminService,
       chatService: dependencies.chatService,
@@ -81,6 +98,9 @@ export function createApp(dependencies: {
       draftService: dependencies.draftService,
       folderService: dependencies.folderService,
       scheduledMessageService: dependencies.scheduledMessageService,
+      friendService: dependencies.friendService,
+      sessionService: dependencies.sessionService,
+      supportBotService: dependencies.supportBotService,
       uploadService,
       repositories: dependencies.repositories,
       events: dependencies.events,
@@ -88,16 +108,53 @@ export function createApp(dependencies: {
   );
   app.use("/api", notFoundHandler);
 
-  const indexPath = resolve(dependencies.config.webDistPath, "index.html");
-  if (dependencies.config.nodeEnv === "production" && existsSync(indexPath)) {
-    app.use(express.static(dependencies.config.webDistPath, { index: false }));
-    app.get("*", (request, response, next) => {
-      if (request.accepts("html")) {
-        response.sendFile(indexPath);
-        return;
-      }
-      next();
-    });
+  // 🔥 Два сайта из одного сервера.
+  //
+  // Корень занимает лендинг: название, описание и кнопка «Открыть Yargram».
+  // Само приложение переехало на `/app` — иначе лендинг перекрыл бы его, ведь
+  // оба отдают `index.html` и оба должны уметь клиентскую маршрутизацию.
+  //
+  // Порядок важен: сначала статика обоих сайтов, потом одиночные маршруты
+  // («catch-all»), иначе первый же `app.get("*")` съел бы второе приложение.
+  const landingIndex = resolve(dependencies.config.landingDistPath, "index.html");
+  const webIndex = resolve(dependencies.config.webDistPath, "index.html");
+  const hasLanding = existsSync(landingIndex);
+  const hasWeb = existsSync(webIndex);
+
+  if (dependencies.config.nodeEnv === "production") {
+    if (hasLanding) {
+      app.use(express.static(dependencies.config.landingDistPath, { index: false }));
+      app.get("/", (_request, response) => {
+        response.sendFile(landingIndex);
+      });
+    }
+    if (hasWeb) {
+      // 🔥 `/app` без слеша регистрируем **до** `express.static`. Статика на
+      // этой точке отвечает перенаправлением 301 на `/app/`, а нам нужен сразу
+      // `index.html`: адрес `/app` — то, что человек набирает руками и кладёт в
+      // закладки, и лишний редирект здесь только путает. Порядок маршрутов в
+      // Express — это порядок их разбора, поэтому «перехватить» раньше статики.
+      app.get("/app", (_request, response) => {
+        response.sendFile(webIndex);
+      });
+      app.use("/app", express.static(dependencies.config.webDistPath, { index: false }));
+
+      // Одиночный маршрут на всё остальное. На `/app/…` отдаём приложение, на
+      // прочие пути — лендинг; без лендинга приложение, как было раньше (иначе
+      // сайт «пропадёт», если лендинг ещё не собран).
+      app.get("*", (request, response, next) => {
+        if (!request.accepts("html")) {
+          next();
+          return;
+        }
+        const isAppRoute = true;
+        if (isAppRoute || !hasLanding) {
+          response.sendFile(webIndex);
+          return;
+        }
+        response.sendFile(landingIndex);
+      });
+    }
   }
 
   app.use(notFoundHandler);

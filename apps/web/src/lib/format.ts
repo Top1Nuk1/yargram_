@@ -12,6 +12,26 @@ const fullDateFormatter = new Intl.DateTimeFormat('ru-RU', {
 });
 
 /**
+ * Формат «29 сентября 2026» для конкретного языка интерфейса. Форматтеры
+ * кэшируем: `Intl.DateTimeFormat` — дорогой объект, а список аккаунтов
+ * перерисовывается на каждое нажатие фильтра.
+ */
+const shortDateFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dateFormatterFor(locale: string): Intl.DateTimeFormat {
+  let formatter = shortDateFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+    shortDateFormatters.set(locale, formatter);
+  }
+  return formatter;
+}
+
+/**
  * Русские склонения по числу: plural(2, ['файл', 'файла', 'файлов']) → «файла».
  * Формы: 1 штука, 2–4 штуки, 5+ штук.
  */
@@ -48,8 +68,13 @@ export function formatConversationTime(value?: string | null, now = new Date()):
   return dateFormatter.format(date);
 }
 
-export function formatDayLabel(value?: string | null, now = new Date()): string {
+/** Дата в списке аккаунтов админ-панели: «29 сентября 2026». */
+export function formatShortDate(value?: string | null, locale = 'ru-RU'): string {
   const date = safeDate(value);
+  return date ? dateFormatterFor(locale).format(date) : '';
+}
+
+export function formatDayLabel(value?: string | null, now = new Date()): string {  const date = safeDate(value);
   if (!date) return '';
   const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const startDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();

@@ -16,7 +16,15 @@ vi.mock('./api/client', async (importOriginal) => {
   const original = await importOriginal<typeof import('./api/client')>();
   return { ...original, api: { ...original.api, me: vi.fn() } };
 });
-vi.mock('./hooks/useTheme', () => ({ useTheme: () => ({ theme: 'light', toggleTheme: vi.fn() }) }));
+// Заглушка повторяет настоящий вид хука: без `activeTheme` экран входа не смог
+// бы подобрать фон, и тест падал бы не по своей вине.
+vi.mock('./hooks/useTheme', () => ({
+  useTheme: () => ({
+    theme: 'light',
+    toggleTheme: vi.fn(),
+    activeTheme: { id: 'light', colors: { brand: '#3390ec' } },
+  }),
+}));
 vi.mock('./features/onboarding/OnboardingScreen', () => ({ OnboardingScreen: () => <div>Onboarding</div> }));
 vi.mock('./features/auth/AuthScreen', () => ({
   AuthScreen: ({ onAuthenticated }: { onAuthenticated: (result: AuthResult) => void }) => (

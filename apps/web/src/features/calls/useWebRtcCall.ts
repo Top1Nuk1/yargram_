@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
+import { useTranslation, type TranslateFn } from '../../hooks/useLanguage';
 import { playSound } from '../../lib/sounds';
 import type { User } from '../../types';
 import {
@@ -7,6 +8,7 @@ import {
   clampRemoteVolume,
   EMPTY_CALL_DEVICES,
   enumerateCallDevices,
+  iceServers,
   loadCallSettings,
   loadConversationVolume,
   saveCallSettings,
@@ -15,6 +17,7 @@ import {
   type CallDevices,
   type CallSettings,
 } from './callSettings';
+import { refreshTurnCredentials } from './turnCredentials';
 
 export type CallMode = 'audio' | 'video';
 export type CallStatus = 'incoming' | 'outgoing' | 'connecting' | 'active';
@@ -174,8 +177,8 @@ const MAX_BUFFERED_CALLS = 8;
 const MAX_CANDIDATES_PER_LINK = 64;
 const MEDIA_CHANNEL_NAME = 'yargram-call-state-v1';
 
-function secureContextError(): string {
-  return `Для камеры и микрофона откройте защищённую версию: https://${window.location.hostname}:3443. Скачивать ничего не нужно — просто добавьте адрес в браузере.`;
+function secureContextError(t: TranslateFn): string {
+  return t('calls.secureContextError', { host: window.location.hostname });
 }
 
 function mediaIsAvailable(): boolean {
@@ -269,7 +272,8 @@ function stopTrack(track: MediaStreamTrack | null): void {
   track.stop();
 }
 
-export function useWebRtcCall(socket: Socket | null) {
+export function useWebRtcCall(socket: Socket | null, token?: string) {
+  const t = useTranslation();
   const [call, setCall] = useState<ActiveCall | null>(null);
   const [error, setError] = useState('');
   const [settings, setSettings] = useState<CallSettings>(() => loadCallSettings());
@@ -277,6 +281,12 @@ export function useWebRtcCall(socket: Socket | null) {
   const callRef = useRef<ActiveCall | null>(null);
   const settingsRef = useRef(settings);
   const socketRef = useRef<Socket | null>(socket);
+  // 🔥 Токен в ref: подписки на socket.io не должны пересобираться при его смене.
+  const tokenRef = useRef<string | undefined>(token);
+  tokenRef.current = token;
+  // Перевод в ref: подписки на socket.io не должны пересобираться из-за смены языка.
+  const tRef = useRef(t);
+  tRef.current = t;
   const linksRef = useRef<Map<string, InternalLink>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const microphoneTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -620,16 +630,16 @@ const cleanupLinks = useCallback(() => {
       ) {
         return;
       }
-      setError('Собеседник не ответил на звонок.');
+      setError(t('calls.noAnswer'));
       cleanup(true, callId);
     }, OUTGOING_TIMEOUT_MS);
-  }, [cleanup, clearOutgoingTimeout]);
+  }, [cleanup, clearOutgoingTimeout, t]);
 
   const ensureMedia = useCallback(async (
     includeCamera: boolean,
     currentSettings: CallSettings,
   ): Promise<MediaStream> => {
-    if (!mediaIsAvailable()) throw new Error(secureContextError());
+    if (!mediaIsAvailable()) throw new Error(secureContextError(tRef.current));
     return navigator.mediaDevices.getUserMedia({
       audio: audioConstraints(currentSettings),
       video: includeCamera ? videoConstraints(currentSettings) : false,
@@ -637,24 +647,24 @@ const cleanupLinks = useCallback(() => {
   }, []);
 
   const acquireMicrophoneTrack = useCallback(async (currentSettings: CallSettings) => {
-    if (!mediaIsAvailable()) throw new Error(secureContextError());
+    if (!mediaIsAvailable()) throw new Error(secureContextError(tRef.current));
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: audioConstraints(currentSettings),
       video: false,
     });
     const track = stream.getAudioTracks()[0];
-    if (!track) throw new Error('Браузер не предоставил аудиодорожку микрофона.');
+    if (!track) throw new Error(tRef.current('calls.noAudioTrack'));
     return track;
   }, []);
 
   const acquireCameraTrack = useCallback(async (currentSettings: CallSettings) => {
-    if (!mediaIsAvailable()) throw new Error(secureContextError());
+    if (!mediaIsAvailable()) throw new Error(secureContextError(tRef.current));
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: videoConstraints(currentSettings),
     });
     const track = stream.getVideoTracks()[0];
-    if (!track) throw new Error('Браузер не предоставил видеодорожку камеры.');
+    if (!track) throw new Error(tRef.current('calls.noVideoTrack'));
     return track;
   }, []);
 
@@ -724,7 +734,7 @@ const cleanupLinks = useCallback(() => {
       }
     }
     if (failed && linksRef.current.has(userId)) {
-      setError('Не удалось использовать один из сетевых маршрутов. Пробуем другие…');
+      setError(tRef.current('calls.networkRouteFailed'));
     }
   }, []);
 
@@ -772,7 +782,7 @@ const cleanupLinks = useCallback(() => {
     offerer: boolean,
   ): RTCPeerConnection => {
     const connection = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceServers: iceServers(),
     });
     link.connection = connection;
 
@@ -850,14 +860,14 @@ const cleanupLinks = useCallback(() => {
         // сетевой маршрут появился не сразу.
         void restartIceFor(link).then((restarted) => {
           if (restarted && linksRef.current.get(link.userId) === link) {
-            setError('Связь прервалась — перезапускаем соединение…');
+            setError(tRef.current('calls.connectionRestarting'));
             return;
           }
           if (linksRef.current.size === 1) {
-            setError('Звонок завершён из-за потери соединения.');
+            setError(tRef.current('calls.connectionLost'));
             cleanup(true, callId);
           } else {
-            setError('Не удалось установить связь с одним из участников.');
+            setError(tRef.current('calls.participantConnectionFailed'));
             const linkEntry = linksRef.current.get(link.userId);
             if (linkEntry) {
               linkEntry.connection = null;
@@ -876,7 +886,7 @@ const cleanupLinks = useCallback(() => {
           if (state === 'connected' || state === 'closed') return;
           void restartIceFor(link).then((restarted) => {
             if (restarted && linksRef.current.get(link.userId) === link) {
-              setError('Связь прервалась — перезапускаем соединение…');
+              setError(tRef.current('calls.connectionRestarting'));
             }
           });
         }, 4_000);
@@ -934,11 +944,11 @@ const cleanupLinks = useCallback(() => {
   ) => {
     if (callRef.current) return;
     if (!mediaIsAvailable()) {
-      setError(secureContextError());
+      setError(secureContextError(tRef.current));
       return;
     }
     if (!socketRef.current?.connected) {
-      setError('Нет realtime-соединения с сервером. Повторите через несколько секунд.');
+      setError(tRef.current('calls.noRealtimeConnection'));
       return;
     }
 
@@ -984,9 +994,10 @@ const cleanupLinks = useCallback(() => {
       installLocalStream(stream, current);
       patchMatchingCall(next.callId, conversationId, { mediaReady: true });
       void refreshDevices();
+      await refreshTurnCredentials(tokenRef.current);
       const link = createLinkEntry(peer, 'outgoing', next.callId, conversationId, true);
       const connection = link.connection;
-      if (!connection) throw new Error('Не удалось создать медиасоединение.');
+      if (!connection) throw new Error(tRef.current('calls.mediaConnectionFailed'));
       const offer = await connection.createOffer();
       if (!isCurrentOperation(next.callId, conversationId, operation)) return;
       await connection.setLocalDescription(offer);
@@ -994,7 +1005,7 @@ const cleanupLinks = useCallback(() => {
 
       const localDescription = connection.localDescription;
       if (!localDescription || !socketRef.current?.connected) {
-        throw new Error('Realtime-соединение потеряно до начала звонка.');
+        throw new Error(tRef.current('calls.realtimeLostBeforeCall'));
       }
       socketRef.current.emit('call:offer', {
         callId: next.callId,
@@ -1005,7 +1016,7 @@ const cleanupLinks = useCallback(() => {
       scheduleOutgoingTimeout(next.callId, conversationId);
     } catch (reason) {
       if (!isCurrentOperation(next.callId, conversationId, operation)) return;
-      setError(reason instanceof Error ? reason.message : 'Не удалось начать звонок.');
+      setError(reason instanceof Error ? reason.message : tRef.current('calls.callStartFailed'));
       cleanup(false, next.callId);
     }
   }, [
@@ -1055,9 +1066,10 @@ const cleanupLinks = useCallback(() => {
       installLocalStream(stream, current);
       patchMatchingCall(active.callId, active.conversationId, { mediaReady: true });
       void refreshDevices();
+      await refreshTurnCredentials(tokenRef.current);
       const link = createLinkEntry(incoming.fromUser, 'incoming', active.callId, active.conversationId, false);
       const connection = link.connection;
-      if (!connection) throw new Error('Не удалось создать медиасоединение.');
+      if (!connection) throw new Error(tRef.current('calls.mediaConnectionFailed'));
       await connection.setRemoteDescription(incoming.offer);
       if (!isCurrentOperation(active.callId, active.conversationId, operation)) return;
       await flushCandidates(incoming.fromUser.id);
@@ -1069,7 +1081,7 @@ const cleanupLinks = useCallback(() => {
 
       const localDescription = connection.localDescription;
       if (!localDescription || !socketRef.current?.connected) {
-        throw new Error('Realtime-соединение потеряно при принятии звонка.');
+        throw new Error(tRef.current('calls.realtimeLostOnAccept'));
       }
       socketRef.current.emit('call:answer', {
         callId: active.callId,
@@ -1078,7 +1090,7 @@ const cleanupLinks = useCallback(() => {
       });
     } catch (reason) {
       if (!isCurrentOperation(active.callId, active.conversationId, operation)) return;
-      setError(reason instanceof Error ? reason.message : 'Не удалось принять звонок.');
+      setError(reason instanceof Error ? reason.message : tRef.current('calls.acceptFailed'));
       cleanup(true, active.callId);
     }
   }, [
@@ -1155,7 +1167,7 @@ const cleanupLinks = useCallback(() => {
       void refreshDevices();
 
       if (!socketRef.current?.connected) {
-        throw new Error('Realtime-соединение потеряно при входе в звонок.');
+        throw new Error(tRef.current('calls.realtimeLostOnJoin'));
       }
       socketRef.current.emit('call:join', {
         callId: active.callId,
@@ -1178,7 +1190,7 @@ const cleanupLinks = useCallback(() => {
       });
     } catch (reason) {
       if (!isCurrentOperation(active.callId, active.conversationId, operation)) return;
-      setError(reason instanceof Error ? reason.message : 'Не удалось войти в звонок.');
+      setError(reason instanceof Error ? reason.message : tRef.current('calls.joinFailed'));
       cleanup(true, active.callId);
     }
   }, [
@@ -1206,7 +1218,7 @@ const cleanupLinks = useCallback(() => {
   const inviteParticipant = useCallback((userId: string) => {
     const active = callRef.current;
     if (!active || active.status !== 'active' || !socketRef.current?.connected) {
-      setError('Приглашать участников можно во время активного звонка.');
+      setError(tRef.current('calls.inviteOnlyActive'));
       return;
     }
     socketRef.current.emit('call:invite', {
@@ -1272,7 +1284,7 @@ const cleanupLinks = useCallback(() => {
       }
       sendLocalMediaState();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Не удалось переключить камеру.');
+      setError(reason instanceof Error ? reason.message : tRef.current('calls.switchCameraFailed'));
     }
   }, [
     acquireCameraTrack,
@@ -1324,7 +1336,7 @@ const cleanupLinks = useCallback(() => {
         updateCall(next);
         sendLocalMediaState();
       }
-      setError(reason instanceof Error ? reason.message : 'Не удалось вернуться к камере.');
+      setError(reason instanceof Error ? reason.message : tRef.current('calls.backToCameraFailed'));
     }
   }, [acquireCameraTrack, renegotiateLink, replacePreviewVideo, sendLocalMediaState, updateCall]);
 
@@ -1336,7 +1348,7 @@ const cleanupLinks = useCallback(() => {
       return;
     }
     if (!window.isSecureContext || !navigator.mediaDevices?.getDisplayMedia) {
-      setError('Демонстрация экрана недоступна. Откройте Yargram по HTTPS в современном браузере.');
+      setError(tRef.current('calls.screenShareUnavailable'));
       return;
     }
 
@@ -1346,7 +1358,7 @@ const cleanupLinks = useCallback(() => {
         audio: false,
       });
       const track = displayStream.getVideoTracks()[0];
-      if (!track) throw new Error('Браузер не предоставил изображение экрана.');
+      if (!track) throw new Error(tRef.current('calls.noDisplayTrack'));
       const current = callRef.current;
       if (!current || current.callId !== active.callId) {
         stopTrack(track);
@@ -1378,7 +1390,7 @@ const cleanupLinks = useCallback(() => {
       for (const link of linksRef.current.values()) await renegotiateLink(link);
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'NotAllowedError') return;
-      setError(reason instanceof Error ? reason.message : 'Не удалось начать демонстрацию экрана.');
+      setError(reason instanceof Error ? reason.message : tRef.current('calls.screenShareStartFailed'));
     }
   }, [renegotiateLink, replacePreviewVideo, sendLocalMediaState, stopScreenShare, updateCall]);
 
@@ -1447,7 +1459,7 @@ const cleanupLinks = useCallback(() => {
       }
       void refreshDevices();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Не удалось применить настройки звонка.');
+      setError(reason instanceof Error ? reason.message : tRef.current('calls.applySettingsFailed'));
     }
   }, [
     acquireCameraTrack,
@@ -1536,7 +1548,7 @@ const cleanupLinks = useCallback(() => {
     socketRef.current = socket;
     if (!socket) {
       if (callRef.current) {
-        setError('Realtime-соединение с сервером потеряно. Звонок завершён.');
+        setError(tRef.current('calls.realtimeLostEnded'));
         cleanup(false);
       }
       return undefined;
@@ -1671,8 +1683,9 @@ const cleanupLinks = useCallback(() => {
       if (existing?.connection) return;
       const operation = operationRef.current;
       const isNewLink = !existing;
+      await refreshTurnCredentials(tokenRef.current);
       const link = existing ?? createLinkEntry(
-        { id: payload.fromUserId, displayName: 'Участник' },
+        { id: payload.fromUserId, displayName: tRef.current('calls.participantFallback') },
         'incoming',
         payload.callId,
         payload.conversationId,
@@ -1706,7 +1719,7 @@ const cleanupLinks = useCallback(() => {
         });
       } catch {
         if (!isCurrentOperation(payload.callId, payload.conversationId, operation)) return;
-        setError('Не удалось установить связь с новым участником.');
+        setError(tRef.current('calls.joinNewParticipantFailed'));
       }
     };
 
@@ -1728,7 +1741,7 @@ const cleanupLinks = useCallback(() => {
         await flushCandidates(payload.fromUserId);
       } catch {
         if (!isCurrentOperation(payload.callId, payload.conversationId, operation)) return;
-        setError('Не удалось установить соединение с участником.');
+        setError(tRef.current('calls.participantConnectFailed'));
       }
     };
 
@@ -1745,7 +1758,7 @@ const cleanupLinks = useCallback(() => {
         await link.connection.addIceCandidate(payload.candidate);
       } catch {
         if (linksRef.current.has(payload.fromUserId)) {
-          setError('Не удалось использовать один из сетевых маршрутов. Пробуем другие…');
+          setError(tRef.current('calls.networkRouteFailed'));
         }
       }
     };
@@ -1773,7 +1786,7 @@ const cleanupLinks = useCallback(() => {
         if (peerId) await flushCandidates(peerId);
       } catch {
         if (!isCurrentOperation(active.callId, active.conversationId, operation)) return;
-        setError('Не удалось установить соединение звонка.');
+        setError(tRef.current('calls.callConnectFailed'));
         cleanup(true, active.callId);
       }
     };
@@ -1791,7 +1804,7 @@ const cleanupLinks = useCallback(() => {
         await primary.connection.addIceCandidate(payload.candidate);
       } catch {
         if (callRef.current?.callId === payload.callId) {
-          setError('Не удалось использовать один из сетевых маршрутов. Пробуем другие…');
+          setError(tRef.current('calls.networkRouteFailed'));
         }
       }
     };
@@ -1854,21 +1867,21 @@ const cleanupLinks = useCallback(() => {
       ) {
         return;
       }
-      setError('Звонок завершён.');
+      setError(tRef.current('calls.callEnded'));
       cleanup(false, active.callId);
     };
 
     const onCallError = (payload: { callId?: string | null; error?: { message?: string } }) => {
       const active = callRef.current;
       if (payload.callId && active?.callId !== payload.callId) return;
-      setError(payload.error?.message ?? 'Ошибка сигнализации звонка.');
+      setError(payload.error?.message ?? tRef.current('calls.signalingError'));
       if (active && payload.callId) cleanup(false, active.callId);
     };
 
     const onDisconnect = () => {
       const active = callRef.current;
       if (!active) return;
-      setError('Realtime-соединение с сервером потеряно. Звонок завершён.');
+      setError(tRef.current('calls.realtimeLostEnded'));
       cleanup(false, active.callId);
     };
 

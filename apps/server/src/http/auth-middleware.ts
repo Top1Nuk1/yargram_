@@ -2,6 +2,7 @@ import type { Request, RequestHandler } from "express";
 import { AppError, FROZEN_READ_ONLY_MESSAGE, asyncHandler } from "../lib/errors.js";
 import type { UserRepository } from "../repositories/types.js";
 import type { AuthService } from "../services/auth-service.js";
+import { sessionContext } from "./session-context.js";
 
 /** Безопасные методы: замороженному они разрешены всегда. */
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -39,7 +40,8 @@ export function createAuthMiddleware(
 
     const token = authorization.slice("Bearer ".length).trim();
     if (!token) throw new AppError(401, "AUTH_REQUIRED", "Bearer access token is required");
-    const userId = await authService.authenticateToken(token);
+    // Сайт и браузер запроса: по ним токен находит (или заводит) свой сеанс.
+    const userId = await authService.authenticateToken(token, sessionContext(request));
     request.auth = { userId };
 
     if (!SAFE_METHODS.has(request.method) && !isFrozenAllowedWrite(request)) {

@@ -7,12 +7,18 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+# Адрес, по которому друзья открывают Yargram, задаётся переменной окружения
+# RADMIN_IP (прежнее имя оставлено, чтобы уже созданные ярлыки не сломались).
+# Когда появится публичное имя (домен или адрес туннеля), сюда можно положить
+# его: лаунчер сам соберёт ссылки для печати.
 $radminIp = $env:RADMIN_IP
-if ($null -eq $radminIp) {
+if ([string]::IsNullOrWhiteSpace($radminIp)) {
     $radminIp = "26.53.76.128"
 }
-$httpUrl = "http://${radminIp}:3000"
-$httpsUrl = "https://${radminIp}:3443"
+$httpPort = if ([string]::IsNullOrWhiteSpace($env:PORT)) { 3000 } else { $env:PORT }
+$httpsPort = if ([string]::IsNullOrWhiteSpace($env:HTTPS_PORT)) { 3443 } else { $env:HTTPS_PORT }
+$httpUrl = "http://${radminIp}:${httpPort}"
+$httpsUrl = "https://${radminIp}:${httpsPort}"
 
 function Test-IsAdministrator {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -49,7 +55,7 @@ try {
     Write-Host "             Yargram — запуск" -ForegroundColor Cyan
     Write-Host "=============================================" -ForegroundColor DarkCyan
 
-    Write-Host "[1/3] Останавливаем прежнюю версию и открываем доступ другу..." -ForegroundColor Cyan
+    Write-Host "[1/4] Останавливаем прежнюю версию и открываем доступ другу..." -ForegroundColor Cyan
     $accessScript = Join-Path $PSScriptRoot "prepare-yargram-access.ps1"
     $accessArguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$accessScript`""
     $accessProcess = Start-Process `
@@ -75,7 +81,7 @@ try {
         Write-Host ""
     }
 
-    Write-Host "[2/3] Запускаем новую сборку в отдельном окне..." -ForegroundColor Cyan
+    Write-Host "[2/4] Запускаем новую сборку в отдельном окне..." -ForegroundColor Cyan
     $startScript = Join-Path $PSScriptRoot "start-yargram.ps1"
     $serverArguments = "-NoLogo -NoExit -NoProfile -ExecutionPolicy Bypass -File `"$startScript`""
     Start-Process `
@@ -83,7 +89,7 @@ try {
         -ArgumentList $serverArguments `
         -WorkingDirectory $projectRoot | Out-Null
 
-    Write-Host "[3/3] Ждём готовности сервера..." -ForegroundColor Cyan
+    Write-Host "[3/4] Ждём готовности сервера..." -ForegroundColor Cyan
     # HTTP обязателен: именно по нему заходит друг. HTTPS необязателен — он
     # нужен только для звонков и может не подняться, если нет сертификата.
     $httpReady = $false
@@ -128,9 +134,46 @@ try {
         throw "Сервер не отвечает по адресу $httpUrl. Посмотрите ошибку в отдельном окне 'Yargram Server'."
     }
 
+    Write-Host "[4/4] Ставим резервную копию в очередь..." -ForegroundColor Cyan
+    # Копия делается в фоне и запуск не задерживает: сервер к этому моменту уже
+    # отвечает, значит и PostgreSQL поднята. Скрипт сам решает, нужна ли копия
+    # сегодня (делает не чаще раза в сутки) и удаляет копии старше недели.
+    # Отдельным процессом, а не через "&": вывод длинный, а ждать его нельзя —
+    # друг ждёт ссылку. Окно прячем, итог уходит в runtime\backups\backup.log.
+    try {
+        $backupScript = Join-Path $PSScriptRoot "backup.mjs"
+        $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+        $nodeExe = if ($null -ne $nodeCommand) { $nodeCommand.Source } else { "node" }
+        # 🔥 Без -RedirectStandardOutput. В Windows PowerShell 5.1 он падает с
+        # «Элемент уже добавлен. Ключ в словаре: "Path"», если в окружении есть и
+        # Path, и PATH — тогда процесс вообще не стартует, а файлы журнала
+        # остаются пустыми. Поэтому журнал ведёт сам скрипт, а --quiet означает
+        # «на экран ничего, только в runtime\backups\backup.log».
+        Start-Process `
+            -FilePath $nodeExe `
+            -ArgumentList @("`"$backupScript`"", "--quiet") `
+            -WorkingDirectory $projectRoot `
+            -WindowStyle Hidden | Out-Null
+        Write-Host "      Копия делается в фоне — Yargram её не ждёт." -ForegroundColor DarkGray
+        Write-Host "      Если сегодняшняя копия уже есть, шаг пропустится." -ForegroundColor DarkGray
+        Write-Host "      Итог: runtime\backups\backup.log" -ForegroundColor DarkGray
+    }
+    catch {
+        # Копия не должна мешать запуску: без неё Yargram работает.
+        Write-Host "      Копию поставить в очередь не удалось: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "      Yargram это не мешает. Сделайте копию вручную: «Сделать копию Yargram.bat»." -ForegroundColor Yellow
+    }
+
     Write-Host ""
     Write-Host "Yargram запущен успешно." -ForegroundColor Green
-    Write-Host "Ссылка другу: $httpUrl" -ForegroundColor Yellow
+    # Публичный адрес из .env важнее внутреннего: если он задан, друзьям нужен
+    # именно он — остальное лишь то, как сервер видит сам себя.
+    if (-not [string]::IsNullOrWhiteSpace($env:PUBLIC_ORIGIN)) {
+        Write-Host "Ссылка другу: $($env:PUBLIC_ORIGIN)" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "Ссылка другу: $httpUrl" -ForegroundColor Yellow
+    }
     if ($httpsReady) {
         Write-Host "Для звонков:  $httpsUrl" -ForegroundColor Green
     }
@@ -141,6 +184,7 @@ try {
 
     Write-Host ""
     Write-Host "Не закрывайте окно сервера, пока друг пользуется Yargram." -ForegroundColor Magenta
+    Write-Host "Резервные копии: runtime\backups — раз в сутки, старше недели удаляются сами." -ForegroundColor DarkGray
     if ($httpsReady) {
         Start-Process $httpsUrl
     }

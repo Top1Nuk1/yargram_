@@ -1,3 +1,4 @@
+import { useTranslation } from '../../hooks/useLanguage';
 import { memberTagClass } from '../../lib/group';
 import type { GroupRole } from '../../types';
 
@@ -14,11 +15,12 @@ export function MemberTag({
   role: GroupRole;
   className?: string;
 }) {
+  const t = useTranslation();
   if (!tag) return null;
   return (
     <span
       className={`shrink-0 truncate text-[11px] font-semibold ${memberTagClass(role)} ${className}`}
-      title={`Тег: ${tag}`}
+      title={t('groups.tagTooltip', { tag })}
     >
       {tag}
     </span>

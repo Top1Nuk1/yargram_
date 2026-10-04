@@ -10,7 +10,7 @@ function renderDialog(onSubmit = vi.fn()) {
 /** Заполняет вопрос и два варианта — минимальный опрос. */
 function fillMinimal(question = 'Куда идём?', first = 'В горы', second = 'На речку') {
   fireEvent.change(screen.getByLabelText('Текст вопроса'), { target: { value: question } });
-  fireEvent.change(screen.getByLabelText('Добавить ответ'), { target: { value: first } });
+  fireEvent.change(screen.getByLabelText('Добавить ответ…'), { target: { value: first } });
   fireEvent.change(screen.getByLabelText('Вариант 2'), { target: { value: second } });
 }
 
@@ -25,7 +25,7 @@ describe('окно «Новый опрос»', () => {
     fireEvent.change(screen.getByLabelText('Текст вопроса'), { target: { value: 'Вопрос' } });
     expect(create).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText('Добавить ответ'), { target: { value: 'Один' } });
+    fireEvent.change(screen.getByLabelText('Добавить ответ…'), { target: { value: 'Один' } });
     expect(create).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText('Вариант 2'), { target: { value: 'Два' } });

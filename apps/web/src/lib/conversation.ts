@@ -1,5 +1,6 @@
 import type { AccountStatePayload, Conversation, Message, Participant, User } from '../types';
 import { mergeUserProfile, updateUserPresence, type PresencePayload } from './presence';
+import type { TranslateFn } from './i18n';
 
 function updateParticipantProfile(participant: Participant, user: User): Participant {
   const participantId = participant.user?.id ?? participant.userId ?? participant.id;
@@ -92,6 +93,8 @@ function participantUser(participant: Participant): User | null {
     // Отметка SCAM едет тем же путём: иначе в переписке у помеченного
     // аккаунта пропадала бы рамка рядом с именем.
     scam: participant.scam,
+    // FAKE — вторая такая же отметка, переносим её по той же причине.
+    fake: participant.fake,
     // Заморозку тоже нужно перенести: иначе у замороженного собеседника
     // пропадала снежинка, хотя сервер её присылает.
     isFrozen: participant.isFrozen,
@@ -146,13 +149,17 @@ export function unreadBadgeText(count?: number): string | null {
   return value > 1000 ? '999+' : String(value);
 }
 
-export function conversationTitle(conversation: Conversation, currentUserId: string): string {
-  if (conversation.type === 'saved') return 'Избранное';
+export function conversationTitle(
+  conversation: Conversation,
+  currentUserId: string,
+  t?: TranslateFn,
+): string {
+  if (conversation.type === 'saved') return t ? t('sidebar.favorites') : 'Избранное';
   return (
     conversation.title ??
     conversation.name ??
     getConversationPeer(conversation, currentUserId)?.displayName ??
-    'Новый диалог'
+    (t ? t('msgr.newDialog') : 'Новый диалог')
   );
 }
 

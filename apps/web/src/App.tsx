@@ -6,6 +6,7 @@ import { AuthScreen } from './features/auth/AuthScreen';
 import { MessengerScreen } from './features/messenger/MessengerScreen';
 import { OnboardingScreen } from './features/onboarding/OnboardingScreen';
 import { useTheme } from './hooks/useTheme';
+import { useLanguage } from './hooks/useLanguage';
 import {
   clearActiveToken,
   isOnboardingDone,
@@ -21,7 +22,7 @@ import {
 import type { AuthResult, User } from './types';
 
 export default function App() {
-  const { theme, toggleTheme } = useTheme();
+  const { t } = useLanguage();
   const [accounts, setAccounts] = useState<StoredAccount[]>(readAccounts);
   const [token, setToken] = useState<string | null>(readActiveToken);
   const [user, setUser] = useState<User | null>(null);
@@ -31,6 +32,13 @@ export default function App() {
   const [onboardingDone, setOnboardingDone] = useState(isOnboardingDone);
   // Режим добавления второго аккаунта: показываем вход, не теряя текущую сессию.
   const [addingAccount, setAddingAccount] = useState(false);
+
+  // Тема зависит от акцента в профиле, поэтому объявлена после user: до входа
+  // акцент неизвестен, и тема работает на встроенных цветах. Набор тем — свой
+  // на каждый аккаунт устройства, поэтому передаём и владельца: переключение
+  // аккаунта перечитывает хранилище.
+  const themeControls = useTheme(user?.themeColor, user?.id);
+  const { theme, toggleTheme } = themeControls;
 
   // Список аккаунтов нужен внутри асинхронных обработчиков — держим актуальную копию.
   const accountsRef = useRef(accounts);
@@ -84,19 +92,19 @@ export default function App() {
           activateAccount(
             remaining[0]?.token ?? null,
             remaining.length > 0
-              ? 'Предыдущий аккаунт больше недоступен. Открываем другой.'
-              : 'Сессия завершилась. Войдите снова.',
+              ? t('app.accountUnavailable')
+              : t('app.sessionExpired'),
           );
           return;
         }
-        setNotice('Не удалось подключиться к серверу. Проверьте Radmin VPN и повторите попытку.');
+        setNotice(t('app.serverUnreachable'));
       })
       .finally(() => {
         if (!controller.signal.aborted) setBooting(false);
       });
 
     return () => controller.abort();
-  }, [token, user, connectionAttempt]);
+  }, [token, user, connectionAttempt, t]);
 
   async function handleAuthenticated(result: AuthResult) {
     const nextToken = result.accessToken;
@@ -122,10 +130,10 @@ export default function App() {
     persistAccounts(remaining);
     setAddingAccount(false);
     if (remaining.length > 0) {
-      activateAccount(remaining[0]!.token, 'Вы вышли из аккаунта.');
+      activateAccount(remaining[0]!.token, t('app.loggedOut'));
       return;
     }
-    activateAccount(null, sessionExpired ? 'Сессия завершилась. Войдите снова.' : 'Вы вышли из аккаунта.');
+    activateAccount(null, sessionExpired ? t('app.sessionExpired') : t('app.loggedOut'));
   }
 
   function handleSwitchAccount(nextToken: string) {
@@ -160,7 +168,7 @@ export default function App() {
         <div className="animate-fade-in text-center" role="status" aria-live="polite">
           <Logo />
           <Spinner className="mx-auto mt-7 h-7 w-7 text-brand" />
-          <p className="mt-3 text-sm text-muted">Подключаемся к Yargram…</p>
+          <p className="mt-3 text-sm text-muted">{t('app.connecting')}</p>
         </div>
       </main>
     );
@@ -176,10 +184,10 @@ export default function App() {
             setBooting(true);
             setConnectionAttempt((attempt) => attempt + 1);
           }}>
-            Повторить подключение
+            {t('app.retryConnection')}
           </Button>
           <Button variant="ghost" className="mt-3" onClick={() => handleLogout()}>
-            Выйти из аккаунта
+            {t('app.logout')}
           </Button>
         </div>
       </main>
@@ -192,7 +200,8 @@ export default function App() {
         onAuthenticated={handleAuthenticated}
         theme={theme}
         onToggleTheme={toggleTheme}
-        notice="Войдите в другой аккаунт — текущий останется доступен в переключателе."
+        accent={themeControls.activeTheme.colors.brand}
+        notice={t('app.addAccountNotice')}
         onCancel={() => setAddingAccount(false)}
       />
     );
@@ -207,6 +216,7 @@ export default function App() {
         onAuthenticated={handleAuthenticated}
         theme={theme}
         onToggleTheme={toggleTheme}
+        accent={themeControls.activeTheme.colors.brand}
         notice={notice}
       />
     );
@@ -219,6 +229,7 @@ export default function App() {
       currentUser={user}
       theme={theme}
       onToggleTheme={toggleTheme}
+      themeControls={themeControls}
       onLogout={handleLogout}
       onUserUpdated={handleUserUpdated}
       accounts={accounts}
@@ -228,7 +239,7 @@ export default function App() {
         const remaining = removeAccountByToken(accountsRef.current, accountToken);
         persistAccounts(remaining);
         if (accountToken === token) {
-          activateAccount(remaining[0]?.token ?? null, 'Вы вышли из аккаунта.');
+          activateAccount(remaining[0]?.token ?? null, t('app.loggedOut'));
         }
       }}
     />

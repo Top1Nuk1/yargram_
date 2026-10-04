@@ -1,3 +1,5 @@
+import { dynamicIceServers } from './turnCredentials';
+
 export type VideoQuality = 'data-saver' | 'standard' | 'high';
 
 export interface CallSettings {
@@ -137,4 +139,40 @@ export async function enumerateCallDevices(): Promise<CallDevices> {
     cameras: devices.filter((device) => device.kind === 'videoinput'),
     speakers: devices.filter((device) => device.kind === 'audiooutput'),
   };
+}
+
+/**
+ * ICE-серверы для звонка: через них браузеры находят друг друга.
+ *
+ * 🔥 `stun` только сообщает каждому участнику его внешний адрес. Если NAT у
+ * собеседников «симметричный» (мобильный интернет, часть корпоративных сетей),
+ * прямое соединение не установится вовсе — нужен `turn`: он **перегоняет**
+ * медиапоток через себя. Работа надёжных звонков без своего `turn` невозможна,
+ * поэтому адрес релея задаётся сборкой:
+ *
+ *   VITE_TURN_URL=turn:203.0.113.7:3478
+ *   VITE_TURN_USERNAME=yargram
+ *   VITE_TURN_CREDENTIAL=<пароль>
+ *
+ * Пока переменные не заданы, остаётся только публичный STUN — этого хватает
+ * внутри одной локальной сети и через VPN, но не всегда хватает в интернете.
+ *
+ * 🔥 Свой `coturn` есть не везде: на хостинге приложений нет ни root, ни UDP.
+ * На такой случай реле запрашиваются у своего сервера перед звонком
+ * (`turnCredentials.ts`), и здесь они добавляются к тем, что из сборки.
+ */
+export function iceServers(): RTCIceServer[] {
+  const servers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const turnUrl = (import.meta.env.VITE_TURN_URL ?? '').trim();
+  if (turnUrl) {
+    const username = (import.meta.env.VITE_TURN_USERNAME ?? '').trim();
+    const credential = (import.meta.env.VITE_TURN_CREDENTIAL ?? '').trim();
+    servers.push({
+      urls: turnUrl.split(',').map((url: string) => url.trim()).filter(Boolean),
+      ...(username ? { username } : {}),
+      ...(credential ? { credential } : {}),
+    });
+  }
+  servers.push(...dynamicIceServers());
+  return servers;
 }

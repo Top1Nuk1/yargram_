@@ -11,12 +11,34 @@ import type { Repositories } from "../repositories/types.js";
 const MEBIBYTE = 1024 * 1024;
 export const uploadLimits = {
   avatar: 10 * MEBIBYTE,
+  // Баннер — широкая полоса, которую часто делают анимированным GIF: такие
+  // файлы весят заметно больше статичной картинки, поэтому лимит выше аватара.
+  banner: 50 * MEBIBYTE,
+  // Фон чата — то же, что баннер, по сути: его тоже ставят GIF-ом и он тянет
+  // на десятки мегабайт. Отделён от `image` затем, чтобы поднять предел фону,
+  // не сдвигая предел обычного фото в переписке (там 20 МиБ — и это
+  // обещание из интерфейса, которое нельзя менять молча).
+  wallpaper: 50 * MEBIBYTE,
   image: 20 * MEBIBYTE,
   file: 100 * MEBIBYTE,
 } satisfies Record<AttachmentKind, number>;
 
 const allowedImageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
 const allowedAvatarExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+// Баннер — единственная картинка профиля, которой разрешён GIF: он анимированный,
+// а аватар в кружке 40 px от анимации только рябит. Живая полоса — как раз то,
+// чего от баннера ждут.
+const allowedBannerExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+// Фон — как баннер: статичная картинка или GIF, без сюрпризов.
+const allowedWallpaperExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+
+// Живое оформление: фон и баннер можно сделать видео. Форматы — только те, что
+// браузеры играют сами, без внешних кодеков: mp4 (H.264) и webm.
+const videoExtensions = new Set([".mp4", ".webm"]);
+const videoMimeByExtension: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+};
 const mimePattern = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
 
 type UploadInput = { fileName: string; mimeType: string; data: Buffer; mediaKind?: "voice" | "video_circle"; durationSeconds?: number };
@@ -89,6 +111,34 @@ export class UploadService {
   }
 
   /**
+   * Баннер профиля. Прежний файл удаляем только после успешной записи: иначе
+   * при ошибке сохранения человек остался бы и без нового баннера, и без старого.
+   */
+  async setBanner(userId: string, input: UploadInput): Promise<CurrentUser> {
+    const previous = await this.repositories.users.findById(userId);
+    if (!previous) throw new AppError(401, "INVALID_TOKEN", "The token user no longer exists");
+    const banner = await this.upload(userId, "banner", input);
+    try {
+      const updated = await this.repositories.users.update(userId, { banner });
+      if (previous.banner?.id && previous.banner.id !== banner.id) {
+        await this.deleteStoredAttachment(previous.banner.id);
+      }
+      return toCurrentUser(updated);
+    } catch (error) {
+      await this.deleteStoredAttachment(banner.id);
+      throw error;
+    }
+  }
+
+  async removeBanner(userId: string): Promise<CurrentUser> {
+    const previous = await this.repositories.users.findById(userId);
+    if (!previous) throw new AppError(401, "INVALID_TOKEN", "The token user no longer exists");
+    const updated = await this.repositories.users.update(userId, { banner: null });
+    if (previous.banner?.id) await this.deleteStoredAttachment(previous.banner.id);
+    return toCurrentUser(updated);
+  }
+
+  /**
    * Uploads are served only through the temporary link issued in an API response.
    * The link names the account it was issued to, and that account must still own
    * the attachment or still take part in a conversation that references it.
@@ -133,7 +183,7 @@ export class UploadService {
    */
   async deleteUserAvatars(userId: string): Promise<void> {
     for (const attachment of await this.repositories.attachments.listByOwner(userId)) {
-      if (attachment.kind !== "avatar") continue;
+      if (attachment.kind !== "avatar" && attachment.kind !== "banner") continue;
       await this.deleteStoredAttachment(attachment.id);
     }
   }
@@ -209,8 +259,25 @@ function validateUpload(
     }
   }
   const detectedImageMime = detectImageMime(input.data);
-  if (kind === "image" || kind === "avatar") {
-    const allowed = kind === "avatar" ? allowedAvatarExtensions : allowedImageExtensions;
+  if (kind === "image" || kind === "avatar" || kind === "banner" || kind === "wallpaper") {
+    // Баннер и фон — тоже картинки профиля, но крупнее по размеру и допускают GIF.
+    const allowed =
+      kind === "image" ? allowedImageExtensions
+        : kind === "banner" ? allowedBannerExtensions
+          : kind === "wallpaper" ? allowedWallpaperExtensions
+            : allowedAvatarExtensions;
+    // Живое оформление: фон и баннер можно поставить видео. Проверяем подпись
+    // так же строго, как у картинок, — расширению верить нельзя.
+    if (videoExtensions.has(extension) && (kind === "banner" || kind === "wallpaper")) {
+      const expectedMime = videoMimeByExtension[extension];
+      if (detectVideoMime(input.data) !== expectedMime) {
+        throw new AppError(400, "UPLOAD_SIGNATURE_INVALID", "The file is not a supported video");
+      }
+      if (declaredMime !== expectedMime && declaredMime !== "application/octet-stream") {
+        throw new AppError(400, "UPLOAD_MIME_MISMATCH", "The video MIME type does not match its content");
+      }
+      return { fileName, extension, mimeType: expectedMime };
+    }
     if (!allowed.has(extension)) {
       throw new AppError(400, "UPLOAD_EXTENSION_INVALID", `This ${kind} image format is not supported`);
     }
@@ -262,6 +329,24 @@ function detectImageMime(data: Buffer): string | null {
   if (data.length >= 12 && data.subarray(0, 4).toString("ascii") === "RIFF" && data.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
   const gif = data.subarray(0, 6).toString("ascii");
   if (gif === "GIF87a" || gif === "GIF89a") return "image/gif";
+  return null;
+}
+
+/**
+ * Подпись видео. mp4 (и его родня) начинается с бокса `ftyp`, webm — с EBML.
+ * Читаем только начало файла: этого достаточно, чтобы отличить видео от
+ * переименованной картинки, и не требует разбора контейнера целиком.
+ */
+function detectVideoMime(data: Buffer): string | null {
+  if (data.length >= 12 && data.subarray(4, 8).toString("ascii") === "ftyp") {
+    const brand = data.subarray(8, 12).toString("ascii");
+    // `qt  ` — это MOV: браузеры играют его не везде, поэтому не обещаем.
+    if (brand === "qt  ") return null;
+    return "video/mp4";
+  }
+  if (data.length >= 4 && data.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) {
+    return "video/webm";
+  }
   return null;
 }
 

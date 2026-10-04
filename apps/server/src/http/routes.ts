@@ -1,13 +1,15 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import type { ServerConfig } from "../config.js";
 import {
   allowedReactionEmojis,
   groupPermissions,
   toPublicUser,
   toPublicUserFor,
 } from "../domain/models.js";
-import { asyncHandler } from "../lib/errors.js";
+import { AppError, asyncHandler } from "../lib/errors.js";
+import { fetchTurnIceServers } from "../lib/turn.js";
 import { parseBody, parseParams, parseQuery } from "../lib/validation.js";
 import type { Repositories } from "../repositories/types.js";
 import type { RealtimeEvents } from "../realtime/events.js";
@@ -18,9 +20,13 @@ import { MUTE_FOREVER, type GroupService } from "../services/group-service.js";
 import type { DraftService } from "../services/draft-service.js";
 import type { FolderService } from "../services/folder-service.js";
 import type { ScheduledMessageService } from "../services/scheduled-message-service.js";
+import type { FriendService } from "../services/friend-service.js";
+import type { SessionService } from "../services/session-service.js";
+import type { SupportBotService } from "../services/support-bot-service.js";
 import { uploadLimits, type UploadService } from "../services/upload-service.js";
 import { createAuthMiddleware } from "./auth-middleware.js";
 import { readMultipartFile } from "./multipart.js";
+import { sessionContext } from "./session-context.js";
 
 const usernameSchema = z
   .string()
@@ -57,6 +63,57 @@ const loginSchema = z.object({
   password: z.string().min(1).max(72),
 });
 
+/** Код из письма — шесть цифр, как в SMS-подтверждении. */
+const emailCodeSchema = z.string().trim().regex(/^\d{6}$/, "Code must be 6 digits");
+const emailCodePurposeSchema = z.enum(["register", "login", "reset"]);
+
+const confirmCodeSchema = z.object({
+  email: z.string().trim().email().max(254),
+  code: emailCodeSchema,
+  purpose: emailCodePurposeSchema,
+});
+
+const resendCodeSchema = z.object({
+  email: z.string().trim().email().max(254),
+  purpose: emailCodePurposeSchema,
+});
+
+const resetRequestSchema = z.object({
+  email: z.string().trim().email().max(254),
+});
+
+const resetConfirmSchema = z.object({
+  email: z.string().trim().email().max(254),
+  code: emailCodeSchema,
+  password: z.string().min(8).max(72),
+});
+
+/**
+ * Ссылка на оформление профиля: абсолютный адрес из интернета или относительный
+ * путь до своей же загрузки.
+ *
+ * 🔥 Относительный путь обязателен: `attachment.url` после загрузки выглядит как
+ * `/api/uploads/<id>?t=<подпись>` — без протокола. Требование «обязательно URL»
+ * ломало сохранение фона ровно в тот момент, когда файл уже загружен: файл
+ * уходил, а профиль отвечал 400 «Request validation failed».
+ */
+const decorativeUrlSchema = z.union([
+  z.literal(""),
+  // Только http(s): `z.string().url()` пропускает и `javascript:` — а это
+  // ссылка, которую позже подставят в оформление профиля.
+  z
+    .string()
+    .trim()
+    .url()
+    .refine((value) => /^https?:\/\//i.test(value), { message: "Only http(s) links are allowed" }),
+  z.string().trim().regex(/^\/api\/uploads\/[A-Za-z0-9._~-]+(?:\?[^\s]*)?$/),
+  // Свои файлы приложения: `/wallpapers/Yargram-wallpaper-blue.png` и прочее
+  // оформление, которое лежит рядом с интерфейсом, а не в загрузках. Путь
+  // обязательно начинается с одного слэша — `//host` это чужой сайт, а не наш
+  // файл, и подставлять его в оформление нельзя.
+  z.string().trim().regex(/^\/(?!\/)[A-Za-z0-9._~/-]+$/),
+]);
+
 const updateProfileSchema = z
   .object({
     displayName: z.string().trim().min(1).max(80).optional(),
@@ -65,13 +122,39 @@ const updateProfileSchema = z
     notificationSoundEnabled: z.boolean().optional(),
     showLastSeen: z.boolean().optional(),
     themeColor: z.string().trim().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).optional(),
-    wallpaperUrl: z.union([z.literal(""), z.string().trim().url()]).optional(),
+    wallpaperUrl: decorativeUrlSchema.optional(),
+    // Тип фона: `image/*` или `video/*`. По самой ссылке не видно, видео это
+    // или картинка, — от этого зависит, рисовать `<video>` или фон. Пустая
+    // строка — «фон снят»: вместе с пустым `wallpaperUrl` она возвращает чат к
+    // стандартному заполнению, и старое «это было видео» не остаётся в профиле.
+    wallpaperMimeType: z
+      .union([
+        z.literal(""),
+        z
+          .string()
+          .trim()
+          .regex(/^(?:image|video)\/[a-z0-9][a-z0-9.+-]{0,60}$/),
+      ])
+      .optional(),
+    // Баннер профиля: цвет заливки. Пустая строка и null означают «убрать»,
+    // как в Telegram — тогда баннер не рисуется вовсе.
+    bannerColor: z
+      .union([z.literal(""), z.literal(null), z.string().trim().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/)])
+      .optional(),
+    // Баннер профиля: прямая ссылка на картинку. Пустая строка и null означают
+    // «убрать» — как в Telegram, тогда баннер не рисуется вовсе.
+    bannerUrl: decorativeUrlSchema.optional(),
     // День рождения как в Telegram: год необязателен, «MM-DD» означает
     // «год скрыт» — тогда возраст в профиле не показывается.
     birthday: z
       .string()
       .regex(/^(?:\d{4}-)?\d{2}-\d{2}$/, "Birthday must be a YYYY-MM-DD or MM-DD date")
       .nullable()
+      .optional(),
+    // Автозавершение сеансов: через сколько дней бездействия сеанс закрывается
+    // сам. `null` — никогда. Без этой строки настройка молча не сохранялась бы.
+    sessionAutoTerminateDays: z
+      .union([z.literal(null), z.number().int().min(1).max(365)])
       .optional(),
 
   })
@@ -84,9 +167,16 @@ const userListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(30),
 });
 const userParamsSchema = z.object({ userId: z.string().uuid() });
+const sessionParamsSchema = z.object({ sessionId: z.string().uuid() });
+// Знак приложения: "" и null одинаково снимают значок, как в админке.
+const appBadgeSchema = z.object({
+  badge: z
+    .union([z.enum(["yargram", ""]), z.null()])
+    .transform((value) => (value === "yargram" ? "yargram" : null)),
+});
 const uploadParamsSchema = z.object({ uploadId: z.string().uuid() });
 const uploadQuerySchema = z.object({
-  kind: z.enum(["image", "file"]),
+  kind: z.enum(["image", "file", "wallpaper"]),
   mediaKind: z.enum(["voice", "video_circle"]).optional(),
   durationSeconds: z.coerce.number().finite().positive().optional(),
 }).superRefine((input, context) => {
@@ -245,6 +335,8 @@ const scheduledUpdateSchema = z
   });
 
 export function createApiRouter(dependencies: {
+  /** Настройки сервера: маршруту реле нужны адрес внешнего TURN и срок кэша. */
+  config: ServerConfig;
   authService: AuthService;
   adminService: AdminService;
   chatService: ChatService;
@@ -252,6 +344,9 @@ export function createApiRouter(dependencies: {
   draftService: DraftService;
   folderService: FolderService;
   scheduledMessageService: ScheduledMessageService;
+  friendService: FriendService;
+  sessionService: SessionService;
+  supportBotService: SupportBotService;
   uploadService: UploadService;
   repositories: Repositories;
   events: RealtimeEvents;
@@ -277,12 +372,15 @@ export function createApiRouter(dependencies: {
     authLimiter,
     asyncHandler(async (request, response) => {
       const input = parseBody(registerSchema, request);
-      const result = await dependencies.authService.register({
-        email: input.email,
-        password: input.password,
-        displayName: input.displayName ?? (input.name as string),
-        ...(input.username === undefined ? {} : { username: input.username }),
-      });
+      const result = await dependencies.authService.register(
+        {
+          email: input.email,
+          password: input.password,
+          displayName: input.displayName ?? (input.name as string),
+          ...(input.username === undefined ? {} : { username: input.username }),
+        },
+        sessionContext(request),
+      );
       response.status(201).json(result);
     }),
   );
@@ -292,7 +390,62 @@ export function createApiRouter(dependencies: {
     authLimiter,
     asyncHandler(async (request, response) => {
       const input = parseBody(loginSchema, request);
-      response.json(await dependencies.authService.login(input.email, input.password));
+      response.json(
+        await dependencies.authService.login(input.email, input.password, sessionContext(request)),
+      );
+    }),
+  );
+
+  // Подтверждение почты кодом. Когда EMAIL_CONFIRMATION выключен, ручки просто
+  // не находят действующего кода: сценарий без почты остаётся рабочим, а сама
+  // смена пароля по коду доступна всегда, если код кто-то выдал.
+  router.post(
+    "/auth/confirm-code",
+    authLimiter,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(confirmCodeSchema, request);
+      response.json(
+        await dependencies.authService.confirmCode(
+          input.email,
+          input.code,
+          input.purpose,
+          sessionContext(request),
+        ),
+      );
+    }),
+  );
+
+  router.post(
+    "/auth/resend-code",
+    authLimiter,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(resendCodeSchema, request);
+      response.json(await dependencies.authService.resendCode(input.email, input.purpose));
+    }),
+  );
+
+  router.post(
+    "/auth/reset-password/request",
+    authLimiter,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(resetRequestSchema, request);
+      response.json(await dependencies.authService.requestPasswordReset(input.email));
+    }),
+  );
+
+  router.post(
+    "/auth/reset-password/confirm",
+    authLimiter,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(resetConfirmSchema, request);
+      response.json(
+        await dependencies.authService.resetPassword(
+          input.email,
+          input.code,
+          input.password,
+          sessionContext(request),
+        ),
+      );
     }),
   );
 
@@ -301,6 +454,62 @@ export function createApiRouter(dependencies: {
     requireAuth,
     asyncHandler(async (request, response) => {
       response.json({ user: await dependencies.authService.getCurrentUser(request.auth.userId) });
+    }),
+  );
+
+  // ---- Активные сеансы ----
+  //
+  // Yargram — сайт, поэтому сеанс описывают парой «сайт + браузер»: человек
+  // видит, откуда именно он вошёл, и закрывает только этот вход.
+  router.get(
+    "/sessions",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      response.json(
+        await dependencies.sessionService.overview(request.auth.userId, bearerToken(request)),
+      );
+    }),
+  );
+
+  // Вход с нового сайта подтверждён: «это был я».
+  router.post(
+    "/sessions/:sessionId/acknowledge",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { sessionId } = parseParams(sessionParamsSchema, request);
+      response.json(
+        await dependencies.sessionService.acknowledge(
+          request.auth.userId,
+          sessionId,
+          bearerToken(request),
+        ),
+      );
+    }),
+  );
+
+  router.delete(
+    "/sessions/:sessionId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { sessionId } = parseParams(sessionParamsSchema, request);
+      response.json(
+        await dependencies.sessionService.terminate(
+          request.auth.userId,
+          bearerToken(request),
+          sessionId,
+        ),
+      );
+    }),
+  );
+
+  // Все сеансы, кроме текущего.
+  router.delete(
+    "/sessions",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      response.json(
+        await dependencies.sessionService.terminateAll(request.auth.userId, bearerToken(request)),
+      );
     }),
   );
 
@@ -345,11 +554,58 @@ export function createApiRouter(dependencies: {
     }),
   );
 
+  // Баннер профиля — как в Discord: своя картинка или цвет. Картинка отдельным
+  // маршрутом, потому что это файл, а цвет уходит обычным PATCH /users/me.
+  router.post(
+    "/users/me/banner",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const file = await readMultipartFile(request, {
+        fieldName: "banner",
+        maxBodyBytes: uploadLimits.banner + 64 * 1024,
+      });
+      const user = await dependencies.uploadService.setBanner(request.auth.userId, file);
+      dependencies.events.publishUpdatedProfile({
+        user: await dependencies.chatService.publicUser(request.auth.userId),
+      });
+      response.status(201).json({ user });
+    }),
+  );
+
+  router.delete(
+    "/users/me/banner",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const user = await dependencies.uploadService.removeBanner(request.auth.userId);
+      dependencies.events.publishUpdatedProfile({
+        user: await dependencies.chatService.publicUser(request.auth.userId),
+      });
+      response.json({ user });
+    }),
+  );
+
   router.get(
     "/users/me/blocked",
     requireAuth,
     asyncHandler(async (request, response) => {
       response.json({ users: await dependencies.chatService.listBlocked(request.auth.userId) });
+    }),
+  );
+
+  // Знак «Yargram» на собственном аккаунте приложения. Доступен только тому,
+  // кого владелец пометил приложением: остальным — отказ, и знак они себе не
+  // выдадут. Отдельным маршрутом, потому что это самообслуживание, а не
+  // администрирование чужого аккаунта.
+  router.post(
+    "/app/badge",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { badge } = parseBody(appBadgeSchema, request);
+      const user = await dependencies.adminService.setOwnBadge(request.auth.userId, badge);
+      dependencies.events.publishUpdatedProfile({
+        user: await dependencies.chatService.publicUser(request.auth.userId),
+      });
+      response.json({ user });
     }),
   );
 
@@ -364,8 +620,10 @@ export function createApiRouter(dependencies: {
     response.json({
       // Удалённые аккаунты в поиске не показываем: найти их нельзя, хотя
       // профиль по прямой ссылке всё ещё открывается как «Удалённый аккаунт».
+      // Служебных ботов тоже: в поддержку заходят пунктом меню, а не поиском,
+      // и «добавить в друзья» боту — бессмыслица.
       users: users
-        .filter((user) => !user.isDeleted)
+        .filter((user) => !user.isDeleted && !user.isBot)
         .map((user) => ({
           ...toPublicUserFor(user, request.auth.userId),
           blockedByMe: currentUser?.blockedUserIds.includes(user.id) ?? false,
@@ -400,6 +658,42 @@ export function createApiRouter(dependencies: {
 
   const adminFreezeSchema = z.object({ frozen: z.boolean() });
   const adminScamSchema = z.object({ scam: z.boolean() });
+  const adminFakeSchema = z.object({ fake: z.boolean() });
+  const adminAppSchema = z.object({ isApp: z.boolean() });
+  const adminLookupSchema = z.object({ handle: z.string().trim().min(1).max(32) });
+
+  /**
+   * Точный поиск аккаунта для админ-панели по основному или дополнительному
+   * нику. Обычный `GET /users` тут не годится: это поиск по подстроке, который
+   * к тому же исключает самого ищущего — владелец не смог бы найти свой же
+   * аккаунт, чтобы выдать себе значок.
+   */
+  router.post(
+    "/admin/lookup",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { handle } = parseBody(adminLookupSchema, request);
+      const grantor = await dependencies.repositories.users.findById(request.auth.userId);
+      if (!grantor?.isOwner) {
+        throw new AppError(403, "NOT_OWNER", "Only the owner can look up accounts");
+      }
+      const user = await dependencies.repositories.users.findByHandle(handle);
+      response.json({ user: user ? toPublicUser(user) : null });
+    }),
+  );
+
+  // Приложение Yargram: владелец помечает им аккаунт, и с этого момента
+  // приложение может само поставить себе значок «Yargram».
+  router.post(
+    "/admin/:userId/app",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      const { isApp } = parseBody(adminAppSchema, request);
+      const updated = await dependencies.adminService.setApp(request.auth.userId, userId, isApp);
+      response.json({ user: toPublicUser(updated) });
+    }),
+  );
 
   router.post(
     "/admin/:userId/grant",
@@ -449,6 +743,22 @@ export function createApiRouter(dependencies: {
     }),
   );
 
+  // Отметка FAKE: рядом с именем горит рамка «FAKE», а описание подменяется
+  // предупреждением о подделке под официальный аккаунт. Тоже только владелец.
+  router.post(
+    "/admin/:userId/fake",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      const { fake } = parseBody(adminFakeSchema, request);
+      const updated = await dependencies.adminService.setFake(request.auth.userId, userId, fake);
+      dependencies.events.publishUpdatedProfile({
+        user: await dependencies.chatService.publicUser(userId),
+      });
+      response.json({ user: toPublicUser(updated) });
+    }),
+  );
+
   // Знаки группы: галочка, значок Yargram и отметка SCAM. Владелец помечает
   // саму группу, а не её создателя, поэтому группу сначала ищут — по названию,
   // коду из ссылки-приглашения или по id.
@@ -462,10 +772,66 @@ export function createApiRouter(dependencies: {
         .transform((value) => (value === "yargram" ? "yargram" : null))
         .optional(),
       scam: z.boolean().optional(),
+      fake: z.boolean().optional(),
     })
     .refine((data) => Object.values(data).some((value) => value !== undefined), {
       message: "Нужен хотя бы один знак",
     });
+
+  // Сводка по всей установке: сколько всего аккаунтов и групп. Только владелец.
+  // Отдельная ручка, потому что по спискам этого не узнать: `GET /users` — это
+  // поиск по подстроке с пределом выдачи, а в нём ещё и каждая беседа считается
+  // отдельно; `GET /admin/groups` отдаёт только первые совпадения.
+  router.get(
+    "/admin/stats",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const stats = await dependencies.adminService.stats(request.auth.userId);
+      response.json({ stats });
+    }),
+  );
+
+  /**
+   * Список аккаунтов для админ-панели: владелец раскрывает счётчик «Аккаунтов»
+   * и видит, кто заведён. Отдельная ручка от `GET /users`, потому что тот —
+   * поиск по людям: он исключает самого ищущего и не отдаёт удалённых, а
+   * владельцу нужны как раз и удалённые, и замороженные.
+   */
+  const adminAccountsQuerySchema = z.object({
+    q: z.string().trim().max(128).default(""),
+    // Состояние записи: живой, замороженный или удалённый.
+    filter: z.enum(["all", "active", "frozen", "deleted"]).default("all"),
+    // Знаки через запятую: «verified,scam» — оба обязательны. Пусто — без отбора.
+    marks: z
+      .string()
+      .trim()
+      .max(128)
+      .default("")
+      .transform((value) =>
+        value
+          .split(",")
+          .map((mark) => mark.trim())
+          .filter((mark): mark is "verified" | "badge" | "scam" | "fake" | "owner" =>
+            ["verified", "badge", "scam", "fake", "owner"].includes(mark),
+          ),
+      ),
+    // Где искать введённое: ник, @юзернеймы или всё сразу.
+    scope: z.enum(["any", "name", "handle"]).default("any"),
+  });
+  router.get(
+    "/admin/accounts",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const query = parseQuery(adminAccountsQuerySchema, request);
+      const accounts = await dependencies.adminService.listAccounts(request.auth.userId, {
+        query: query.q,
+        filter: query.filter,
+        marks: query.marks,
+        scope: query.scope,
+      });
+      response.json({ accounts });
+    }),
+  );
 
   router.get(
     "/admin/groups",
@@ -476,7 +842,6 @@ export function createApiRouter(dependencies: {
       response.json({ groups });
     }),
   );
-
   router.post(
     "/admin/groups/:groupId/marks",
     requireAuth,
@@ -487,6 +852,7 @@ export function createApiRouter(dependencies: {
         ...(input.isVerified === undefined ? {} : { isVerified: input.isVerified }),
         ...(input.badge === undefined ? {} : { badge: input.badge }),
         ...(input.scam === undefined ? {} : { scam: input.scam }),
+        ...(input.fake === undefined ? {} : { fake: input.fake }),
       });
       // Участники должны увидеть новую галочку, значок или рамку сразу, а не
       // после перезагрузки: вид беседы считается на каждого отдельно.
@@ -568,6 +934,11 @@ export function createApiRouter(dependencies: {
         user: {
           ...toPublicUserFor(user, request.auth.userId),
           blockedByMe: currentUser?.blockedUserIds.includes(user.id) ?? false,
+          // Кнопка дружбы в профиле: «добавить», «заявка отправлена»,
+          // «принять заявку» или «вы друзья».
+          friendship: currentUser
+            ? dependencies.friendService.friendshipState(currentUser, user.id, user)
+            : "none",
         },
       });
     }),
@@ -603,6 +974,53 @@ export function createApiRouter(dependencies: {
       const result = await dependencies.chatService.setBlocked(request.auth.userId, userId, false);
       const user = await dependencies.chatService.publicUser(userId, request.auth.userId);
       response.json({ ...result, user: { ...user, blockedByMe: false } });
+    }),
+  );
+
+  // Друзья: заявка, принятие, отклонение и удаление. Список отдаём одним
+  // запросом — экрану нужны и друзья, и обе очереди заявок сразу.
+  router.get(
+    "/friends",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      response.json(await dependencies.friendService.overview(request.auth.userId));
+    }),
+  );
+
+  router.post(
+    "/friends/:userId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      const state = await dependencies.friendService.request(request.auth.userId, userId);
+      response.status(201).json({ state });
+    }),
+  );
+
+  router.post(
+    "/friends/:userId/accept",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      response.json({ state: await dependencies.friendService.accept(request.auth.userId, userId) });
+    }),
+  );
+
+  router.post(
+    "/friends/:userId/decline",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      response.json({ state: await dependencies.friendService.decline(request.auth.userId, userId) });
+    }),
+  );
+
+  router.delete(
+    "/friends/:userId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      response.json({ state: await dependencies.friendService.remove(request.auth.userId, userId) });
     }),
   );
 
@@ -834,7 +1252,14 @@ export function createApiRouter(dependencies: {
         uploadId,
         t,
       );
-      const inline = !download && (attachment.kind === "image" || attachment.kind === "avatar");
+      // Оформление профиля отдаём инлайном: фон и баннер — часть интерфейса,
+      // и «скачать файл» вместо показа сломало бы их. `image` — фото в переписке.
+      const inline =
+        !download &&
+        (attachment.kind === "image" ||
+          attachment.kind === "avatar" ||
+          attachment.kind === "banner" ||
+          attachment.kind === "wallpaper");
       const fallbackName = attachment.fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "download";
       const encodedName = encodeURIComponent(attachment.fileName).replace(
         /['()]/g,
@@ -1373,7 +1798,72 @@ export function createApiRouter(dependencies: {
     }),
   );
 
+  // ---- Поддержка ----
+  //
+  // Бот поддержки: открыть с ним переписку и нажать кнопку. Кнопка уходит
+  // кодом действия, а не сообщением, поэтому в истории не остаётся «нажатий»,
+  // а сам человек видит только осмысленную переписку с ботом.
+  const supportActionSchema = z.object({
+    conversationId: z.string().uuid(),
+    action: z.string().trim().min(1).max(32),
+  });
+
+  router.get(
+    "/support",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      response.json(await dependencies.supportBotService.openFor(request.auth.userId));
+    }),
+  );
+
+  router.post(
+    "/support/actions",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(supportActionSchema, request);
+      await dependencies.supportBotService.handleAction(
+        request.auth.userId,
+        input.conversationId,
+        input.action,
+      );
+      response.json({ ok: true });
+    }),
+  );
+
+  // ---- Реле для звонков ----
+  //
+  // 🔥 Зачем маршрут, если звонки идут по WebSocket. Свой `coturn` требует root
+  // и UDP — на хостинге приложений этого нет. Публичные реле вместо него выдают
+  // **временные** логин и пароль, и зашить их в сборку нельзя: браузер просит
+  // их прямо перед звонком. Ключ сервиса при этом остаётся на сервере и не
+  // светится в «Сети» у пользователя.
+  //
+  // Не настроен — отдаём пустой список, и звонок идёт на одном STUN, как раньше.
+  router.get(
+    "/calls/ice-servers",
+    requireAuth,
+    asyncHandler(async (_request, response) => {
+      const { turnCredentialsUrl, turnCredentialsTtlSeconds } = dependencies.config;
+      response.json({
+        iceServers: turnCredentialsUrl
+          ? await fetchTurnIceServers(turnCredentialsUrl, turnCredentialsTtlSeconds)
+          : [],
+      });
+    }),
+  );
+
   return router;
+}
+
+/**
+ * Токен доступа из заголовка. Он нужен не только для проверки подписи, но и
+ * чтобы узнать, какой именно сеанс открыл список: завершать чужие сеансы можно
+ * только с того, который сам вошёл больше суток назад.
+ */
+function bearerToken(request: Request): string | null {
+  const authorization = request.header("Authorization");
+  if (!authorization?.startsWith("Bearer ")) return null;
+  return authorization.slice("Bearer ".length).trim() || null;
 }
 
 /**

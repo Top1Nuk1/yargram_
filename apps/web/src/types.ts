@@ -1,6 +1,6 @@
 export type ThemeMode = 'light' | 'dark';
 
-export type AttachmentKind = 'image' | 'file' | 'avatar';
+export type AttachmentKind = 'image' | 'file' | 'avatar' | 'banner' | 'wallpaper';
 
 export interface Attachment {
   id: string;
@@ -21,7 +21,20 @@ export interface MessageReaction {
   count: number;
 }
 
-export type MessageKind = 'user' | 'system' | 'call' | 'poll';
+export type MessageKind = 'user' | 'system' | 'call' | 'poll' | 'bot';
+
+/**
+ * Кнопка в сообщении бота. `action` — код действия: клиент не пишет его в чат,
+ * а отправляет серверу отдельным запросом, поэтому в истории не остаётся
+ * служебных «нажатий».
+ */
+export interface BotButton {
+  label: string;
+  action: string;
+}
+
+/** Клавиатура бота — ряды кнопок под текстом сообщения. */
+export type BotKeyboard = BotButton[][];
 
 export interface CallMessageDetails {
   callId?: string;
@@ -53,11 +66,20 @@ export interface User {
   createdAt?: string;
   themeColor?: string;
   wallpaperUrl?: string;
+  /** Тип фона: `image/*` или `video/*` — от этого зависит, рисовать `<video>`
+   *  или фоновую картинку. По ссылке тип не виден. */
+  wallpaperMimeType?: string;
+  /** Заливка баннера (hex). Если задано фото баннера, оно перекрывает заливку. */
+  bannerColor?: string;
+  banner?: Attachment | null;
+  bannerUrl?: string | null;
   blockedByMe?: boolean;
   isVerified?: boolean;
   badge?: 'yargram' | null;
   /** Отметка SCAM от владельца: описание подменяется предупреждением. */
   scam?: boolean;
+  /** Отметка FAKE: аккаунт выдаёт себя за официальный. */
+  fake?: boolean;
   usernames?: string[];
   adminUserIds?: string[];
   isOwner?: boolean;
@@ -66,6 +88,64 @@ export interface User {
   /** Аккаунт удалён владельцем (запись остаётся, почта занята). */
   isDeleted?: boolean;
   birthday?: string | null;
+  /** Кто из списка в друзьях — по этому рисуется подпись в профиле. */
+  friendIds?: string[];
+  /** Связь со мной: приходит вместе с чужим профилем и рисует кнопку дружбы. */
+  friendship?: FriendshipState;
+  /** Это приложение Yargram, а не человек. */
+  isApp?: boolean;
+  /** Это бот: рядом с именем рисуется метка «бот», войти в него нельзя. */
+  isBot?: boolean;
+  /** Через сколько дней бездействия сеанс завершается сам; `null` — никогда. */
+  sessionAutoTerminateDays?: number | null;
+}
+
+/**
+ * Активный сеанс — один вход в аккаунт. Yargram — сайт, поэтому сеанс
+ * описывают парой «сайт + браузер», а не названием устройства.
+ */
+export interface Session {
+  id: string;
+  /** Сайт, с которого вошли: `https://yargram.ru`. Пусто — сайт не определён. */
+  site: string;
+  /** Браузер и система: «Chrome, Windows». */
+  device: string;
+  createdAt: string;
+  lastSeenAt: string;
+  /** Это тот сеанс, с которого смотрят список. */
+  current: boolean;
+  /** Вход был с незнакомого сайта. */
+  newDevice: boolean;
+  /** Владелец подтвердил вход: «это был я». */
+  acknowledged: boolean;
+}
+
+/** Список сеансов глазами владельца. */
+export interface SessionOverview {
+  sessions: Session[];
+  currentSessionId: string | null;
+  /** Можно ли завершать чужие сеансы: право появляется через сутки после входа. */
+  canTerminateOthers: boolean;
+  /** Когда право появится (ISO). Пока его нет — показываем отсчёт. */
+  gateUntil: string | null;
+  /** Вход с нового сайта, который ещё не подтверждён. */
+  alert: Session | null;
+  /** Через сколько дней бездействия сеанс завершается сам; `null` — никогда. */
+  autoTerminateDays: number | null;
+}
+
+/** Связь со мной: чем рисовать кнопку дружбы в чужом профиле. */
+export type FriendshipState = 'none' | 'outgoing' | 'incoming' | 'friends';
+
+/** Один человек в списках друзей и заявок. */
+export interface FriendEntry {
+  user: User;
+}
+
+export interface FriendsOverview {
+  friends: FriendEntry[];
+  incoming: FriendEntry[];
+  outgoing: FriendEntry[];
 }
 
 /** Счётчики медиа в переписке: профиль показывает только то, что больше нуля. */
@@ -99,8 +179,11 @@ export interface Participant {
   isVerified?: boolean;
   badge?: 'yargram' | null;
   scam?: boolean;
+  fake?: boolean;
   isFrozen?: boolean;
   isDeleted?: boolean;
+  /** Это бот: в списке участников он тоже помечается меткой «бот». */
+  isBot?: boolean;
 }
 
 /**
@@ -172,6 +255,8 @@ export interface Message {
   systemEvent?: string | null;
   call?: CallMessageDetails | null;
   poll?: PollView | null;
+  /** Кнопки под сообщением бота: по нажатию клиент шлёт `action` серверу. */
+  keyboard?: BotKeyboard | null;
   isFavorite?: boolean;
   favoritedByMe?: boolean;
 }
@@ -279,6 +364,8 @@ export interface Conversation {
   badge?: 'yargram' | null;
   /** Отметка SCAM: описание группы подменяется предупреждением. */
   scam?: boolean;
+  /** Отметка FAKE: группа выдаёт себя за официальную. Как у аккаунта. */
+  fake?: boolean;
   /** Роль смотрящего в группе; у личного диалога и «Избранного» — нет. */
   role?: GroupRole | null;
   /** Эффективные права смотрящего: по ним клиент гасит кнопки. */
@@ -316,13 +403,76 @@ export interface AdminGroup {
   isVerified: boolean;
   badge: 'yargram' | null;
   scam: boolean;
+  fake: boolean;
   /** Код из ссылки-приглашения: по нему группу тоже можно найти. */
   inviteCode: string | null;
+}
+
+/** Сводка владельцу: сколько всего заведено в Yargram. */
+export interface AdminStats {
+  /** Все аккаунты, включая удалённые: удаление мягкое, запись остаётся. */
+  totalUsers: number;
+  /** Все группы, без личных диалогов и «Избранного». */
+  groups: number;
+}
+
+/** Какие аккаунты показывает список по состоянию записи. */
+export type AdminAccountsFilter = 'all' | 'active' | 'frozen' | 'deleted';
+
+/** Знак владельца, по которому отсеивается список. Галочки складываются. */
+export type AdminAccountsMark = 'verified' | 'badge' | 'scam' | 'fake' | 'owner';
+
+/** Где искать введённое: только ник, только @юзернеймы или всё сразу. */
+export type AdminAccountsScope = 'any' | 'name' | 'handle';
+
+/**
+ * Аккаунт в списке владельца: ник и аватар показываем **настоящие**, даже у
+ * удалённого — владелец как раз и ищет, кого удалил, по имени. Даты лежат
+ * рядом: когда заведён и когда удалён.
+ */
+export interface AdminAccount {
+  id: string;
+  displayName: string;
+  /** Основной @юзернейм. */
+  username: string | null;
+  /** Дополнительные @юзернеймы: показываем сколько умещается. */
+  usernames: string[];
+  avatarUrl: string | null;
+  isVerified: boolean;
+  badge: 'yargram' | null;
+  scam: boolean;
+  fake: boolean;
+  /** Аккаунт владельца Yargram: у него особые права. */
+  isOwner: boolean;
+  isFrozen: boolean;
+  isDeleted: boolean;
+  createdAt: string;
+  /** Когда аккаунт удалили; `null`, если он не удалён. */
+  deletedAt: string | null;
+  /**
+   * Когда владелец последний раз заходил. Не `null` никогда — у старых записей
+   * подставляется дата создания.
+   */
+  lastSeenAt: string;
 }
 
 export interface AuthResult {
   accessToken: string;
   user?: User;
+}
+
+/** Зачем сервер прислал код из письма. */
+export type EmailCodePurpose = 'register' | 'login' | 'reset';
+
+/**
+ * Ответ вместо токена: доступ ещё не выдан, ждём код из письма.
+ * `expiresInSeconds` нужен, чтобы показать обратный отсчёт.
+ */
+export interface EmailCodeChallenge {
+  status: 'code_sent';
+  email: string;
+  purpose: EmailCodePurpose;
+  expiresInSeconds: number;
 }
 
 export interface PaginatedItems<T> {
@@ -348,9 +498,15 @@ export interface UpdateProfileInput {
   bio?: string;
   themeColor?: string;
   wallpaperUrl?: string;
+  wallpaperMimeType?: string;
   wallpaperAttachmentId?: string | null;
+  bannerColor?: string | null;
+  bannerUrl?: string | null;
+  bannerAttachmentId?: string | null;
   notificationSoundEnabled?: boolean;
   birthday?: string | null;
+  /** Через сколько дней бездействия сеанс завершается сам; `null` — никогда. */
+  sessionAutoTerminateDays?: number | null;
 }
 
 export interface ReadReceipt {

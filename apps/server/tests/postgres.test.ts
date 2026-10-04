@@ -22,7 +22,7 @@ async function fresh() {
   await database.initialize();
   return { database, repos: createPostgresRepositories(database), databaseName };
 }
-const empty = (): DatabaseState => ({ version: 1, users: [], conversations: [], messages: [], attachments: [], reports: [], favoriteNotes: [], calls: [], drafts: [], folders: [], scheduledMessages: [] });
+const empty = (): DatabaseState => ({ version: 1, users: [], conversations: [], messages: [], attachments: [], reports: [], favoriteNotes: [], calls: [], drafts: [], folders: [], scheduledMessages: [], sessions: [] });
 const registration = (username: string) => ({ email: `${username}@example.test`, username, displayName: username, passwordHash: "preserved-hash" });
 
 beforeAll(async () => {
@@ -248,7 +248,10 @@ describe("PostgreSQL repositories against a real isolated cluster", () => {
     });
   });
 
-  it("imports only into empty storage, rolls back conflicts, and survives pool restart", async () => {
+  // Поднимает два независимых кластера и переоткрывает пул — под общей нагрузкой
+  // прогона этот сценарий не укладывается в дефолтные 5 секунд, поэтому запас
+  // побольше. Тест проверяет логику импорта, а не скорость.
+  it("imports only into empty storage, rolls back conflicts, and survives pool restart", { timeout: 30_000 }, async () => {
     const source = await fresh();
     const user = await source.repos.users.create(registration("imported"));
     const state = empty();

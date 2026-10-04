@@ -24,6 +24,8 @@ import {
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { Avatar, Button, IconButton, Spinner } from '../../components/ui';
+import type { TranslateFn } from '../../hooks/useLanguage';
+import { useTranslation } from '../../hooks/useLanguage';
 import { avatarProps } from '../../lib/user';
 import type { User } from '../../types';
 import {
@@ -58,19 +60,24 @@ interface CallOverlayProps {
   onRemoteVolumeChange?: (value: number) => void;
 }
 
-const statusText = {
-  incoming: 'Входящий звонок',
-  outgoing: 'Вызываем…',
-  connecting: 'Соединяем…',
-  active: 'Звонок идёт',
+const statusKey: Record<'incoming' | 'outgoing' | 'connecting' | 'active', string> = {
+  incoming: 'calls.incomingCall',
+  outgoing: 'calls.outgoingCall',
+  connecting: 'calls.connecting',
+  active: 'calls.active',
 };
 
-const qualityText: Record<ConnectionQuality, string> = {
-  unknown: 'Проверяем связь',
-  excellent: 'Отличная связь',
-  good: 'Хорошая связь',
-  poor: 'Слабая связь',
+const qualityKey: Record<ConnectionQuality, string> = {
+  unknown: 'calls.qualityUnknown',
+  excellent: 'calls.qualityExcellent',
+  good: 'calls.qualityGood',
+  poor: 'calls.qualityPoor',
 };
+
+/** Короткая подпись состояния звонка — переводится по месту. */
+function statusTextFor(t: TranslateFn, status: keyof typeof statusKey): string {
+  return t(statusKey[status]);
+}
 
 function formatDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3_600);
@@ -100,6 +107,7 @@ function DeviceSelect({
   emptyText: string;
   onChange: (value: string) => void;
 }) {
+  const t = useTranslation();
   return (
     <label className="block text-left text-xs font-semibold text-white/65">
       {label}
@@ -108,7 +116,7 @@ function DeviceSelect({
         value={value}
         onChange={(event) => onChange(event.target.value)}
       >
-        <option value="" className="bg-[#202033]">Системное устройство</option>
+        <option value="" className="bg-[#202033]">{t('calls.systemDevice')}</option>
         {devices.map((device, index) => (
           <option key={device.deviceId || `${device.kind}-${index}`} value={device.deviceId} className="bg-[#202033]">
             {device.label || `${emptyText} ${index + 1}`}
@@ -152,6 +160,7 @@ function InviteParticipantModal({
   onClose: () => void;
   onInvite: (userId: string) => void;
 }) {
+  const t = useTranslation();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<User[]>([]);
   const [searching, setSearching] = useState(false);
@@ -172,34 +181,34 @@ function InviteParticipantModal({
       api
         .users(token, trimmed)
         .then((result) => setResults(result.items.filter((user) => !currentUserIds.has(user.id))))
-        .catch(() => setSearchError('Не удалось найти пользователей.'))
+        .catch(() => setSearchError(t('calls.usersSearchFailed')))
         .finally(() => setSearching(false));
     }, 250);
     timerRef.current = timer;
     return () => {
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     };
-  }, [currentUserIds, query, token]);
+  }, [currentUserIds, query, t, token]);
 
   return (
-    <div className="fixed inset-0 z-[95] grid place-items-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Пригласить участника">
+    <div className="fixed inset-0 z-[95] grid place-items-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={t('calls.inviteParticipant')}>
       <div className="w-full max-w-md animate-slide-up overflow-hidden rounded-2xl border border-white/10 bg-[#202033] text-white shadow-2xl">
         <header className="flex items-center gap-3 border-b border-white/10 px-4 py-3">
           <UserPlus className="h-5 w-5 text-white/70" />
-          <h3 className="flex-1 text-sm font-bold">Пригласить в звонок</h3>
-          <IconButton label="Закрыть" className="text-white/70 hover:bg-white/10 hover:text-white" onClick={onClose}>
+          <h3 className="flex-1 text-sm font-bold">{t('calls.inviteToCall')}</h3>
+          <IconButton label={t('common.close')} className="text-white/70 hover:bg-white/10 hover:text-white" onClick={onClose}>
             <X className="h-4 w-4" />
           </IconButton>
         </header>
         <div className="p-4">
           <label className="relative block">
-            <span className="sr-only">Поиск пользователя</span>
+            <span className="sr-only">{t('calls.searchUser')}</span>
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
             <input
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Имя или @username…"
+              placeholder={t('calls.searchPlaceholder')}
               className="h-11 w-full rounded-xl border border-white/10 bg-white/10 pl-9 pr-3 text-sm text-white outline-none transition placeholder:text-white/35 focus:border-white/30"
             />
           </label>
@@ -207,7 +216,7 @@ function InviteParticipantModal({
             {searching && <div className="flex justify-center py-6"><Spinner className="h-5 w-5 text-white/60" /></div>}
             {searchError && <p className="py-4 text-center text-sm text-red-300">{searchError}</p>}
             {!searching && !searchError && query.trim() && results.length === 0 && (
-              <p className="py-4 text-center text-sm text-white/45">Никого не найдено</p>
+              <p className="py-4 text-center text-sm text-white/45">{t('calls.noUsersFound')}</p>
             )}
             <ul className="space-y-1">
               {results.map((user) => (
@@ -226,7 +235,7 @@ function InviteParticipantModal({
                       {user.username && <span className="block truncate text-xs text-white/45">@{user.username}</span>}
                     </span>
                     <span className="flex items-center gap-1 rounded-full bg-brand/30 px-2.5 py-1 text-[11px] font-bold text-white">
-                      <UserPlus className="h-3 w-3" /> Позвать
+                      <UserPlus className="h-3 w-3" /> {t('calls.ask')}
                     </span>
                   </button>
                 </li>
@@ -261,6 +270,7 @@ export function CallOverlay({
   onToggleScreenShare,
   onRemoteVolumeChange,
 }: CallOverlayProps) {
+  const t = useTranslation();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -331,7 +341,7 @@ export function CallOverlay({
           playsInline
           className={`h-28 w-full transition-opacity duration-300 ${remoteVideoAvailable ? 'opacity-100' : 'opacity-0'}`}
         />
-        <button type="button" className={`absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-black/50 transition hover:bg-black/70 ${remoteVideoAvailable ? '' : 'hidden'}`} onClick={() => void togglePip()} aria-label="Картинка в картинке" title="Открыть в отдельном окне">
+        <button type="button" className={`absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-black/50 transition hover:bg-black/70 ${remoteVideoAvailable ? '' : 'hidden'}`} onClick={() => void togglePip()} aria-label={t('calls.pictureInPicture')} title={t('calls.openSeparateWindow')}>
           <PictureInPicture className="h-4 w-4" />
         </button>
         <div className="flex items-center gap-2.5 px-3 py-2.5">
@@ -339,14 +349,14 @@ export function CallOverlay({
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-bold">{call.peer.displayName}</p>
             <p className="text-[11px] text-white/55">
-              {call.links.length > 1 ? `${call.links.length} участника · ` : ''}
-              {call.status === 'active' && call.startedAt ? formatDuration(elapsed) : statusText[call.status]}
+              {call.links.length > 1 ? `${t('calls.participantCount', { count: call.links.length })} · ` : ''}
+              {call.status === 'active' && call.startedAt ? formatDuration(elapsed) : statusTextFor(t, call.status)}
             </p>
           </div>
-          <IconButton label="Развернуть звонок" className="h-9 w-9 rounded-full bg-white/10 text-white hover:bg-white/20" onClick={() => setMinimized(false)}>
+          <IconButton label={t('calls.expandCall')} className="h-9 w-9 rounded-full bg-white/10 text-white hover:bg-white/20" onClick={() => setMinimized(false)}>
             <Maximize2 className="h-4 w-4" />
           </IconButton>
-          <IconButton label="Завершить звонок" className="h-9 w-9 rounded-full bg-danger text-white hover:bg-danger/85" onClick={onEnd}>
+          <IconButton label={t('calls.endCall')} className="h-9 w-9 rounded-full bg-danger text-white hover:bg-danger/85" onClick={onEnd}>
             <PhoneOff className="h-4 w-4" />
           </IconButton>
         </div>
@@ -360,17 +370,17 @@ export function CallOverlay({
         <div className="flex items-start gap-3">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-danger/10 text-danger"><PhoneOff className="h-5 w-5" /></span>
           <div className="min-w-0 flex-1">
-            <p className="font-bold">Звонок недоступен</p>
+            <p className="font-bold">{t('calls.callUnavailable')}</p>
             <p className="mt-1 text-sm leading-6 text-muted">{error}</p>
             {!window.isSecureContext && (
               <p className="mt-2 text-sm leading-6 text-muted">
-                Камера и микрофон работают только на защищённом соединении. Откройте адрес
+                {t('calls.secureContextHintPrefix')}
                 <span className="font-semibold text-brand"> https://{window.location.hostname}:3443 </span>
-                — скачивать и устанавливать ничего не нужно.
+                {t('calls.secureContextHintSuffix')}
               </p>
             )}
           </div>
-          <IconButton label="Закрыть" onClick={onDismissError}><X className="h-5 w-5" /></IconButton>
+          <IconButton label={t('common.close')} onClick={onDismissError}><X className="h-5 w-5" /></IconButton>
         </div>
       </div>
     );
@@ -406,7 +416,7 @@ export function CallOverlay({
             {call.peer.username && <p className="mt-1 text-sm text-white/50">@{call.peer.username}</p>}
             {call.invited && (
               <p className="mt-2 text-sm text-white/65">
-                Приглашение в звонок{call.links.length > 0 ? ` (${call.links.length + 1} участника)` : ''}
+                {t('calls.invitation')}{call.links.length > 0 ? ` (${call.links.length + 1})` : ''}
               </p>
             )}
           </div>
@@ -437,27 +447,27 @@ export function CallOverlay({
         <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-wrap items-center justify-between gap-2 bg-gradient-to-b from-black/65 to-transparent px-4 pb-16 pt-4 sm:px-6 sm:pt-6">
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full border border-white/10 bg-black/35 px-3 py-1.5 text-xs font-semibold backdrop-blur-md">
-              {call.direction === 'incoming' ? 'Входящий' : 'Исходящий'} {call.initialMode === 'video' ? 'видеозвонок' : 'аудиозвонок'}
+              {call.direction === 'incoming' ? t('calls.incoming') : t('calls.outgoing')} {call.initialMode === 'video' ? t('calls.videoCallType') : t('calls.audioCallType')}
             </span>
             {call.links.length > 1 && (
               <span className="flex items-center gap-1.5 rounded-full bg-black/45 px-3 py-1.5 text-xs font-semibold text-white/85">
-                <UsersRound className="h-3.5 w-3.5" /> {call.links.length} участника
+                <UsersRound className="h-3.5 w-3.5" /> {t('calls.participantCount', { count: call.links.length })}
               </span>
             )}
             {remoteScreenSharing && (
               <span className="flex items-center gap-1.5 rounded-full bg-brand/75 px-3 py-1.5 text-xs font-semibold">
-                <ScreenShare className="h-3.5 w-3.5" /> Собеседник показывает экран
+                <ScreenShare className="h-3.5 w-3.5" /> {t('calls.peerSharingScreen')}
               </span>
             )}
             {!remoteMicrophoneEnabled && call.status === 'active' && (
               <span className="flex items-center gap-1.5 rounded-full bg-black/45 px-3 py-1.5 text-xs font-semibold text-white/80">
-                <MicOff className="h-3.5 w-3.5" /> Микрофон выключен
+                <MicOff className="h-3.5 w-3.5" /> {t('calls.microphoneOff')}
               </span>
             )}
           </div>
           {call.status === 'active' && (
             <span className="flex items-center gap-1.5 rounded-full border border-white/10 bg-black/35 px-3 py-1.5 text-xs font-semibold backdrop-blur-md">
-              <QualityIcon quality={call.connectionQuality} /> {qualityText[call.connectionQuality]}
+              <QualityIcon quality={call.connectionQuality} /> {t(qualityKey[call.connectionQuality])}
             </span>
           )}
           <div className="flex items-center gap-2">
@@ -466,8 +476,8 @@ export function CallOverlay({
                 type="button"
                 className="grid h-9 w-9 place-items-center rounded-full border border-white/10 bg-black/35 text-white/85 backdrop-blur-md transition hover:bg-black/60"
                 onClick={() => void togglePip()}
-                aria-label="Открыть видео в отдельном окне"
-                title="Картинка в картинке"
+                aria-label={t('calls.openVideoSeparateWindow')}
+                title={t('calls.pictureInPicture')}
               >
                 <PictureInPicture className="h-4 w-4" />
               </button>
@@ -476,8 +486,8 @@ export function CallOverlay({
               type="button"
               className="grid h-9 w-9 place-items-center rounded-full border border-white/10 bg-black/35 text-white/85 backdrop-blur-md transition hover:bg-black/60"
               onClick={() => setMinimized(true)}
-              aria-label="Свернуть звонок в окно"
-              title="Свернуть в окно — чат останется доступен"
+              aria-label={t('calls.minimizeCall')}
+              title={t('calls.minimizeHint')}
             >
               <Minimize2 className="h-4 w-4" />
             </button>
@@ -502,7 +512,7 @@ export function CallOverlay({
             )}
             {call.screenSharing && (
               <span className="absolute inset-x-1.5 bottom-1.5 flex items-center justify-center gap-1 rounded-lg bg-brand/85 px-1 py-1 text-[10px] font-bold">
-                <ScreenShare className="h-3 w-3" /> Ваш экран
+                <ScreenShare className="h-3 w-3" /> {t('calls.yourScreen')}
               </span>
             )}
           </div>
@@ -512,38 +522,38 @@ export function CallOverlay({
           <aside className="absolute bottom-28 right-3 z-20 max-h-[min(620px,calc(100%-8rem))] w-[min(360px,calc(100%-1.5rem))] overflow-y-auto rounded-2xl border border-white/10 bg-[#202033]/95 p-4 shadow-2xl backdrop-blur-xl sm:bottom-32 sm:right-6">
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <h3 className="font-bold">Настройки звонка</h3>
-                <p className="mt-0.5 text-xs text-white/45">Сохраняются для следующих звонков</p>
+                <h3 className="font-bold">{t('calls.settings')}</h3>
+                <p className="mt-0.5 text-xs text-white/45">{t('calls.settingsSaved')}</p>
               </div>
-              <IconButton label="Закрыть настройки" className="text-white/65 hover:bg-white/10 hover:text-white" onClick={() => setSettingsOpen(false)}>
+              <IconButton label={t('calls.closeSettings')} className="text-white/65 hover:bg-white/10 hover:text-white" onClick={() => setSettingsOpen(false)}>
                 <X className="h-4 w-4" />
               </IconButton>
             </div>
 
             <div className="space-y-3">
-              <DeviceSelect label="Микрофон" value={settings.microphoneId} devices={devices.microphones} emptyText="Микрофон" onChange={(value) => changeSetting('microphoneId', value)} />
-              <DeviceSelect label="Камера" value={settings.cameraId} devices={devices.cameras} emptyText="Камера" onChange={(value) => changeSetting('cameraId', value)} />
-              <DeviceSelect label="Динамики" value={settings.speakerId} devices={devices.speakers} emptyText="Динамики" onChange={(value) => changeSetting('speakerId', value)} />
+              <DeviceSelect label={t('calls.microphone')} value={settings.microphoneId} devices={devices.microphones} emptyText={t('calls.microphone')} onChange={(value) => changeSetting('microphoneId', value)} />
+              <DeviceSelect label={t('calls.camera')} value={settings.cameraId} devices={devices.cameras} emptyText={t('calls.camera')} onChange={(value) => changeSetting('cameraId', value)} />
+              <DeviceSelect label={t('calls.speakers')} value={settings.speakerId} devices={devices.speakers} emptyText={t('calls.speakers')} onChange={(value) => changeSetting('speakerId', value)} />
 
               <label className="block text-left text-xs font-semibold text-white/65">
-                Качество видео
+                {t('calls.videoQuality')}
                 <select
                   className="mt-1.5 h-10 w-full rounded-xl border border-white/10 bg-white/10 px-3 text-sm text-white outline-none transition focus:border-white/30"
                   value={settings.videoQuality}
                   onChange={(event) => changeSetting('videoQuality', event.target.value as VideoQuality)}
                 >
-                  <option value="data-saver" className="bg-[#202033]">Экономия трафика (360p)</option>
-                  <option value="standard" className="bg-[#202033]">Стандартное (540p)</option>
-                  <option value="high" className="bg-[#202033]">Высокое (720p)</option>
+                  <option value="data-saver" className="bg-[#202033]">{t('calls.qualityDataSaver')}</option>
+                  <option value="standard" className="bg-[#202033]">{t('calls.qualityStandard')}</option>
+                  <option value="high" className="bg-[#202033]">{t('calls.qualityHigh')}</option>
                 </select>
               </label>
             </div>
 
             <div className="my-4 h-px bg-white/10" />
             <div className="space-y-2">
-              <ToggleSetting label="Камера при видеозвонке" checked={settings.autoEnableCamera} onChange={(value) => changeSetting('autoEnableCamera', value)} />
-              <ToggleSetting label="Шумоподавление" checked={settings.noiseSuppression} onChange={(value) => changeSetting('noiseSuppression', value)} />
-              <ToggleSetting label="Эхоподавление" checked={settings.echoCancellation} onChange={(value) => changeSetting('echoCancellation', value)} />
+              <ToggleSetting label={t('calls.autoCamera')} checked={settings.autoEnableCamera} onChange={(value) => changeSetting('autoEnableCamera', value)} />
+              <ToggleSetting label={t('calls.noiseSuppression')} checked={settings.noiseSuppression} onChange={(value) => changeSetting('noiseSuppression', value)} />
+              <ToggleSetting label={t('calls.echoCancellation')} checked={settings.echoCancellation} onChange={(value) => changeSetting('echoCancellation', value)} />
             </div>
           </aside>
         )}
@@ -554,7 +564,7 @@ export function CallOverlay({
             {call.links.length > 1 && <span className="text-white/60"> +{call.links.length - 1}</span>}
           </h2>
           <div className="mt-1 flex items-center justify-center gap-2 text-sm text-white/65">
-            <span>{statusText[call.status]}</span>
+            <span>{statusTextFor(t, call.status)}</span>
             {call.status === 'active' && call.startedAt && (
               <span className="flex items-center gap-1 font-mono text-white/80"><Timer className="h-3.5 w-3.5" />{formatDuration(elapsed)}</span>
             )}
@@ -565,7 +575,7 @@ export function CallOverlay({
           {call.status !== 'incoming' && onRemoteVolumeChange && (
             <label className="mx-auto mt-3 flex max-w-xs items-center gap-2 rounded-xl bg-black/25 px-3 py-2 text-xs text-white/65">
               <Volume2 className="h-4 w-4 shrink-0" />
-              <span className="sr-only">Громкость собеседника</span>
+              <span className="sr-only">{t('calls.peerVolume')}</span>
               <input
                 type="range"
                 min="0"
@@ -583,16 +593,16 @@ export function CallOverlay({
             {call.status === 'incoming' ? (
               <>
                 <Button className="h-14 rounded-full bg-success px-6 hover:bg-success/90" onClick={call.invited ? onAcceptInvite : onAccept}>
-                  <Phone className="h-5 w-5" /> {call.invited ? 'Войти в звонок' : 'Принять'}
+                  <Phone className="h-5 w-5" /> {call.invited ? t('calls.joinCall') : t('calls.accept')}
                 </Button>
                 <Button className="h-14 rounded-full bg-danger px-6 hover:bg-danger/90" onClick={call.invited ? onDeclineInvite : onEnd}>
-                  <PhoneOff className="h-5 w-5" /> Отклонить
+                  <PhoneOff className="h-5 w-5" /> {t('calls.decline')}
                 </Button>
               </>
             ) : (
               <>
                 <IconButton
-                  label={call.microphoneEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
+                  label={call.microphoneEnabled ? t('calls.muteMicrophone') : t('calls.unmuteMicrophone')}
                   className={`h-14 w-14 rounded-full text-white hover:text-white ${call.microphoneEnabled ? 'bg-white/15 hover:bg-white/25' : 'bg-white text-[#171724] hover:bg-white/90 hover:text-[#171724]'}`}
                   disabled={controlsDisabled}
                   onClick={onToggleMicrophone}
@@ -600,7 +610,7 @@ export function CallOverlay({
                   {call.microphoneEnabled ? <Mic className="h-6 w-6" /> : <MicOff className="h-6 w-6" />}
                 </IconButton>
                 <IconButton
-                  label={call.cameraEnabled ? 'Выключить камеру' : 'Включить камеру'}
+                  label={call.cameraEnabled ? t('calls.turnCameraOff') : t('calls.turnCameraOn')}
                   className={`h-14 w-14 rounded-full text-white hover:text-white ${call.cameraEnabled ? 'bg-white/15 hover:bg-white/25' : 'bg-white text-[#171724] hover:bg-white/90 hover:text-[#171724]'}`}
                   disabled={controlsDisabled}
                   onClick={() => void onToggleCamera()}
@@ -609,7 +619,7 @@ export function CallOverlay({
                 </IconButton>
                 {canInvite && (
                   <IconButton
-                    label="Пригласить участника"
+                    label={t('calls.inviteParticipant')}
                     className={`h-14 w-14 rounded-full text-white hover:text-white ${inviteOpen ? 'bg-brand hover:bg-brand/85' : 'bg-white/15 hover:bg-white/25'}`}
                     onClick={() => setInviteOpen((open) => !open)}
                   >
@@ -618,7 +628,7 @@ export function CallOverlay({
                 )}
                 {onToggleScreenShare && (
                   <IconButton
-                    label={call.screenSharing ? 'Остановить демонстрацию' : 'Показать экран'}
+                    label={call.screenSharing ? t('calls.stopScreenShare') : t('calls.shareScreen')}
                     className={`h-14 w-14 rounded-full text-white hover:text-white ${call.screenSharing ? 'bg-brand hover:bg-brand/85' : 'bg-white/15 hover:bg-white/25'}`}
                     disabled={controlsDisabled}
                     onClick={() => void onToggleScreenShare()}
@@ -628,7 +638,7 @@ export function CallOverlay({
                 )}
                 {settingsAvailable && (
                   <IconButton
-                    label="Настройки звонка"
+                    label={t('calls.settings')}
                     className={`h-14 w-14 rounded-full text-white hover:text-white ${settingsOpen ? 'bg-brand hover:bg-brand/85' : 'bg-white/15 hover:bg-white/25'}`}
                     onClick={() => {
                       const next = !settingsOpen;
@@ -640,7 +650,7 @@ export function CallOverlay({
                   </IconButton>
                 )}
                 <IconButton
-                  label="Завершить звонок"
+                  label={t('calls.endCall')}
                   className="h-14 w-14 rounded-full bg-danger text-white hover:bg-danger/85 hover:text-white"
                   onClick={onEnd}
                 >

@@ -20,12 +20,12 @@ import { api, ApiError } from '../../api/client';
 import { ScamWarning } from '../../components/ScamWarning';
 import { Avatar, Button, IconButton, InlineError, Spinner } from '../../components/ui';
 import { UserName } from '../../components/UserName';
+import { useTranslation, type TranslateFn } from '../../hooks/useLanguage';
 import { avatarProps } from '../../lib/user';
 import {
   groupEventText,
   groupHistoryMoment,
   groupInviteLink,
-  groupMemberCountLabel,
   groupMemberMuted,
   mergeMemberPresence,
   groupPermissionHints,
@@ -38,6 +38,7 @@ import {
   type MemberAction,
 } from '../../lib/group';
 import { formatLastSeen, presenceTextClass } from '../../lib/presence';
+import { translateScamWarning } from '../../lib/i18n';
 import {
   groupPermissionKeys,
   memberPermissionKeys,
@@ -103,6 +104,16 @@ function readableError(reason: unknown, fallback: string): string {
   return reason instanceof ApiError ? reason.message : fallback;
 }
 
+/** Подпись состава со склонением: «5 участников», «1 участник». */
+function memberCountLabel(count: number, t: TranslateFn): string {
+  const total = Math.max(0, count ?? 0);
+  const mod100 = total % 100;
+  const mod10 = total % 10;
+  const key =
+    mod100 >= 11 && mod100 <= 14 ? 'groups.count5' : mod10 === 1 ? 'groups.count1' : mod10 >= 2 && mod10 <= 4 ? 'groups.count2' : 'groups.count5';
+  return t(key, { count: total });
+}
+
 /**
  * Карточка группы: состав с ролями, ссылка-приглашение, права участников,
  * мьюты и история изменений. Всё, что недоступно смотрящему, просто не рисуется.
@@ -116,6 +127,7 @@ export function GroupInfoPanel({
   onLeft,
   onShowProfile,
 }: GroupInfoPanelProps) {
+  const t = useTranslation();
   const groupId = conversation.id;
   const canManage = viewerManagesGroup(conversation);
   const isOwner = viewerIsOwner(conversation);
@@ -142,10 +154,15 @@ export function GroupInfoPanel({
   const [titleDraft, setTitleDraft] = useState(conversation.title ?? '');
   const [descriptionDraft, setDescriptionDraft] = useState(conversation.description ?? '');
   const [copied, setCopied] = useState(false);
-  // Отметку SCAM ставит владелец Yargram: описание группы он подменяет
-  // предупреждением, поэтому менять его нельзя, пока отметку не снимут.
+  // Отметки SCAM и FAKE ставит владелец Yargram: описание группы он подменяет
+  // предупреждением, поэтому менять его нельзя, пока отметку не снимут. Обе
+  // могут стоять разом — тогда блокировка описания одна, а текст берётся из SCAM.
   const scamMarked = Boolean(conversation.scam);
-  const groupDescription = (conversation.description ?? '').replace(/^\s*⚠️?\s*/u, '');
+  const fakeMarked = Boolean(conversation.fake);
+  const marksLockDescription = scamMarked || fakeMarked;
+  // Ведущий ⚠️ убираем (в карточке его место занимает значок), а сам текст
+  // предупреждения переводим на язык интерфейса.
+  const groupDescription = translateScamWarning(conversation.description ?? '', t);
 
   const inviteLink = groupInviteLink(conversation.inviteCode);
   // Живое присутствие подмешиваем к составу: сервер отдаёт «не в сети» всем.
@@ -162,8 +179,8 @@ export function GroupInfoPanel({
 
   const nameOf = useCallback(
     (userId: string) =>
-      members.find((member) => member.user.id === userId)?.user.displayName ?? 'Пользователь',
-    [members],
+      members.find((member) => member.user.id === userId)?.user.displayName ?? t('groups.memberFallback'),
+    [members, t],
   );
 
   const loadMembers = useCallback(
@@ -187,7 +204,7 @@ export function GroupInfoPanel({
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
-        setError(readableError(reason, 'Не удалось загрузить группу.'));
+        setError(readableError(reason, t('groups.loadFailed')));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -195,7 +212,7 @@ export function GroupInfoPanel({
     return () => {
       cancelled = true;
     };
-  }, [groupId, token]);
+  }, [groupId, t, token]);
 
   /** Общая обёртка: одно действие, один перезапрос состава, одна ошибка. */
   async function run(action: () => Promise<Conversation>, message: string) {
@@ -207,7 +224,7 @@ export function GroupInfoPanel({
       await Promise.all([loadMembers(memberQuery), api.groupHistory(token, groupId).then(setHistory)]);
       setNotice(message);
     } catch (reason) {
-      setError(readableError(reason, 'Не удалось выполнить действие.'));
+      setError(readableError(reason, t('groups.actionFailed')));
     } finally {
       setBusy(false);
     }
@@ -216,12 +233,12 @@ export function GroupInfoPanel({
   async function saveInfo() {
     const title = titleDraft.trim();
     if (!title) {
-      setError('У группы должно быть название.');
+      setError(t('groups.titleRequired'));
       return;
     }
     await run(
       () => api.updateGroup(token, groupId, { title, description: descriptionDraft.trim() }),
-      'Информация о группе обновлена.',
+      t('groups.infoSaved'),
     );
     setEditing(false);
   }
@@ -233,7 +250,7 @@ export function GroupInfoPanel({
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2_000);
     } catch {
-      setError('Не удалось скопировать ссылку. Скопируйте её вручную.');
+      setError(t('groups.copyFailed'));
     }
   }
 
@@ -242,8 +259,8 @@ export function GroupInfoPanel({
     await run(
       () => api.setGroupAdmin(token, groupId, member.user.id, true, permissions),
       promoting
-        ? `${member.user.displayName} теперь администратор.`
-        : `Права ${member.user.displayName} обновлены.`,
+        ? t('groups.nowAdmin', { name: member.user.displayName })
+        : t('groups.rightsUpdated', { name: member.user.displayName }),
     );
     setAdminTarget(null);
     setOpenMemberId(null);
@@ -252,7 +269,7 @@ export function GroupInfoPanel({
   async function demoteAdmin(member: GroupMember) {
     await run(
       () => api.setGroupAdmin(token, groupId, member.user.id, false),
-      `${member.user.displayName} больше не администратор.`,
+      t('groups.noLongerAdmin', { name: member.user.displayName }),
     );
     setAdminTarget(null);
     setOpenMemberId(null);
@@ -261,7 +278,7 @@ export function GroupInfoPanel({
   async function saveTag(member: GroupMember, tag: string) {
     await run(
       () => api.setGroupMemberTag(token, groupId, member.user.id, tag),
-      tag ? `Тег «${tag}» сохранён.` : 'Тег снят.',
+      tag ? t('groups.tagSaved', { tag }) : t('groups.tagCleared'),
     );
     setTagTarget(null);
   }
@@ -294,16 +311,16 @@ export function GroupInfoPanel({
       await run(
         () => api.setGroupAdmin(token, groupId, member.user.id, true, { [permission]: next }),
         next
-          ? `${groupPermissionLabels[permission]}: разрешено.`
-          : `${groupPermissionLabels[permission]}: запрещено.`,
+          ? t('groups.allowOne', { permission: groupPermissionLabels[permission] })
+          : t('groups.denyOne', { permission: groupPermissionLabels[permission] }),
       );
       return;
     }
     await run(
       () => api.restrictGroupMember(token, groupId, member.user.id, { permissions: { [permission]: next } }),
       next
-        ? `${groupPermissionLabels[permission]}: разрешено.`
-        : `${groupPermissionLabels[permission]}: запрещено.`,
+        ? t('groups.allowOne', { permission: groupPermissionLabels[permission] })
+        : t('groups.denyOne', { permission: groupPermissionLabels[permission] }),
     );
   }
 
@@ -313,22 +330,22 @@ export function GroupInfoPanel({
     await run(
       () => api.restrictGroupMember(token, groupId, member.user.id, { mutedUntil }),
       hours === null
-        ? `${member.user.displayName} заглушен(а) бессрочно.`
-        : `${member.user.displayName} заглушен(а) на ${hours} ч.`,
+        ? t('groups.mutedForever', { name: member.user.displayName })
+        : t('groups.mutedFor', { name: member.user.displayName, count: hours }),
     );
   }
 
   async function unmuteMember(member: GroupMember) {
     await run(
       () => api.restrictGroupMember(token, groupId, member.user.id, { mutedUntil: null }),
-      `С ${member.user.displayName} снят мьют.`,
+      t('groups.unmuted', { name: member.user.displayName }),
     );
   }
 
   async function removeMember(member: GroupMember) {
     await run(
       () => api.removeGroupMember(token, groupId, member.user.id),
-      `${member.user.displayName} удалён(а) из группы.`,
+      t('groups.memberRemoved', { name: member.user.displayName }),
     );
     setOpenMemberId(null);
   }
@@ -340,7 +357,7 @@ export function GroupInfoPanel({
       await api.leaveGroup(token, groupId);
       onLeft(groupId);
     } catch (reason) {
-      setError(readableError(reason, 'Не удалось выйти из группы.'));
+      setError(readableError(reason, t('groups.leaveFailed')));
     } finally {
       setBusy(false);
     }
@@ -350,7 +367,7 @@ export function GroupInfoPanel({
     if (adding.length === 0) return;
     await run(
       () => api.addGroupMembers(token, groupId, adding.map((user) => user.id)),
-      'Участники добавлены.',
+      t('groups.membersAdded'),
     );
     setAdding([]);
     setAddOpen(false);
@@ -373,22 +390,22 @@ export function GroupInfoPanel({
       <aside
         role="dialog"
         aria-modal="true"
-        aria-label={`Группа ${conversation.title ?? ''}`}
+        aria-label={t('groups.panelLabel', { title: conversation.title ?? '' })}
         className="flex h-full w-full max-w-[460px] animate-fade-in flex-col bg-surface shadow-float"
       >
         <header className="flex items-center justify-between gap-2 border-b border-line/70 px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))]">
-          <IconButton label="Закрыть" onClick={onClose}>
+          <IconButton label={t('common.close')} onClick={onClose}>
             <X className="h-5 w-5" />
           </IconButton>
-          <h2 className="min-w-0 flex-1 truncate text-sm font-bold text-ink">О группе</h2>
+          <h2 className="min-w-0 flex-1 truncate text-sm font-bold text-ink">{t('groups.about')}</h2>
           {canChangeInfo && !editing && (
-            <IconButton label="Изменить информацию" onClick={() => setEditing(true)}>
+            <IconButton label={t('groups.editInfo')} onClick={() => setEditing(true)}>
               <Pencil className="h-5 w-5" />
             </IconButton>
           )}
           {editing && (
             <Button type="button" className="min-h-9 px-3 text-xs" loading={busy} onClick={() => void saveInfo()}>
-              Сохранить
+              {t('common.save')}
             </Button>
           )}
         </header>
@@ -396,7 +413,7 @@ export function GroupInfoPanel({
         <div className="min-h-0 flex-1 overflow-y-auto">
           <section className="flex flex-col items-center px-5 py-5 text-center">
             <Avatar
-              name={conversation.title ?? 'Группа'}
+              name={conversation.title ?? t('groups.tabMembers')}
               src={conversation.avatarUrl}
               size="xl"
               seed={groupId}
@@ -407,35 +424,38 @@ export function GroupInfoPanel({
                   value={titleDraft}
                   maxLength={128}
                   onChange={(event) => setTitleDraft(event.target.value)}
-                  placeholder="Название группы"
+                  placeholder={t('groups.titlePlaceholder')}
                   className="h-11 w-full rounded-xl border border-line bg-canvas px-3.5 text-center text-[15px] font-semibold text-ink outline-none focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
                 />
                 <input
                   value={descriptionDraft}
                   maxLength={2_000}
                   onChange={(event) => setDescriptionDraft(event.target.value)}
-                  placeholder="Описание"
-                  disabled={scamMarked}
+                  placeholder={t('groups.descriptionPlaceholder')}
+                  disabled={marksLockDescription}
                   className="h-10 w-full rounded-xl border border-line bg-canvas px-3.5 text-center text-sm text-ink outline-none focus:border-brand/60 focus:ring-4 focus:ring-brand/10 disabled:cursor-not-allowed disabled:opacity-70"
                 />
-                {scamMarked && (
+                {scamMarked ? (
                   <p className="text-xs font-semibold text-danger" role="status">
-                    На группе стоит отметка SCAM: описание заменено предупреждением о мошенничестве
-                    и не редактируется, пока владелец Yargram не снимет отметку.
+                    {t('groups.scamNotice')}
                   </p>
-                )}
+                ) : fakeMarked ? (
+                  <p className="text-xs font-semibold text-warning" role="status">
+                    {t('groups.fakeNotice')}
+                  </p>
+                ) : null}
               </div>
             ) : (
               <>
                 <h3 className="mt-3 text-xl font-extrabold tracking-[-0.025em] text-ink">
                   <UserName
-                    name={conversation.title || 'Группа'}
+                    name={conversation.title || t('groups.tabMembers')}
                     user={conversation}
                     subject="group"
                   />
                 </h3>
                 <p className="mt-1 text-sm text-muted">
-                  {groupMemberCountLabel(conversation.memberCount ?? members.length)}
+                  {memberCountLabel(conversation.memberCount ?? members.length, t)}
                   {conversation.role ? ` · ${groupRoleLabel(conversation.role)}` : ''}
                 </p>
                 {conversation.description &&
@@ -473,19 +493,19 @@ export function GroupInfoPanel({
                   <div className="flex items-center justify-between gap-2">
                     <span className="inline-flex items-center gap-2 text-sm font-semibold text-ink">
                       <UserPlus className="h-4 w-4 text-brand" aria-hidden="true" />
-                      Ссылка-приглашение
+                      {t('groups.inviteLink')}
                     </span>
                     <div className="flex items-center gap-1">
-                      <IconButton label={copied ? 'Скопировано' : 'Скопировать ссылку'} onClick={() => void copyInvite()} disabled={!inviteLink}>
+                      <IconButton label={copied ? t('groups.copied') : t('groups.copyLink')} onClick={() => void copyInvite()} disabled={!inviteLink}>
                         {copied ? <Check className="h-5 w-5 text-success" /> : <Copy className="h-5 w-5" />}
                       </IconButton>
                       <IconButton
-                        label="Перевыпустить ссылку"
+                        label={t('groups.regenerateLink')}
                         disabled={busy}
                         onClick={() =>
                           void run(
                             () => api.regenerateGroupInvite(token, groupId),
-                            'Старая ссылка больше не работает.',
+                            t('groups.linkRegenerated'),
                           )
                         }
                       >
@@ -494,7 +514,7 @@ export function GroupInfoPanel({
                     </div>
                   </div>
                   <p className="mt-1 break-all rounded-lg bg-surface px-2.5 py-1.5 text-xs text-muted">
-                    {inviteLink || 'Ссылка недоступна'}
+                    {inviteLink || t('groups.linkUnavailable')}
                   </p>
                 </div>
               )}
@@ -505,17 +525,17 @@ export function GroupInfoPanel({
                   className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm font-semibold text-ink transition hover:bg-brand-soft/40"
                 >
                   <UserPlus className="h-4 w-4 text-brand" aria-hidden="true" />
-                  Добавить участников
+                  {t('groups.addMembers')}
                 </button>
               )}
             </section>
           )}
 
-          <nav className="flex gap-1 px-5" aria-label="Разделы группы">
+          <nav className="flex gap-1 px-5" aria-label={t('groups.sectionsLabel')}>
             {([
-              ['members', 'Участники', <UsersRound key="m" className="h-4 w-4" />],
-              ['rights', 'Права', <Shield key="r" className="h-4 w-4" />],
-              ['history', 'История', <History key="h" className="h-4 w-4" />],
+              ['members', t('groups.tabMembers'), <UsersRound key="m" className="h-4 w-4" />],
+              ['rights', t('groups.tabRights'), <Shield key="r" className="h-4 w-4" />],
+              ['history', t('groups.tabHistory'), <History key="h" className="h-4 w-4" />],
             ] as Array<[Tab, string, ReactNode]>).map(([value, label, icon]) => (
               <button
                 key={value}
@@ -551,13 +571,13 @@ export function GroupInfoPanel({
                       setMemberQuery(event.target.value);
                       void loadMembers(event.target.value).catch(() => undefined);
                     }}
-                    placeholder="Поиск участников"
+                    placeholder={t('groups.searchMembers')}
                     className="h-11 w-full rounded-xl border border-line bg-canvas pl-11 pr-4 text-sm text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
                   />
                 </div>
 
                 {membersWithPresence.length === 0 ? (
-                  <p className="px-4 py-8 text-center text-sm text-muted">Никого не найдено.</p>
+                  <p className="px-4 py-8 text-center text-sm text-muted">{t('groups.nobodyFound')}</p>
                 ) : (
                   // Заголовков групп нет: присутствие видно в подписи каждой строки.
                   <div className="mt-2">
@@ -597,7 +617,7 @@ export function GroupInfoPanel({
                                 </span>
                                 <MemberTag tag={member.tag} role={member.role} />
                                 {member.user.id === currentUserId && (
-                                  <span className="shrink-0 text-xs font-normal text-muted">(вы)</span>
+                                  <span className="shrink-0 text-xs font-normal text-muted">{t('groups.youSuffix')}</span>
                                 )}
                               </span>
                               <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
@@ -606,11 +626,11 @@ export function GroupInfoPanel({
                                 {member.role === 'restricted' && <Ban className="h-3 w-3 text-danger" aria-hidden="true" />}
                                 <span className="truncate">
                                   {groupRoleLabel(member.role)}
-                                  {muted ? ' · заглушён' : ''}
+                                  {muted ? t('groups.mutedSuffix') : ''}
                                   {' · '}
                                   {/* В сети — голубым, иначе серым. */}
                                   <span className={presenceTextClass(member.user)}>
-                                    {formatLastSeen(member.user)}
+                                    {formatLastSeen(member.user, t)}
                                   </span>
                                 </span>
                               </span>
@@ -629,8 +649,8 @@ export function GroupInfoPanel({
               <section className="mx-2 overflow-hidden rounded-xl bg-canvas">
                 <p className="px-4 pt-3 text-xs leading-5 text-muted">
                   {canChangeInfo
-                    ? 'Что разрешено обычным участникам. Права администратора настраиваются отдельно — в меню участника.'
-                    : 'Что разрешено обычным участникам этой группы.'}
+                    ? t('groups.rightsHintManage')
+                    : t('groups.rightsHintRead')}
                 </p>
                 {/* Управляющие права участникам не выдаются: их здесь нет. */}
                 {memberPermissionKeys.map((permission) => (
@@ -651,8 +671,8 @@ export function GroupInfoPanel({
                         void run(
                           () => api.setGroupPermissions(token, groupId, { [permission]: next }),
                           next
-                            ? `${groupPermissionLabels[permission]}: разрешено участникам.`
-                            : `${groupPermissionLabels[permission]}: запрещено участникам.`,
+                            ? t('groups.allowMembers', { permission: groupPermissionLabels[permission] })
+                            : t('groups.denyMembers', { permission: groupPermissionLabels[permission] }),
                         )
                       }
                     />
@@ -664,7 +684,7 @@ export function GroupInfoPanel({
             {!loading && tab === 'history' && (
               <ul className="mx-2 space-y-1">
                 {history.length === 0 && (
-                  <li className="px-4 py-8 text-center text-sm text-muted">Изменений пока не было.</li>
+                  <li className="px-4 py-8 text-center text-sm text-muted">{t('groups.noChangesYet')}</li>
                 )}
                 {history.map((event) => (
                   <li key={event.id} className="rounded-xl px-3 py-2.5">
@@ -680,7 +700,7 @@ export function GroupInfoPanel({
         <footer className="border-t border-line/70 px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           {isOwner ? (
             <p className="text-center text-xs text-muted">
-              Вы владелец группы — выйти можно, только передав её другому участнику.
+              {t('groups.ownerCannotLeave')}
             </p>
           ) : (
             <Button
@@ -690,7 +710,7 @@ export function GroupInfoPanel({
               loading={busy}
               onClick={() => void leaveGroup()}
             >
-              <LogOut className="h-4 w-4" /> Выйти из группы
+              <LogOut className="h-4 w-4" /> {t('groups.leave')}
             </Button>
           )}
         </footer>
@@ -700,13 +720,13 @@ export function GroupInfoPanel({
             className="absolute inset-0 z-10 flex flex-col bg-surface"
             role="dialog"
             aria-modal="true"
-            aria-label="Добавить участников"
+            aria-label={t('groups.addMembers')}
           >
             <header className="flex items-center justify-between gap-2 border-b border-line/70 px-3 py-2">
-              <IconButton label="Назад" onClick={() => setAddOpen(false)}>
+              <IconButton label={t('common.back')} onClick={() => setAddOpen(false)}>
                 <X className="h-5 w-5" />
               </IconButton>
-              <h3 className="flex-1 text-sm font-bold text-ink">Добавить участников</h3>
+              <h3 className="flex-1 text-sm font-bold text-ink">{t('groups.addMembers')}</h3>
               <Button
                 type="button"
                 className="min-h-9 px-3 text-xs"
@@ -714,7 +734,7 @@ export function GroupInfoPanel({
                 disabled={adding.length === 0}
                 onClick={() => void addSelected()}
               >
-                Добавить
+                {t('common.add')}
               </Button>
             </header>
             <div className="flex min-h-0 flex-1 flex-col px-4 pt-3">
@@ -730,7 +750,7 @@ export function GroupInfoPanel({
                   )
                 }
                 excludeIds={members.map((member) => member.user.id)}
-                placeholder="Кого добавить в группу"
+                placeholder={t('groups.whoToAdd')}
                 listClassName="min-h-[200px] flex-1"
                 autoFocus
               />

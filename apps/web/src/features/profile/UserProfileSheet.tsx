@@ -15,6 +15,8 @@ import {
   Snowflake,
   Trash2,
   Undo2,
+  UserMinus,
+  UserPlus,
   Video,
   X,
 } from 'lucide-react';
@@ -23,7 +25,7 @@ import { api, ApiError } from '../../api/client';
 import { ScamWarning } from '../../components/ScamWarning';
 import { Avatar, Button } from '../../components/ui';
 import { UserName } from '../../components/UserName';
-import type { MediaSummary, ReportReason, User } from '../../types';
+import type { FriendshipState, MediaSummary, ReportReason, User } from '../../types';
 import { plural } from '../../lib/format';
 import { avatarProps } from '../../lib/user';
 import { formatLastSeen } from '../messenger/messengerUtils';
@@ -37,6 +39,9 @@ import {
   parseBirthday,
   pluralYears,
 } from './birthday';
+import { useTranslation } from '../../hooks/useLanguage';
+import { ProfileBanner } from './ProfileBanner';
+import { translateScamWarning } from '../../lib/i18n';
 
 type Mode = 'own' | 'peer' | 'public';
 
@@ -91,14 +96,16 @@ export function UserProfileSheet({
   onRestored,
   onClose,
 }: UserProfileSheetProps) {
+  const t = useTranslation();
   const [profile, setProfile] = useState(user);
   const [isBlocked, setIsBlocked] = useState(Boolean(user.blockedByMe));
   // Удалённый аккаунт: профиль и история читаются, но писать и звонить нельзя.
   const isDeleted = Boolean(profile.isDeleted);
-  // Описание помеченного SCAM сервер подменяет предупреждением. Ведущий ⚠️ из
-  // текста убираем — на карточке его место занимает значок, и без этого знак
-  // задваивался бы.
-  const scamWarningText = (profile.bio ?? '').replace(/^\s*⚠️?\s*/u, '');
+  // Описание помеченного SCAM/FAKE сервер подменяет предупреждением. Ведущий ⚠️
+  // из текста убираем — на карточке его место занимает значок, и без этого знак
+  // задваивался бы. Сам текст переводим на язык интерфейса (ветка выбирается по
+  // началу фразы: SCAM — про мошенничество, FAKE — про подделку под официальный).
+  const markWarningText = translateScamWarning(profile.bio ?? '', t);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -163,22 +170,22 @@ export function UserProfileSheet({
   const mediaRows = useMemo(() => {
     if (!media) return [];
     const rows: { key: string; icon: ReactNode; count: number; forms: [string, string, string] }[] = [
-      { key: 'photos', icon: <ImageIcon className="h-5 w-5" />, count: media.photos, forms: ['фотография', 'фотографии', 'фотографий'] },
-      { key: 'videos', icon: <Video className="h-5 w-5" />, count: media.videos, forms: ['видео', 'видео', 'видео'] },
-      { key: 'voice', icon: <Mic className="h-5 w-5" />, count: media.voice, forms: ['голосовое сообщение', 'голосовых сообщения', 'голосовых сообщений'] },
-      { key: 'videoCircles', icon: <Video className="h-5 w-5" />, count: media.videoCircles, forms: ['видеосообщение', 'видеосообщения', 'видеосообщений'] },
-      { key: 'files', icon: <FileText className="h-5 w-5" />, count: media.files, forms: ['файл', 'файла', 'файлов'] },
-      { key: 'audio', icon: <Mic className="h-5 w-5" />, count: media.audio, forms: ['аудиофайл', 'аудиофайла', 'аудиофайлов'] },
-      { key: 'links', icon: <Link2 className="h-5 w-5" />, count: media.links, forms: ['ссылка', 'ссылки', 'ссылок'] },
-      { key: 'gifs', icon: <Gift className="h-5 w-5" />, count: media.gifs, forms: ['GIF', 'GIF', 'GIF'] },
+      { key: 'photos', icon: <ImageIcon className="h-5 w-5" />, count: media.photos, forms: [t('profile.mediaPhoto1'), t('profile.mediaPhoto2'), t('profile.mediaPhoto5')] },
+      { key: 'videos', icon: <Video className="h-5 w-5" />, count: media.videos, forms: [t('profile.mediaVideo1'), t('profile.mediaVideo2'), t('profile.mediaVideo5')] },
+      { key: 'voice', icon: <Mic className="h-5 w-5" />, count: media.voice, forms: [t('profile.mediaVoice1'), t('profile.mediaVoice2'), t('profile.mediaVoice5')] },
+      { key: 'videoCircles', icon: <Video className="h-5 w-5" />, count: media.videoCircles, forms: [t('profile.mediaCircle1'), t('profile.mediaCircle2'), t('profile.mediaCircle5')] },
+      { key: 'files', icon: <FileText className="h-5 w-5" />, count: media.files, forms: [t('profile.mediaFile1'), t('profile.mediaFile2'), t('profile.mediaFile5')] },
+      { key: 'audio', icon: <Mic className="h-5 w-5" />, count: media.audio, forms: [t('profile.mediaAudio1'), t('profile.mediaAudio2'), t('profile.mediaAudio5')] },
+      { key: 'links', icon: <Link2 className="h-5 w-5" />, count: media.links, forms: [t('profile.mediaLink1'), t('profile.mediaLink2'), t('profile.mediaLink5')] },
+      { key: 'gifs', icon: <Gift className="h-5 w-5" />, count: media.gifs, forms: [t('profile.mediaGif1'), t('profile.mediaGif2'), t('profile.mediaGif5')] },
     ];
     return rows
       .filter((row) => row.count > 0)
       .map((row) => ({ key: row.key, icon: row.icon, label: `${row.count} ${plural(row.count, row.forms)}` }));
-  }, [media]);
+  }, [media, t]);
 
   async function toggleBlock() {
-    if (!isBlocked && !window.confirm(`Заблокировать @${profile.username ?? profile.displayName}? Он не сможет писать и звонить вам.`)) return;
+    if (!isBlocked && !window.confirm(t('profile.confirmBlock', { handle: `@${profile.username ?? profile.displayName}` }))) return;
     setBusy(true);
     setError('');
     try {
@@ -186,10 +193,10 @@ export function UserProfileSheet({
       const next = !isBlocked;
       setIsBlocked(next);
       onBlockedChange?.(next, result.user ?? profile);
-      setNotice(next ? 'Пользователь заблокирован.' : 'Пользователь разблокирован.');
+      setNotice(next ? t('profile.blocked') : t('profile.unblocked'));
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
-      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось изменить блокировку.');
+      setError(reasonError instanceof ApiError ? reasonError.message : t('profile.blockFailed'));
     } finally {
       setBusy(false);
     }
@@ -199,16 +206,16 @@ export function UserProfileSheet({
   async function toggleFreeze() {
     const next = !profile.isFrozen;
     const handle = profile.username ? `@${profile.username}` : profile.displayName;
-    if (next && !window.confirm(`Заморозить аккаунт ${handle}? Он не сможет войти и писать.`)) return;
+    if (next && !window.confirm(t('profile.confirmFreeze', { handle }))) return;
     setBusy(true);
     setError('');
     try {
       await api.adminFreeze(token, profile.id, next);
       setProfile((current) => ({ ...current, isFrozen: next }));
-      setNotice(next ? 'Аккаунт заморожен.' : 'Аккаунт разморожен.');
+      setNotice(next ? t('profile.frozen') : t('profile.unfrozen'));
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
-      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось изменить статус аккаунта.');
+      setError(reasonError instanceof ApiError ? reasonError.message : t('profile.freezeFailed'));
     } finally {
       setBusy(false);
     }
@@ -223,16 +230,40 @@ export function UserProfileSheet({
   async function toggleScam() {
     const next = !profile.scam;
     const handle = profile.username ? `@${profile.username}` : profile.displayName;
-    if (next && !window.confirm(`Пометить аккаунт ${handle} как SCAM? Описание заменится предупреждением о мошенничестве, и менять его человек больше не сможет.`)) return;
+    if (next && !window.confirm(t('profile.confirmScam', { handle }))) return;
     setBusy(true);
     setError('');
     try {
       const updated = await api.adminSetScam(token, profile.id, next);
       setProfile((current) => ({ ...current, ...updated }));
-      setNotice(next ? 'Аккаунт помечен как SCAM.' : 'Отметка SCAM снята, описание вернулось.');
+      setNotice(next ? t('profile.scamSet') : t('profile.scamCleared'));
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
-      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось изменить отметку SCAM.');
+      setError(reasonError instanceof ApiError ? reasonError.message : t('profile.scamFailed'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Отметка FAKE: рядом с именем появляется янтарная рамка, а описание
+   * подменяется предупреждением о подделке под официальный аккаунт — менять его
+   * человек больше не сможет, пока владелец отметку не снимет. Снятие возвращает
+   * прежнее описание: подмена живёт на чтении, а не затирает запись.
+   */
+  async function toggleFake() {
+    const next = !profile.fake;
+    const handle = profile.username ? `@${profile.username}` : profile.displayName;
+    if (next && !window.confirm(t('profile.confirmFake', { handle }))) return;
+    setBusy(true);
+    setError('');
+    try {
+      const updated = await api.adminSetFake(token, profile.id, next);
+      setProfile((current) => ({ ...current, ...updated }));
+      setNotice(next ? t('profile.fakeSet') : t('profile.fakeCleared'));
+    } catch (reasonError) {
+      if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
+      setError(reasonError instanceof ApiError ? reasonError.message : t('profile.fakeFailed'));
     } finally {
       setBusy(false);
     }
@@ -245,11 +276,11 @@ export function UserProfileSheet({
     try {
       const restored = await api.adminRestoreUser(token, profile.id);
       setProfile((current) => ({ ...current, ...restored }));
-      setNotice('Аккаунт возвращён.');
+      setNotice(t('profile.accountRestored'));
       onRestored?.(profile.id);
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
-      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось вернуть аккаунт.');
+      setError(reasonError instanceof ApiError ? reasonError.message : t('profile.restoreFailed'));
     } finally {
       setBusy(false);
     }
@@ -261,7 +292,7 @@ export function UserProfileSheet({
    */
   async function deleteAccount() {
     const handle = profile.username ? `@${profile.username}` : profile.displayName;
-    if (!window.confirm(`Удалить аккаунт ${handle}? Его почта и ник останутся занятыми, а историю переписки собеседники сохранят.`)) return;
+    if (!window.confirm(t('profile.confirmDelete', { handle }))) return;
     setBusy(true);
     setError('');
     try {
@@ -269,7 +300,7 @@ export function UserProfileSheet({
       onDeleted?.(profile.id);
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
-      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось удалить аккаунт.');
+      setError(reasonError instanceof ApiError ? reasonError.message : t('profile.deleteFailed'));
     } finally {
       setBusy(false);
     }
@@ -281,11 +312,11 @@ export function UserProfileSheet({
     try {
       await api.reportUser(token, profile.id, reportReason, reportDetails);
       setReportOpen(false);
-      setNotice('Жалоба отправлена и сохранена.');
+      setNotice(t('profile.reportSent'));
       setReportDetails('');
     } catch (reasonError) {
       if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
-      setError(reasonError instanceof ApiError ? reasonError.message : 'Не удалось отправить жалобу.');
+      setError(reasonError instanceof ApiError ? reasonError.message : t('profile.reportFailed'));
     } finally {
       setBusy(false);
     }
@@ -296,9 +327,9 @@ export function UserProfileSheet({
     if (!handle) return;
     try {
       await navigator.clipboard.writeText(`@${handle}`);
-      setNotice('Юзернейм скопирован.');
+      setNotice(t('profile.usernameCopied'));
     } catch {
-      setError('Не удалось скопировать.');
+      setError(t('profile.copyFailed'));
     }
   }
 
@@ -323,9 +354,9 @@ export function UserProfileSheet({
       const updated = await api.updateProfile(token, { birthday: composed });
       setProfile((current) => ({ ...current, birthday: composed }));
       onSaved?.(updated);
-      setNotice('День рождения сохранён.');
+      setNotice(t('profile.birthdaySaved'));
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : 'Не удалось сохранить день рождения.');
+      setError(reason instanceof ApiError ? reason.message : t('profile.birthdaySaveFailed'));
     } finally {
       setBdSaving(false);
     }
@@ -341,9 +372,9 @@ export function UserProfileSheet({
       const updated = await api.updateProfile(token, { birthday: null });
       setProfile((current) => ({ ...current, birthday: null }));
       onSaved?.(updated);
-      setNotice('День рождения убран.');
+      setNotice(t('profile.birthdayRemoved'));
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : 'Не удалось убрать день рождения.');
+      setError(reason instanceof ApiError ? reason.message : t('profile.birthdayRemoveFailed'));
     } finally {
       setBdSaving(false);
     }
@@ -358,78 +389,89 @@ export function UserProfileSheet({
       <section
         role="dialog"
         aria-modal="true"
-        aria-label="Профиль"
+        aria-label={t('profile.sheetLabel')}
         className="flex max-h-[92dvh] w-full animate-slide-up flex-col overflow-hidden rounded-t-xl bg-surface shadow-float sm:max-w-[440px] sm:rounded-xl"
       >
-        {/* Шапка: аватар, имя/бейджи, кнопки закрытия/редактирования */}
-        <header className="relative px-5 pb-3 pt-5 text-center">
+        {/* Шапка: полоса баннера, поверх неё — кнопки, ниже — аватар (он
+            заходит на баннер наполовину, как в Discord). */}
+        <header className="relative pb-3 text-center">
+          <ProfileBanner user={profile} />
           {mode === 'own' && onEdit && (
             <button
               type="button"
-              aria-label="Изменить профиль"
+              aria-label={t('profile.editProfile')}
               onClick={onEdit}
               disabled={profile.isFrozen}
-              title={profile.isFrozen ? 'Аккаунт заморожен — профиль доступен только для просмотра' : undefined}
-              className="absolute right-12 top-4 grid h-9 w-9 place-items-center rounded-full text-muted transition hover:bg-canvas hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
+              title={profile.isFrozen ? t('profile.editTooltip') : undefined}
+              className="absolute right-12 top-4 grid h-9 w-9 place-items-center rounded-full bg-black/35 text-white backdrop-blur-sm transition hover:bg-black/50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-black/35"
             >
               <Edit2 className="h-5 w-5" />
             </button>
           )}
           <button
             type="button"
-            aria-label="Закрыть"
+            aria-label={t('common.close')}
             onClick={onClose}
-            className="absolute right-3 top-4 grid h-9 w-9 place-items-center rounded-full text-muted transition hover:bg-canvas hover:text-ink"
+            className="absolute right-3 top-4 grid h-9 w-9 place-items-center rounded-full bg-black/35 text-white backdrop-blur-sm transition hover:bg-black/50"
           >
             <X className="h-5 w-5" />
           </button>
-          <Avatar
-            name={profile.displayName}
-            src={profile.avatarUrl ?? profile.avatar?.url}
-            size="xl"
-            online={mode !== 'own' ? online : undefined}
-            className="mx-auto"
-            {...avatarProps(profile)}
-          />
-          <h2 className="mt-3 text-lg font-extrabold tracking-[-0.02em] text-ink">
-            <UserName name={profile.displayName} user={profile} />
-          </h2>
-          <div className="mt-1 flex items-center justify-center gap-1.5 text-[13px] font-semibold text-brand">
-            {mode === 'own' ? (
-              online ? <span className="inline-flex items-center gap-1"><ShieldCheck className="h-3.5 w-3.5" />в сети</span> : <span className="text-muted">{formatLastSeen(profile)}</span>
-            ) : online ? (
-              <span className="inline-flex items-center gap-1"><ShieldCheck className="h-3.5 w-3.5" />в сети</span>
-            ) : (
-              <span className="text-muted">{formatLastSeen(profile)}</span>
-            )}
+          {/* Аватар заходит на баннер наполовину. Круглую окантовку делаем
+              подложкой `rounded-full` вокруг аватара, а не `ring`: ring рисует
+              тень по прямоугольному боксу обёртки и превращался в квадрат. */}
+          <div className="-mt-14 flex justify-center px-5">
+            <span className="grid place-items-center rounded-full bg-surface p-1">
+              <Avatar
+                name={profile.displayName}
+                src={profile.avatarUrl ?? profile.avatar?.url}
+                size="xl"
+                online={mode !== 'own' ? online : undefined}
+                {...avatarProps(profile)}
+              />
+            </span>
+          </div>
+          <div className="px-5">
+            <h2 className="mt-3 text-lg font-extrabold tracking-[-0.02em] text-ink">
+              <UserName name={profile.displayName} user={profile} />
+            </h2>
+            <div className="mt-1 flex items-center justify-center gap-1.5 text-[13px] font-semibold text-brand">
+              {mode === 'own' ? (
+                online ? <span className="inline-flex items-center gap-1"><ShieldCheck className="h-3.5 w-3.5" />{t('profile.online')}</span> : <span className="text-muted">{formatLastSeen(profile, t)}</span>
+              ) : online ? (
+                <span className="inline-flex items-center gap-1"><ShieldCheck className="h-3.5 w-3.5" />{t('profile.online')}</span>
+              ) : (
+                <span className="text-muted">{formatLastSeen(profile, t)}</span>
+              )}
+            </div>
           </div>
         </header>
 
         {/* Ряд быстрых действий — только для чужого профиля. */}
         {mode !== 'own' && (
           <div className="grid grid-cols-4 gap-2 px-4">
-            <ActionTile icon={<FileText className="h-5 w-5" />} label="Чат" disabled={isDeleted} onClick={onMessage} />
-            <ActionTile icon={isBlocked ? <MicOff /> : <Mic className="h-5 w-5" />} label="Звук" disabled={isBlocked || isDeleted} onClick={onAudioCall} />
-            <ActionTile icon={<Video className="h-5 w-5" />} label="Звонок" disabled={isBlocked || isDeleted} onClick={onVideoCall} />
-            <ActionTile icon={<MoreHorizontal className="h-5 w-5" />} label="Ещё" onClick={onMore} />
+            <ActionTile icon={<FileText className="h-5 w-5" />} label={t('profile.actionChat')} disabled={isDeleted} onClick={onMessage} />
+            <ActionTile icon={isBlocked ? <MicOff /> : <Mic className="h-5 w-5" />} label={t('profile.actionAudio')} disabled={isBlocked || isDeleted} onClick={onAudioCall} />
+            <ActionTile icon={<Video className="h-5 w-5" />} label={t('profile.actionVideo')} disabled={isBlocked || isDeleted} onClick={onVideoCall} />
+            <ActionTile icon={<MoreHorizontal className="h-5 w-5" />} label={t('profile.actionMore')} onClick={onMore} />
           </div>
         )}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {/* Описание. У помеченного SCAM вместо «о себе» стоит предупреждение:
-              сервер отдаёт его вместо текста, поэтому рисуем отдельным блоком
-              со значком — как в Telegram. Подпись «О себе» уходит под текст. */}
-          {profile.scam ? (
+          {/* Описание. У помеченного SCAM или FAKE вместо «о себе» стоит
+              предупреждение: сервер отдаёт его вместо текста, поэтому рисуем
+              отдельным блоком со значком — как в Telegram. Подпись «О себе»
+              уходит под текст. */}
+          {profile.scam || profile.fake ? (
             <div className="px-5 pt-3">
               <div className="flex gap-2 text-left">
                 <AlertTriangle className="mt-[3px] h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
                 {/* Текст выдан владельцем Yargram: выделить и скопировать его нельзя. */}
                 <ScamWarning
-                  text={scamWarningText}
+                  text={markWarningText}
                   className="whitespace-pre-wrap text-sm leading-6 text-ink"
                 />
               </div>
-              <p className="mt-1 text-xs text-muted">О себе</p>
+              <p className="mt-1 text-xs text-muted">{t('profile.bioLabel')}</p>
             </div>
           ) : (
             profile.bio && (
@@ -449,13 +491,13 @@ export function UserProfileSheet({
             >
               <span className="min-w-0 flex-1">
                 <span className="block text-base font-bold text-brand">{profile.username ? `@${profile.username}` : '—'}</span>
-                <span className="block text-xs text-muted">Имя пользователя</span>
+                <span className="block text-xs text-muted">{t('profile.usernameFieldHint')}</span>
               </span>
               {profile.username && <Copy className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />}
             </button>
             {profile.usernames && profile.usernames.length > 0 && (
               <p className="px-1 pt-1 text-[12px] text-muted">
-                а также{' '}
+                {t('profile.alsoKnownAs')}{' '}
                 {profile.usernames
                   .filter((alias) => alias.toLowerCase() !== profile.username?.toLowerCase())
                   .map((alias, index, list) => (
@@ -471,7 +513,7 @@ export function UserProfileSheet({
           {/* Официальный статус — для подтверждённых публичных аккаунтов. */}
           {profile.isVerified && (
             <p className="mx-5 mt-3 rounded-xl bg-canvas px-3 py-2 text-center text-xs leading-5 text-muted">
-              Этот аккаунт подтверждён представителями Yargram.
+              {t('profile.verifiedNotice')}
             </p>
           )}
 
@@ -483,9 +525,9 @@ export function UserProfileSheet({
                   <Calendar className="h-5 w-5" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <span className="block text-sm font-bold text-ink">День рождения</span>
+                  <span className="block text-sm font-bold text-ink">{t('profile.birthdayLabel')}</span>
                   <div className="mt-1.5 grid grid-cols-3 gap-1.5">
-                    <label className="sr-only" htmlFor="sheet-birthday-day">День</label>
+                    <label className="sr-only" htmlFor="sheet-birthday-day">{t('profile.day')}</label>
                     <select
                       id="sheet-birthday-day"
                       className={sheetSelectClass}
@@ -493,13 +535,13 @@ export function UserProfileSheet({
                       disabled={bdSaving}
                       onChange={(event) => void changeBirthday('day', event.target.value)}
                     >
-                      <option value="">День</option>
+                      <option value="">{t('profile.day')}</option>
                       {Array.from({ length: daysInMonth(bdMonth, bdYear) }, (_, index) => String(index + 1)).map((day) => (
                         <option key={day} value={day}>{day}</option>
                       ))}
                     </select>
 
-                    <label className="sr-only" htmlFor="sheet-birthday-month">Месяц</label>
+                    <label className="sr-only" htmlFor="sheet-birthday-month">{t('profile.month')}</label>
                     <select
                       id="sheet-birthday-month"
                       className={sheetSelectClass}
@@ -507,13 +549,13 @@ export function UserProfileSheet({
                       disabled={bdSaving}
                       onChange={(event) => void changeBirthday('month', event.target.value)}
                     >
-                      <option value="">Месяц</option>
+                      <option value="">{t('profile.month')}</option>
                       {MONTH_NAMES.map((name, index) => (
                         <option key={name} value={String(index + 1)}>{name}</option>
                       ))}
                     </select>
 
-                    <label className="sr-only" htmlFor="sheet-birthday-year">Год</label>
+                    <label className="sr-only" htmlFor="sheet-birthday-year">{t('profile.year')}</label>
                     <select
                       id="sheet-birthday-year"
                       className={sheetSelectClass}
@@ -521,7 +563,7 @@ export function UserProfileSheet({
                       disabled={bdSaving}
                       onChange={(event) => void changeBirthday('year', event.target.value)}
                     >
-                      <option value="">Без года</option>
+                      <option value="">{t('profile.noYear')}</option>
                       {BIRTHDAY_YEARS.map((year) => (
                         <option key={year} value={String(year)}>{year}</option>
                       ))}
@@ -530,12 +572,12 @@ export function UserProfileSheet({
                   <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
                     <span>
                       {bdSaving
-                        ? 'Сохраняем…'
-                        : 'Дата сохраняется сразу. Год можно не указывать — тогда возраст не виден.'}
+                        ? t('profile.saving')
+                        : t('profile.birthdaySavedHint')}
                     </span>
                     {(bdDay || bdMonth || bdYear) && (
                       <button type="button" onClick={() => void clearBirthday()} className="font-semibold text-brand transition hover:text-brand-strong">
-                        Убрать
+                        {t('profile.removeBirthday')}
                       </button>
                     )}
                   </div>
@@ -545,8 +587,8 @@ export function UserProfileSheet({
           ) : (
             <InfoRow
               icon={<Calendar className="h-5 w-5" />}
-              label={profile.birthday ? `${formatBirthday(profile.birthday)}${age !== null ? ` (${age} ${pluralYears(age)})` : ''}` : 'День рождения не указан'}
-              hint="День рождения"
+              label={profile.birthday ? `${formatBirthday(profile.birthday)}${age !== null ? ` (${t('profile.yearsOld', { age, unit: pluralYears(age) })})` : ''}` : t('profile.birthdayNotSet')}
+              hint={t('profile.birthdayLabel')}
             />
           )}
 
@@ -562,16 +604,16 @@ export function UserProfileSheet({
           {/* Владелец Yargram может заморозить, удалить и вернуть чужой аккаунт. */}
           {mode !== 'own' && viewerIsOwner && (
             <div className="mt-3 space-y-2 border-t border-line px-4 pt-3">
-              <p className="text-xs font-bold uppercase tracking-wide text-muted">Владелец</p>
+              <p className="text-xs font-bold uppercase tracking-wide text-muted">{t('profile.ownerSection')}</p>
               {profile.isDeleted ? (
                 <Button variant="secondary" className="w-full" loading={busy} onClick={() => void restoreAccount()}>
                   <Undo2 className="h-4 w-4" />
-                  Вернуть аккаунт
+                  {t('profile.restoreAccount')}
                 </Button>
               ) : (
                 <Button variant="secondary" className="w-full" loading={busy} onClick={() => void toggleFreeze()}>
                   <Snowflake className="h-4 w-4" />
-                  {profile.isFrozen ? 'Разморозить аккаунт' : 'Заморозить аккаунт'}
+                  {profile.isFrozen ? t('profile.unfreezeAccount') : t('profile.freezeAccount')}
                 </Button>
               )}
               {!profile.isDeleted && (
@@ -582,31 +624,50 @@ export function UserProfileSheet({
                   onClick={() => void toggleScam()}
                 >
                   <ShieldAlert className="h-4 w-4" />
-                  {profile.scam ? 'Снять отметку SCAM' : 'Выдать отметку SCAM'}
+                  {profile.scam ? t('profile.clearScam') : t('profile.setScam')}
+                </Button>
+              )}
+              {!profile.isDeleted && (
+                <Button
+                  variant={profile.fake ? 'secondary' : 'danger'}
+                  className="w-full"
+                  loading={busy}
+                  onClick={() => void toggleFake()}
+                >
+                  <ShieldAlert className="h-4 w-4" />
+                  {profile.fake ? t('profile.clearFake') : t('profile.setFake')}
                 </Button>
               )}
               {!profile.isDeleted && (
                 <Button variant="danger" className="w-full" loading={busy} onClick={() => void deleteAccount()}>
                   <Trash2 className="h-4 w-4" />
-                  Удалить аккаунт
+                  {t('profile.deleteAccount')}
                 </Button>
               )}
             </div>
           )}
 
-          {/* Действия блокировки и жалобы — только для чужого. */}
-          {mode !== 'own' && (
+          {/* Действия блокировки и жалобы — только для чужого. У служебного
+              бота их нет вовсе: это не человек, а адрес поддержки, и ни
+              добавить в друзья, ни заблокировать, ни пожаловаться на него
+              нельзя — как и любого другого бота. */}
+          {mode !== 'own' && !isDeleted && !profile.isBot && (
             <div className="px-4 pb-5 pt-2">
-              <Button variant="danger" loading={busy && !reportOpen} className="w-full" onClick={() => void toggleBlock()}>
+              <FriendButton
+                token={token}
+                profile={profile}
+                onUnauthorized={onUnauthorized}
+              />
+              <Button variant="danger" loading={busy && !reportOpen} className="mt-2 w-full" onClick={() => void toggleBlock()}>
                 {isBlocked ? <ShieldCheck className="h-4 w-4" /> : <Ban className="h-4 w-4" />}
-                {isBlocked ? 'Разблокировать' : 'Заблокировать'}
+                {isBlocked ? t('profile.unblock') : t('profile.block')}
               </Button>
               <button
                 type="button"
                 onClick={() => setReportOpen((value) => !value)}
                 className="mt-2 w-full rounded-xl border border-line bg-surface px-3 py-2.5 text-sm font-semibold text-muted transition hover:border-brand/35 hover:text-ink"
               >
-                Пожаловаться
+                {t('profile.report')}
               </button>
             </div>
           )}
@@ -621,11 +682,11 @@ export function UserProfileSheet({
                 onClick={onEdit}
                 disabled={profile.isFrozen}
               >
-                <Edit2 className="h-4 w-4" /> Изменить профиль
+                <Edit2 className="h-4 w-4" /> {t('profile.editProfile')}
               </Button>
               {profile.isFrozen && (
                 <p className="mt-2 text-center text-xs text-muted">
-                  Аккаунт заморожен — профиль доступен только для просмотра.
+                  {t('profile.frozenViewOnly')}
                 </p>
               )}
             </div>
@@ -633,7 +694,7 @@ export function UserProfileSheet({
 
           {reportOpen && (
             <div className="mx-4 mb-5 animate-slide-up rounded-xl border border-line bg-canvas p-3 text-left">
-              <p className="text-xs font-bold">Причина жалобы</p>
+              <p className="text-xs font-bold">{t('profile.reportReason')}</p>
               <div className="mt-2 grid grid-cols-2 gap-1.5">
                 {REPORT_REASONS.map((item) => (
                   <button
@@ -643,7 +704,7 @@ export function UserProfileSheet({
                     onClick={() => setReportReason(item.value)}
                   >
                     {reportReason === item.value && <ShieldCheck className="h-3.5 w-3.5" />}
-                    {item.label}
+                    {t(item.label)}
                   </button>
                 ))}
               </div>
@@ -652,11 +713,11 @@ export function UserProfileSheet({
                   value={reportDetails}
                   onChange={(event) => setReportDetails(event.target.value.slice(0, 1000))}
                   className="mt-2 min-h-20 w-full resize-none rounded-xl border border-line bg-surface p-3 text-sm outline-none focus:border-brand/50"
-                  placeholder="Опишите проблему"
+                  placeholder={t('profile.reportPlaceholder')}
                 />
               )}
               <Button className="mt-2 w-full" loading={busy && reportOpen} onClick={() => void submitReport()}>
-                Отправить жалобу
+                {t('profile.sendReport')}
               </Button>
             </div>
           )}
@@ -670,10 +731,10 @@ export function UserProfileSheet({
 }
 
 const REPORT_REASONS: { value: ReportReason; label: string }[] = [
-  { value: 'spam', label: 'Спам' },
-  { value: 'abuse', label: 'Оскорбления' },
-  { value: 'fraud', label: 'Мошенничество' },
-  { value: 'other', label: 'Другое' },
+  { value: 'spam', label: 'profile.reasonSpam' },
+  { value: 'abuse', label: 'profile.reasonAbuse' },
+  { value: 'fraud', label: 'profile.reasonFraud' },
+  { value: 'other', label: 'profile.reasonOther' },
 ];
 
 function ActionTile({ icon, label, disabled, onClick }: { icon: ReactNode; label: string; disabled?: boolean; onClick?: () => void }) {
@@ -721,3 +782,69 @@ function MediaRow({ icon, label }: { icon: ReactNode; label: string }) {
 }
 
 
+/**
+ * Кнопка дружбы в чужом профиле. Состояние приходит с сервера вместе с
+ * профилем, поэтому кнопка одинаковая и в веб-версии, и в приложении:
+ * «Добавить в друзья» -> «Заявка отправлена» -> «Вы друзья».
+ *
+ * Взаимную заявку сервер закрывает сразу: если человек уже ждал нас, одна
+ * кнопка делает обоих друзьями, и подпись это честно показывает.
+ */
+function FriendButton({
+  token,
+  profile,
+  onUnauthorized,
+}: {
+  token: string;
+  profile: User;
+  onUnauthorized?: (() => void) | undefined;
+}) {
+  const t = useTranslation();
+  const [state, setState] = useState<FriendshipState>(profile.friendship ?? 'none');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => setState(profile.friendship ?? 'none'), [profile.friendship]);
+
+  async function act() {
+    setBusy(true);
+    setError('');
+    try {
+      const next =
+        state === 'none'
+          ? await api.addFriend(token, profile.id)
+          : state === 'incoming'
+            ? await api.acceptFriend(token, profile.id)
+            : state === 'friends' || state === 'outgoing'
+              ? await api.removeFriend(token, profile.id)
+              : await api.addFriend(token, profile.id);
+      setState(next);
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) return onUnauthorized?.();
+      setError(reason instanceof ApiError ? reason.message : t('friends.addFailed'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const label =
+    state === 'friends' ? t('friends.inFriends')
+      : state === 'outgoing' ? t('friends.requestSentButton')
+        : state === 'incoming' ? t('friends.acceptButton')
+          : t('friends.addButton');
+
+  return (
+    <div>
+      <Button
+        variant={state === 'friends' ? 'secondary' : 'primary'}
+        className="w-full"
+        loading={busy}
+        onClick={() => void act()}
+      >
+        {state === 'friends' ? <UserMinus className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
+        {label}
+      </Button>
+      {error && <p className="mt-2 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>}
+    </div>
+  );
+}

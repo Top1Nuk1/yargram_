@@ -40,15 +40,15 @@ describe('last seen in the viewer device timezone', () => {
   const at = (year: number, month: number, day: number) => ({ ...user, online: false, lastSeenAt: new Date(year, month, day, 9, 5).toISOString() });
   it('shows local today and yesterday with time', () => {
     // Сегодня «сегодня» не пишем: «Был(а) в 09:05» короче и понятнее.
-    expect(formatLastSeen(at(2026, 4, 14), now)).toBe('Был(а) в 09:05');
-    expect(formatLastSeen(at(2026, 4, 13), now)).toBe('Был(а) вчера в 09:05');
+    expect(formatLastSeen(at(2026, 4, 14), undefined, now)).toBe('Был(а) в 09:05');
+    expect(formatLastSeen(at(2026, 4, 13), undefined, now)).toBe('Был(а) вчера в 09:05');
   });
   it('says «только что» вместо времени, если видели минуту назад', () => {
     const now = new Date(2026, 4, 14, 12, 0);
     const minuteAgo = { ...user, online: false, lastSeenAt: new Date(2026, 4, 14, 11, 59).toISOString() };
     const tenMinutesAgo = { ...user, online: false, lastSeenAt: new Date(2026, 4, 14, 11, 50).toISOString() };
-    expect(formatLastSeen(minuteAgo, now)).toBe('Был(а) только что');
-    expect(formatLastSeen(tenMinutesAgo, now)).toBe('Был(а) в 11:50');
+    expect(formatLastSeen(minuteAgo, undefined, now)).toBe('Был(а) только что');
+    expect(formatLastSeen(tenMinutesAgo, undefined, now)).toBe('Был(а) в 11:50');
   });
   it('красит подпись: в сети голубым, иначе серым', () => {
     expect(presenceTextClass({ ...user, online: true, isOnline: true })).toBe('text-brand');
@@ -57,15 +57,15 @@ describe('last seen in the viewer device timezone', () => {
     expect(presenceTextClass({ ...user, online: true, showLastSeen: false })).toBe('text-muted');
   });
   it('shows numeric day, full month, time, and year for previous years', () => {
-    expect(formatLastSeen(at(2026, 4, 12), now)).toBe('Был(а) 12 мая в 09:05');
-    expect(formatLastSeen(at(2025, 11, 31), now)).toMatch(/^Был\(а\) 31 декабря 2025.* в 09:05$/);
+    expect(formatLastSeen(at(2026, 4, 12), undefined, now)).toBe('Был(а) 12 мая в 09:05');
+    expect(formatLastSeen(at(2025, 11, 31), undefined, now)).toMatch(/^Был\(а\) 31 декабря 2025.* в 09:05$/);
   });
   it.each([
     ['recently', 'Был(а) недавно'], ['within_week', 'Был(а) на прошлой неделе'],
     ['within_month', 'Был(а) в прошлом месяце'], ['long_ago', 'Был(а) давно'],
   ] as const)('uses server category %s even if stale precise data exists', (lastSeenStatus, expected) => {
     const hidden = { ...user, lastSeenStatus };
-    expect(formatLastSeen(hidden, now)).toBe(expected);
+    expect(formatLastSeen(hidden, undefined, now)).toBe(expected);
     expect(isUserOnline(hidden)).toBe(false);
   });
   it('handles missing and invalid timestamps', () => {

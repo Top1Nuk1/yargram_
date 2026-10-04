@@ -48,6 +48,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import { io, type Socket } from 'socket.io-client';
 import { fixWebmDuration } from '@fix-webm-duration/fix';
 import { api, ApiError } from '../../api/client';
+import { DecorativeVideo } from '../../components/DecorativeVideo';
 import { Logo } from '../../components/Logo';
 import { UserName } from '../../components/UserName';
 import {
@@ -94,7 +95,9 @@ import {
   showBrowserNotification,
 } from '../../lib/notifications';
 import { playSound } from '../../lib/sounds';
-import type { AccountStatePayload, Attachment, ChatFolder, Conversation, ConversationDraft, Message, MessageReaction, ReadReceipt, ScheduledMessage, ThemeMode, User } from '../../types';
+import { useTranslation } from '../../hooks/useLanguage';
+import type { AccountStatePayload, Attachment, ChatFolder, Conversation, ConversationDraft, Message, MessageReaction, ReadReceipt, ScheduledMessage, Session, ThemeMode, User } from '../../types';
+import type { ThemeControls } from '../../hooks/useTheme';
 import { CallOverlay } from '../calls/CallOverlay';
 import { useWebRtcCall } from '../calls/useWebRtcCall';
 import { PollDialog, type PollDraft } from '../polls/PollDialog';
@@ -103,7 +106,16 @@ import { GroupCreateModal } from '../groups/GroupCreateModal';
 import { GroupInfoPanel } from '../groups/GroupInfoPanel';
 import { MemberTag } from '../groups/MemberTag';
 import { ProfileModal } from '../profile/ProfileModal';
+import { SettingsScreen } from '../settings/SettingsScreen';
+import { LanguageScreen } from '../settings/LanguageScreen';
+import { PrivacyScreen } from '../settings/PrivacyScreen';
+import { SessionsScreen } from '../settings/SessionsScreen';
+import { ScaleScreen } from '../settings/ScaleScreen';
+import { ThemesScreen } from '../settings/ThemesScreen';
+import { NewSessionAlert } from '../settings/NewSessionAlert';
+import { ThemeLinkImport } from '../../components/ThemeLinkImport';
 import { UserProfileSheet } from '../profile/UserProfileSheet';
+import { FriendsModal } from '../friends/FriendsModal';
 import { AppSidebar, type SidebarAction } from '../sidebar/AppSidebar';
 import { AdminPanel } from '../admin/AdminPanel';
 import { AttachmentDraftTray, ImageViewer, MessageAttachments, type DraftAttachment } from './AttachmentUi';
@@ -136,6 +148,8 @@ interface MessengerScreenProps {
   currentUser: User;
   theme: ThemeMode;
   onToggleTheme: () => void;
+  /** Темы: список, редактор и обмен ссылкой. */
+  themeControls: ThemeControls;
   onLogout: (sessionExpired?: boolean) => void;
   onUserUpdated: (user: User) => void;
   /** Аккаунты, сохранённые на этом устройстве, для переключателя в боковой панели. */
@@ -270,6 +284,7 @@ export function MessengerScreen({
   currentUser,
   theme,
   onToggleTheme,
+  themeControls,
   onLogout,
   onUserUpdated,
   accounts,
@@ -277,6 +292,7 @@ export function MessengerScreen({
   onAddAccount,
   onRemoveAccount,
 }: MessengerScreenProps) {
+  const t = useTranslation();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationState, setConversationState] = useState<LoadingState>('loading');
   const [conversationError, setConversationError] = useState('');
@@ -303,6 +319,8 @@ export function MessengerScreen({
   const [searchOpen, setSearchOpen] = useState(false);
   const [pollOpen, setPollOpen] = useState(false);
   const [pollBusy, setPollBusy] = useState(false);
+  /** Кнопка бота уже нажата и ждёт ответа: второй раз жать нельзя. */
+  const [botActionBusy, setBotActionBusy] = useState(false);
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
   const [groupInfoOpen, setGroupInfoOpen] = useState(false);
   /** Профиль участника группы, открытый из карточки группы. */
@@ -316,6 +334,16 @@ export function MessengerScreen({
   const [peerProfileOpen, setPeerProfileOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [blockedUsersOpen, setBlockedUsersOpen] = useState(false);
+  const [friendsOpen, setFriendsOpen] = useState(false);
+  /** Экран настроек — список разделов. Раздел «Мой аккаунт» открывает ProfileModal. */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [themesOpen, setThemesOpen] = useState(false);
+  const [scaleOpen, setScaleOpen] = useState(false);
+  const [languageOpen, setLanguageOpen] = useState(false);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  /** Вход с незнакомого сайта, который владелец ещё не подтвердил. */
+  const [sessionAlert, setSessionAlert] = useState<Session | null>(null);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
@@ -331,19 +359,8 @@ export function MessengerScreen({
   const [typingUserIds, setTypingUserIds] = useState<Set<string>>(() => new Set());
   const [pinIndex, setPinIndex] = useState(0);
   const [imageViewer, setImageViewer] = useState<ImageViewerState | null>(null);
-  useEffect(() => {
-    const style = document.documentElement.style;
-    const color = currentUser.themeColor;
-    if (color && /^#[\da-f]{6}$/i.test(color)) {
-      const rgb = [1, 3, 5].map((start) => parseInt(color.slice(start, start + 2), 16));
-      style.setProperty('--brand', rgb.join(' '));
-      style.setProperty('--brand-strong', rgb.map((channel) => Math.round(channel * 0.82)).join(' '));
-    }
-    return () => {
-      style.removeProperty('--brand');
-      style.removeProperty('--brand-strong');
-    };
-  }, [currentUser.themeColor]);
+  // Акцент из профиля больше не подменяет --brand вручную: этим занимается
+  // тема (withProfileAccent), и подстановка идёт до применения палитры.
 
   const [notice, setNotice] = useState('');
   const [retryingId, setRetryingId] = useState<string | null>(null);
@@ -358,6 +375,8 @@ export function MessengerScreen({
   const recordStoppedAtRef = useRef(0);
   const recordBytesRef = useRef(0);
   const [recording, setRecording] = useState(false);
+  /** Зеркало `recording` для эффектов: состояние в deps перезапускало бы их. */
+  const recordingRef = useRef(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
@@ -385,7 +404,7 @@ export function MessengerScreen({
   const messagesRef = useRef<Message[]>([]);
   const serverDraftsRef = useRef(new Map<string, ConversationDraft>());
   const draftSaveTimerRef = useRef<number | null>(null);
-  const webRtc = useWebRtcCall(socket);
+  const webRtc = useWebRtcCall(socket, token);
   const { setCurrentUser: setCallCurrentUser } = webRtc;
 
   useEffect(() => {
@@ -396,6 +415,8 @@ export function MessengerScreen({
     () => conversations.find((conversation) => conversation.id === selectedId) ?? null,
     [conversations, selectedId],
   );
+  // Фон бывает картинкой и видео, а ссылка у них одна — тип хранится рядом.
+  const wallpaperIsVideo = Boolean(currentUser.wallpaperMimeType?.startsWith('video/'));
   const selectedPeer = selectedConversation
     ? getConversationPeer(selectedConversation, currentUser.id)
     : null;
@@ -463,11 +484,11 @@ export function MessengerScreen({
           onLogout(true);
           return;
         }
-        setConversationError(readableError(error, 'Не удалось загрузить диалоги.'));
+        setConversationError(readableError(error, t('msgr.loadDialogsFailed')));
         if (!quiet) setConversationState('error');
       }
     },
-    [onLogout, token],
+    [onLogout, t, token],
   );
 
   useEffect(() => {
@@ -667,7 +688,7 @@ export function MessengerScreen({
           playSound('message');
           const peer = conversation ? getConversationPeer(conversation, currentUser.id) : message.sender ?? message.author;
           showBrowserNotification({
-            title: peer?.displayName ?? 'Новое сообщение в Yargram',
+            title: peer?.displayName ?? t('msgr.newMessage'),
             body: messageSummary(message),
             avatarUrl: peer?.avatarUrl,
             conversationId: message.conversationId,
@@ -874,7 +895,51 @@ export function MessengerScreen({
       setSocket((current) => (current === realtimeSocket ? null : current));
       realtimeSocket.disconnect();
     };
-  }, [currentUser.id, loadConversations, markRead, mergeReadReceipt, onLogout, onUserUpdated, token]);
+  }, [currentUser.id, loadConversations, markRead, mergeReadReceipt, onLogout, onUserUpdated, t, token]);
+
+  // Вход с незнакомого сайта: предупреждаем сразу, как только мессенджер
+  // открылся. Список сеансов — не главное, поэтому ошибку тихо игнорируем:
+  // из-за неё мессенджер не должен ломаться.
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const overview = await api.sessions(token);
+        if (active && overview.alert) setSessionAlert(overview.alert);
+      } catch {
+        // Список не открылся — ничего не показываем.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [token]);
+
+  /** «Это был я»: вход подтверждён, окно больше не нужно. */
+  const acknowledgeSessionAlert = useCallback(async () => {
+    const alert = sessionAlert;
+    setSessionAlert(null);
+    if (!alert) return;
+    try {
+      await api.acknowledgeSession(token, alert.id);
+    } catch {
+      // Не подтвердили сейчас — спросим в следующий раз.
+    }
+  }, [sessionAlert, token]);
+
+  /** «Это не я»: закрываем этот самый сеанс и выходим из аккаунта. */
+  const terminateSessionAlert = useCallback(async () => {
+    const alert = sessionAlert;
+    setSessionAlert(null);
+    if (alert) {
+      try {
+        await api.terminateSession(token, alert.id);
+      } catch {
+        // Всё равно выходим: токен мог быть уже завершён.
+      }
+    }
+    onLogout(false);
+  }, [onLogout, sessionAlert, token]);
 
   const loadMessages = useCallback(
     async (conversationId: string, signal?: AbortSignal) => {
@@ -894,12 +959,12 @@ export function MessengerScreen({
           return;
         }
         if (selectedIdRef.current === conversationId) {
-          setMessageError(readableError(error, 'Не удалось загрузить сообщения.'));
+          setMessageError(readableError(error, t('msgr.loadMessagesFailed')));
           setMessageState('error');
         }
       }
     },
-    [markRead, onLogout, token],
+    [markRead, onLogout, t, token],
   );
 
   useEffect(() => {
@@ -920,7 +985,14 @@ export function MessengerScreen({
     setTypingUserIds(new Set());
     setChatSearch('');
     setChatSearchOpen(false);
-    cancelVoiceRecording();
+    // Запись привязана к беседе: уходя в другую, её надо оборвать. Но эффект
+    // перезапускается не только от смены беседы, поэтому обрываем лишь тогда,
+    // когда запись действительно шла в другой беседе — и говорим об этом, иначе
+    // запись пропадала молча и выглядела как «не могу записать».
+    if (recordingRef.current && recordConversationRef.current !== selectedId) {
+      cancelVoiceRecording();
+      setNotice(t('msgr.recordingCancelled'));
+    }
     if (!selectedId) {
       setMessageState('ready');
       return undefined;
@@ -928,7 +1000,7 @@ export function MessengerScreen({
     const controller = new AbortController();
     void loadMessages(selectedId, controller.signal);
     return () => controller.abort();
-  }, [loadMessages, selectedId]);
+  }, [loadMessages, selectedId, t]);
 
   useEffect(() => {
     if (pinIndex >= selectedPins.length) setPinIndex(0);
@@ -958,7 +1030,7 @@ export function MessengerScreen({
         })
         .catch((error: unknown) => {
           if (!(error instanceof DOMException && error.name === 'AbortError')) {
-            setMessageError(readableError(error, 'Не удалось выполнить поиск.'));
+            setMessageError(readableError(error, t('msgr.searchFailed')));
           }
         });
     }, 180);
@@ -966,7 +1038,7 @@ export function MessengerScreen({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [chatSearch, chatSearchOpen, selectedId, token]);
+  }, [chatSearch, chatSearchOpen, selectedId, t, token]);
 
   useEffect(() => {
     const messageId = pendingScrollMessageRef.current;
@@ -1004,11 +1076,11 @@ export function MessengerScreen({
     return conversations.filter((conversation) => {
       if (Boolean(conversation.archived) !== (listMode === 'archive')) return false;
       if (activeFolder && !activeFolder.conversationIds.includes(conversation.id)) return false;
-      const title = conversationTitle(conversation, currentUser.id).toLocaleLowerCase('ru-RU');
+      const title = conversationTitle(conversation, currentUser.id, t).toLocaleLowerCase('ru-RU');
       const lastText = conversation.lastMessage?.text?.toLocaleLowerCase('ru-RU') ?? '';
       return !query || title.includes(query) || lastText.includes(query);
     });
-  }, [conversations, currentUser.id, filter, folders, listMode]);
+  }, [conversations, currentUser.id, filter, folders, listMode, t]);
 
   function selectConversation(conversation: Conversation) {
     const previousTyping = typingConversationRef.current;
@@ -1027,7 +1099,40 @@ export function MessengerScreen({
       setFilter('');
       selectConversation(conversation);
     } catch (error) {
-      setNotice(readableError(error, 'Не удалось открыть Избранное.'));
+      setNotice(readableError(error, t('msgr.openFavoritesFailed')));
+    }
+  }
+
+  /**
+   * Поддержка: сервер находит или заводит переписку с ботом и один раз
+   * показывает приветствие с меню. Дальше всё общение идёт кнопками и текстом.
+   */
+  async function openSupportConversation() {
+    try {
+      const conversation = await api.openSupport(token);
+      setConversations((current) => uniqueConversations([...current.filter((item) => item.id !== conversation.id), conversation]));
+      setListMode(conversation.archived ? 'archive' : 'inbox');
+      setFilter('');
+      selectConversation(conversation);
+    } catch (error) {
+      setNotice(readableError(error, t('msgr.openSupportFailed')));
+    }
+  }
+
+  /**
+   * Нажатие кнопки бота. Код действия уходит отдельным запросом, а не
+   * сообщением: в истории не остаётся служебных «нажатий». Ответ бота придёт
+   * по сокету, как обычное новое сообщение.
+   */
+  async function pressBotButton(conversationId: string, action: string) {
+    if (botActionBusy) return;
+    setBotActionBusy(true);
+    try {
+      await api.sendSupportAction(token, conversationId, action);
+    } catch (error) {
+      setNotice(readableError(error, t('msgr.supportActionFailed')));
+    } finally {
+      setBotActionBusy(false);
     }
   }
 
@@ -1060,15 +1165,15 @@ export function MessengerScreen({
           uniqueConversations([conversation, ...current.filter((item) => item.id !== conversation.id)]),
         );
         setSelectedId(conversation.id);
-        setNotice(`Вы вступили в группу «${groupTitle(conversation)}».`);
+        setNotice(t('msgr.joinedGroup', { title: groupTitle(conversation) }));
       })
       .catch((reason: unknown) => {
-        if (!cancelled) setNotice(readableError(reason, 'Ссылка-приглашение недействительна.'));
+        if (!cancelled) setNotice(readableError(reason, t('msgr.inviteInvalid')));
       });
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [t, token]);
 
   /** Из профиля участника группы открываем личный диалог с ним. */
   async function openDirectWith(user: User) {
@@ -1086,7 +1191,7 @@ export function MessengerScreen({
       setFilter('');
       setSelectedId(conversation.id);
     } catch (error) {
-      setNotice(readableError(error, 'Не удалось открыть диалог.'));
+      setNotice(readableError(error, t('msgr.openDialogFailed')));
     }
   }
 
@@ -1095,7 +1200,7 @@ export function MessengerScreen({
     setGroupInfoOpen(false);
     setConversations((current) => current.filter((item) => item.id !== conversationId));
     setSelectedId((current) => (current === conversationId ? null : current));
-    setNotice('Вы вышли из группы.');
+    setNotice(t('msgr.leftGroup'));
   }
 
   // Маршрутизация действий из боковой панели в стиле Telegram Desktop.
@@ -1111,10 +1216,13 @@ export function MessengerScreen({
       case 'create-channel':
       case 'calls':
         // Каналы и звонки — следующие в очереди, пока мягкая подсказка.
-        setNotice('Этот раздел появится позже.');
+        setNotice(t('sidebar.sectionLater'));
         return;
       case 'blocked':
         setBlockedUsersOpen(true);
+        return;
+      case 'friends':
+        setFriendsOpen(true);
         return;
       case 'favorites':
         void openSavedConversation();
@@ -1123,7 +1231,10 @@ export function MessengerScreen({
         setNotesOpen(true);
         return;
       case 'settings':
-        setProfileOpen(true);
+        setSettingsOpen(true);
+        return;
+      case 'support':
+        void openSupportConversation();
         return;
       case 'admin':
         setAdminPanelOpen(true);
@@ -1191,7 +1302,7 @@ export function MessengerScreen({
       }
       updateDraftAttachment(item.localId, {
         status: 'error',
-        error: readableError(error, 'Не удалось загрузить файл.'),
+        error: readableError(error, t('msgr.uploadFailed')),
       });
     } finally {
       uploadControllersRef.current.delete(item.localId);
@@ -1202,7 +1313,7 @@ export function MessengerScreen({
     if (files.length === 0) return;
     const freeSlots = Math.max(0, 10 - draftAttachments.length);
     if (freeSlots === 0) {
-      setNotice('К одному сообщению можно прикрепить не более 10 файлов.');
+      setNotice(t('msgr.tooManyFiles'));
       return;
     }
 
@@ -1223,7 +1334,7 @@ export function MessengerScreen({
         ...(validation.kind === 'image' ? { previewUrl: URL.createObjectURL(file) } : {}),
       });
     }
-    if (files.length > freeSlots) setNotice('Лишние файлы не добавлены: максимум 10 вложений.');
+    if (files.length > freeSlots) setNotice(t('msgr.extraFilesSkipped'));
     if (accepted.length === 0) return;
     setDraftAttachments((current) => [...current, ...accepted]);
     for (const item of accepted) void uploadDraftAttachment(item);
@@ -1294,7 +1405,7 @@ export function MessengerScreen({
           onLogout(true);
           return;
         }
-        setMessageError(readableError(error, 'Не удалось изменить сообщение.'));
+        setMessageError(readableError(error, t('msgr.editMessageFailed')));
       } finally {
         setSending(false);
         textareaRef.current?.focus();
@@ -1303,11 +1414,11 @@ export function MessengerScreen({
     }
 
     if (draftAttachments.some((item) => item.status === 'uploading' || item.status === 'ready')) {
-      setNotice('Дождитесь окончания загрузки файлов.');
+      setNotice(t('msgr.waitUpload'));
       return;
     }
     if (draftAttachments.some((item) => item.status === 'error')) {
-      setNotice('Повторите загрузку неудачных файлов или удалите их.');
+      setNotice(t('msgr.retryOrRemoveFiles'));
       return;
     }
     const uploadedAttachments = draftAttachments.flatMap((item) =>
@@ -1364,7 +1475,7 @@ export function MessengerScreen({
           message.id === pendingId ? { ...message, pending: false, failed: true } : message,
         ),
       );
-      setMessageError(readableError(error, 'Сообщение не отправлено.'));
+      setMessageError(readableError(error, t('msgr.messageNotSent')));
       setReplyingTo(null);
     } finally {
       setSending(false);
@@ -1391,7 +1502,7 @@ export function MessengerScreen({
       playSound('sent');
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setMessageError(readableError(error, 'Повторная отправка не удалась.'));
+      else setMessageError(readableError(error, t('msgr.resendFailed')));
     } finally {
       setRetryingId(null);
     }
@@ -1446,7 +1557,7 @@ export function MessengerScreen({
         onLogout(true);
         return;
       }
-      setMessageError(readableError(error, 'Не удалось изменить закреплённое сообщение.'));
+      setMessageError(readableError(error, t('msgr.pinChangeFailed')));
     }
   }
 
@@ -1503,7 +1614,7 @@ export function MessengerScreen({
       );
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setMessageError(readableError(error, 'Не удалось создать опрос.'));
+      else setMessageError(readableError(error, t('msgr.pollCreateFailed')));
     } finally {
       setPollBusy(false);
     }
@@ -1536,7 +1647,7 @@ export function MessengerScreen({
       ));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setMessageError(readableError(error, 'Не удалось изменить реакцию.'));
+      else setMessageError(readableError(error, t('msgr.reactionFailed')));
     }
   }
 
@@ -1548,22 +1659,22 @@ export function MessengerScreen({
         ? await api.removeFavorite(token, message.conversationId, message.id)
         : await api.addFavorite(token, message.conversationId, message.id);
       setMessages((current) => updateMessageReferences(current, updated));
-      setNotice(favorite ? 'Удалено из Избранного.' : 'Добавлено в Избранное.');
+      setNotice(favorite ? t('msgr.removedFromFavorites') : t('msgr.addedToFavorites'));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setMessageError(readableError(error, 'Не удалось изменить Избранное.'));
+      else setMessageError(readableError(error, t('msgr.favoriteFailed')));
     }
   }
 
   async function copyMessage(message: Message) {
     setMessageActionId(null);
     if (!message.text) {
-      setNotice('В этом сообщении нет текста для копирования.');
+      setNotice(t('msgr.noTextToCopy'));
       return;
     }
     try {
       await navigator.clipboard.writeText(message.text);
-      setNotice('Текст скопирован.');
+      setNotice(t('msgr.textCopied'));
     } catch {
       const field = document.createElement('textarea');
       field.value = message.text;
@@ -1573,7 +1684,7 @@ export function MessengerScreen({
       field.select();
       const copied = document.execCommand('copy');
       field.remove();
-      setNotice(copied ? 'Текст скопирован.' : 'Не удалось скопировать текст.');
+      setNotice(copied ? t('msgr.textCopied') : t('msgr.copyFailed'));
     }
   }
 
@@ -1587,10 +1698,10 @@ export function MessengerScreen({
       setFolderName('');
       setFolderCreateOpen(false);
       setListMode(`folder:${folder.id}`);
-      setNotice(`Папка «${folder.name}» создана.`);
+      setNotice(t('msgr.folderCreated', { name: folder.name }));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setNotice(readableError(error, 'Не удалось создать папку.'));
+      else setNotice(readableError(error, t('msgr.folderCreateFailed')));
     } finally {
       setFolderBusy(false);
     }
@@ -1608,12 +1719,12 @@ export function MessengerScreen({
       setFolders((current) => upsertFolder(current, updated));
       setNotice(
         inFolder
-          ? `Диалог убран из папки «${updated.name}».`
-          : `Диалог добавлен в папку «${updated.name}».`,
+          ? t('msgr.dialogRemovedFromFolder', { name: updated.name })
+          : t('msgr.dialogAddedToFolder', { name: updated.name }),
       );
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setNotice(readableError(error, 'Не удалось обновить папку.'));
+      else setNotice(readableError(error, t('msgr.folderUpdateFailed')));
     }
   }
 
@@ -1626,10 +1737,10 @@ export function MessengerScreen({
       const updated = await api.updateFolder(token, folder.id, { name });
       setFolders((current) => upsertFolder(current, updated));
       setFolderRenameOpen(false);
-      setNotice(`Папка переименована в «${updated.name}».`);
+      setNotice(t('msgr.folderRenamed', { name: updated.name }));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setNotice(readableError(error, 'Не удалось переименовать папку.'));
+      else setNotice(readableError(error, t('msgr.folderRenameFailed')));
     } finally {
       setFolderBusy(false);
     }
@@ -1649,10 +1760,10 @@ export function MessengerScreen({
       setListMode('inbox');
       setChatMenuOpen(false);
       setFolderRenameOpen(false);
-      setNotice(`Папка «${folder.name}» удалена.`);
+      setNotice(t('msgr.folderDeleted', { name: folder.name }));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setNotice(readableError(error, 'Не удалось удалить папку.'));
+      else setNotice(readableError(error, t('msgr.folderDeleteFailed')));
     } finally {
       setFolderBusy(false);
       setFolderDeleteConfirm(false);
@@ -1662,13 +1773,13 @@ export function MessengerScreen({
   function openSchedulePicker() {
     if (!selectedId || selectedUnavailable || sending) return;
     if (editingMessage) {
-      setNotice('Отложить можно только новое сообщение.');
+      setNotice(t('msgr.onlyNewCanSchedule'));
       return;
     }
     const text = draft.trim();
     const attachments = draftAttachments.flatMap((item) => (item.uploaded ? [item.uploaded] : []));
     if (!text && attachments.length === 0) {
-      setNotice('Напишите сообщение, которое нужно отложить.');
+      setNotice(t('msgr.writeToSchedule'));
       return;
     }
     setScheduleAt(minScheduleValue());
@@ -1695,10 +1806,10 @@ export function MessengerScreen({
       setReplyingTo(null);
       serverDraftsRef.current.delete(selectedId);
       void api.clearDraft(token, selectedId).catch(() => {});
-      setNotice(`Сообщение отправится ${formatScheduleTime(scheduled.sendAt)}.`);
+      setNotice(t('msgr.scheduledFor', { time: formatScheduleTime(scheduled.sendAt) }));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setNotice(readableError(error, 'Не удалось запланировать сообщение.'));
+      else setNotice(readableError(error, t('msgr.scheduleFailed')));
     } finally {
       setScheduleBusy(false);
     }
@@ -1708,10 +1819,10 @@ export function MessengerScreen({
     try {
       const cancelled = await api.cancelScheduledMessage(token, scheduledId);
       setScheduledMessages((current) => upsertScheduledMessage(current, cancelled));
-      setNotice('Отложенное сообщение отменено.');
+      setNotice(t('msgr.scheduledCancelled'));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setNotice(readableError(error, 'Не удалось отменить сообщение.'));
+      else setNotice(readableError(error, t('msgr.scheduleCancelFailed')));
     }
   }
 
@@ -1732,7 +1843,7 @@ export function MessengerScreen({
       if (input.archived === true) setSelectedId(null);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setMessageError(readableError(error, 'Не удалось изменить настройки диалога.'));
+      else setMessageError(readableError(error, t('msgr.dialogSettingsFailed')));
     }
   }
 
@@ -1742,7 +1853,7 @@ export function MessengerScreen({
       : new Date(Date.now() + milliseconds).toISOString();
     void updateSelectedConversationSettings(
       { mutedUntil },
-      milliseconds === 'forever' ? 'Уведомления отключены навсегда.' : 'Уведомления временно отключены.',
+      milliseconds === 'forever' ? t('msgr.notificationsOffForever') : t('msgr.notificationsOffTemp'),
     );
   }
 
@@ -1760,7 +1871,7 @@ export function MessengerScreen({
     const conversationId = selectedId;
     if (!conversationId) return;
     setMessageActionId(null);
-    if (!window.confirm('Удалить это сообщение у обоих участников?')) return;
+    if (!window.confirm(t('msgr.confirmDeleteMessage'))) return;
     setMessageError('');
     try {
       const result = await api.deleteMessage(token, conversationId, message.id);
@@ -1783,7 +1894,7 @@ export function MessengerScreen({
         onLogout(true);
         return;
       }
-      setMessageError(readableError(error, 'Не удалось удалить сообщение.'));
+      setMessageError(readableError(error, t('msgr.deleteMessageFailed')));
     }
   }
 
@@ -1799,7 +1910,7 @@ export function MessengerScreen({
   async function startVoiceRecording() {
     if (!selectedId || selectedBlockedByMe || sending || recording || recordPending || editingMessage) return;
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-      setNotice('Запись голоса доступна по HTTPS-адресу (порт 3443) в современном браузере.');
+      setNotice(t('msgr.voiceHttpsOnly'));
       return;
     }
     const conversationId = selectedId;
@@ -1826,7 +1937,7 @@ export function MessengerScreen({
           recordChunksRef.current.push(event.data);
           recordBytesRef.current += event.data.size;
           if (recordBytesRef.current >= 98 * 1024 * 1024 && recorder.state === 'recording') {
-            setNotice('Запись остановлена: достигнут предел размера файла.');
+            setNotice(t('msgr.recordSizeLimit'));
             stopVoiceRecording();
           }
         }
@@ -1836,6 +1947,7 @@ export function MessengerScreen({
       mediaRecorderRef.current = recorder;
       recordStartedAtRef.current = Date.now();
       voiceActiveRef.current = true;
+      recordingRef.current = true;
       setRecording(true);
       setRecordPreview(recordMode === 'video_circle' ? stream : null);
       setRecordingSeconds(0);
@@ -1848,7 +1960,7 @@ export function MessengerScreen({
     } catch {
       if (requestId === recordingRequestRef.current) {
         cancelVoiceRecording();
-        setNotice('Не удалось начать запись. Проверьте доступ к микрофону и камере.');
+        setNotice(t('msgr.recordStartFailed'));
       }
     } finally {
       if (requestId === recordingRequestRef.current) setRecordPending(false);
@@ -1885,6 +1997,7 @@ export function MessengerScreen({
     recordStreamRef.current = null;
     if (stream) for (const track of stream.getTracks()) track.stop();
     recordChunksRef.current = [];
+    recordingRef.current = false;
     setRecording(false);
     setRecordingSeconds(0);
   }
@@ -1901,34 +2014,46 @@ export function MessengerScreen({
     const durationMs = Math.max(1, (recordStoppedAtRef.current || Date.now()) - recordStartedAtRef.current);
     const durationSeconds = Math.min(durationMs / 1_000, mode === 'video_circle' ? 60 : Infinity);
     setRecordPreview(null);
+    recordingRef.current = false;
     setRecording(false);
     setRecordingSeconds(0);
     if (!stream) return;
     for (const track of stream.getTracks()) track.stop();
     let blob = new Blob(recordChunksRef.current, { type: recordMimeRef.current });
     recordChunksRef.current = [];
-    if (!conversationId || selectedIdRef.current !== conversationId) return;
+    if (!conversationId || selectedIdRef.current !== conversationId) {
+      // Беседа сменилась, пока писалось. Молчаливое «ничего не произошло»
+      // читалось как поломка записи — объясняем, почему её нет.
+      setNotice(t('msgr.recordingCancelled'));
+      return;
+    }
     if (blob.size > 100 * 1024 * 1024) {
-      setNotice('Запись превышает 100 МБ. Попробуйте более короткую запись.');
+      setNotice(t('msgr.recordTooBig'));
       return;
     }
     if (durationSeconds < 1 || blob.size === 0) {
-      setNotice('Запись слишком короткая — повторите.');
+      setNotice(t('msgr.recordTooShort'));
       return;
     }
     setSending(true);
     setMessageError('');
     try {
       if (blob.type.includes('webm')) blob = await fixWebmDuration(blob, durationMs, { logger: false });
-      if (requestId !== recordingRequestRef.current || selectedIdRef.current !== conversationId) return;
+      if (requestId !== recordingRequestRef.current || selectedIdRef.current !== conversationId) {
+        setNotice(t('msgr.recordingCancelled'));
+        return;
+      }
       const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
       const uploaded = await api.upload(
         token,
-        new File([blob], `${mode === 'video_circle' ? 'Видеокружок' : 'Голосовое сообщение'} (${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}).${extension}`, { type: blob.type }),
+        new File([blob], `${mode === 'video_circle' ? t('msgr.videoCircleName') : t('msgr.voiceMessageName')} (${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}).${extension}`, { type: blob.type }),
         'file',
         { mediaKind: mode, durationSeconds },
       );
-      if (requestId !== recordingRequestRef.current || selectedIdRef.current !== conversationId) return;
+      if (requestId !== recordingRequestRef.current || selectedIdRef.current !== conversationId) {
+        setNotice(t('msgr.recordingCancelled'));
+        return;
+      }
       const message = await api.sendRichMessage(token, conversationId, {
         attachmentIds: [uploaded.id],
       });
@@ -1948,7 +2073,7 @@ export function MessengerScreen({
         onLogout(true);
         return;
       }
-      setMessageError(readableError(error, 'Голосовое сообщение не отправлено.'));
+      setMessageError(readableError(error, t('msgr.voiceNotSent')));
     } finally {
       setSending(false);
     }
@@ -1996,8 +2121,8 @@ export function MessengerScreen({
         <div className="pointer-events-none fixed inset-0 z-[95] grid place-items-center bg-brand/10 backdrop-blur-[2px]" role="presentation">
           <div className="flex flex-col items-center gap-3 rounded-[1.75rem] border-2 border-dashed border-brand/70 bg-elevated/95 px-12 py-10 text-center shadow-float">
             <FileUp className="h-10 w-10 text-brand" />
-            <p className="text-lg font-semibold">Отпустите, чтобы прикрепить</p>
-            <p className="text-sm text-muted">Файлы добавятся к сообщению</p>
+            <p className="text-lg font-semibold">{t('msgr.dropToAttach')}</p>
+            <p className="text-sm text-muted">{t('msgr.dropHint')}</p>
           </div>
         </div>
       )}
@@ -2015,20 +2140,26 @@ export function MessengerScreen({
         <div className="flex min-h-0 w-full flex-1 overflow-hidden">
         <aside
           className={`${selectedId ? 'hidden md:flex' : 'flex'} chat-sidebar w-full shrink-0 flex-col border-line bg-surface md:w-[340px] md:border-r xl:w-[360px]`}
-          aria-label="Список диалогов"
+          aria-label={t('msgr.dialogListAria')}
         >
           <header className="shrink-0 border-b border-line px-3 pt-[max(0.5rem,env(safe-area-inset-top))] md:pt-2">
             <div className="flex items-center justify-between gap-3">
-              <Logo />
+              {/*
+                Значок Yargram в шапке списка чатов — ссылка на лендинг (`/`).
+                Полная навигация (не router), чтобы пользователь оказывался на
+                сайте Yargram, а не внутри SPA веб-версии. Сессия в localStorage
+                сохраняется, обратно в /app можно вернуться без повторного входа.
+              */}
+              <Logo href="/" title={t('brand.openSite')} />
               <div className="flex items-center gap-1">
                 <IconButton
-                  label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
+                  label={theme === 'dark' ? t('theme.light') : t('theme.dark')}
                   onClick={onToggleTheme}
                 >
                   {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
                 </IconButton>
                 <IconButton
-                  label="Главное меню"
+                  label={t('sidebar.mainMenu')}
                   aria-expanded={sidebarOpen}
                   onClick={() => setSidebarOpen(true)}
                 >
@@ -2039,28 +2170,28 @@ export function MessengerScreen({
 
             <div className="mt-2 flex gap-2">
               <label className="relative min-w-0 flex-1">
-                <span className="sr-only">Поиск по диалогам</span>
+                <span className="sr-only">{t('msgr.searchDialogs')}</span>
                 <Search className="pointer-events-none absolute left-3.5 top-3 h-4.5 w-4.5 text-muted" />
                 <input
                   type="search"
                   value={filter}
                   onChange={(event) => setFilter(event.target.value)}
                   className="h-11 w-full rounded-full border border-transparent bg-canvas pl-10 pr-9 text-sm outline-none transition placeholder:text-muted focus:border-brand focus:ring-2 focus:ring-brand/15"
-                  placeholder="Поиск"
+                  placeholder={t('common.search')}
                 />
                 {filter && (
                   <button
                     type="button"
                     className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-line/60"
                     onClick={() => setFilter('')}
-                    aria-label="Очистить поиск"
+                    aria-label={t('msgr.clearSearch')}
                   >
                     <X className="h-4 w-4" />
                   </button>
                 )}
               </label>
               <IconButton
-                label="Новый диалог"
+                label={t('msgr.newDialog')}
                 className="h-11 w-11 bg-brand text-white rounded-full hover:bg-brand-strong hover:text-white"
                 onClick={() => setSearchOpen(true)}
               >
@@ -2073,7 +2204,7 @@ export function MessengerScreen({
                 className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${listMode === 'inbox' ? 'border-brand bg-brand-soft text-brand' : 'border-transparent text-muted hover:bg-canvas hover:text-ink'}`}
                 onClick={() => setListMode('inbox')}
               >
-                <MessageCircleMore className="mr-1 inline h-3.5 w-3.5" /> Чаты
+                <MessageCircleMore className="mr-1 inline h-3.5 w-3.5" /> {t('sidebar.chats')}
               </button>
               {folders.map((folder) => {
                 const active = listMode === `folder:${folder.id}`;
@@ -2095,13 +2226,13 @@ export function MessengerScreen({
                 className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${listMode === 'archive' ? 'border-brand bg-brand-soft text-brand' : 'border-transparent text-muted hover:bg-canvas hover:text-ink'}`}
                 onClick={() => setListMode('archive')}
               >
-                <FolderArchive className="mr-1 inline h-3.5 w-3.5" /> Архив
+                <FolderArchive className="mr-1 inline h-3.5 w-3.5" /> {t('sidebar.archive')}
               </button>
               <button
                 type="button"
                 className="shrink-0 rounded-full border border-dashed border-line px-3 py-1.5 text-xs font-semibold text-muted transition hover:border-brand hover:text-brand"
                 onClick={() => setFolderCreateOpen(true)}
-                aria-label="Создать папку"
+                aria-label={t('msgr.createFolder')}
               >
                 <FolderPlus className="inline h-3.5 w-3.5" />
               </button>
@@ -2116,7 +2247,7 @@ export function MessengerScreen({
                 value={folderName}
                 maxLength={40}
                 onChange={(event) => setFolderName(event.target.value)}
-                placeholder="Название папки"
+                placeholder={t('msgr.folderNamePlaceholder')}
                 className="h-8 min-w-0 flex-1 bg-transparent text-sm outline-none"
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') void createFolder();
@@ -2127,7 +2258,7 @@ export function MessengerScreen({
                 }}
               />
               <IconButton
-                label="Сохранить папку"
+                label={t('msgr.saveFolder')}
                 className="h-8 w-8"
                 disabled={!folderName.trim() || folderBusy}
                 onClick={() => void createFolder()}
@@ -2135,7 +2266,7 @@ export function MessengerScreen({
                 <Check className="h-4 w-4" />
               </IconButton>
               <IconButton
-                label="Отмена"
+                label={t('common.cancel')}
                 className="h-8 w-8"
                 onClick={() => {
                   setFolderCreateOpen(false);
@@ -2158,8 +2289,8 @@ export function MessengerScreen({
                   <span className="mx-auto grid h-20 w-20 place-items-center rounded-[1.7rem] bg-brand-soft text-brand">
                     <UsersRound className="h-9 w-9" />
                   </span>
-                  <h2 className="mt-5 text-lg font-semibold">Начните разговор</h2>
-                  <p className="mt-2 text-sm leading-6 text-muted">Найдите участника Yargram и отправьте первое сообщение.</p>
+                  <h2 className="mt-5 text-lg font-semibold">{t('msgr.startConversation')}</h2>
+                  <p className="mt-2 text-sm leading-6 text-muted">{t('msgr.startConversationHint')}</p>
                   <Button className="mt-5" onClick={() => setSearchOpen(true)}>
                     <Plus className="h-4 w-4" /> Новый диалог
                   </Button>
@@ -2168,15 +2299,15 @@ export function MessengerScreen({
             )}
             {conversationState === 'ready' && conversations.length > 0 && visibleConversations.length === 0 && (
               <div className="px-8 py-16 text-center">
-                <p className="font-semibold">{listMode === 'archive' && !filter ? 'Архив пуст' : 'Ничего не найдено'}</p>
-                <p className="mt-1 text-sm text-muted">{listMode === 'archive' && !filter ? 'Архивированные диалоги появятся здесь.' : 'Попробуйте изменить запрос.'}</p>
+                <p className="font-semibold">{listMode === 'archive' && !filter ? t('msgr.archiveEmpty') : t('msgr.nothingFound')}</p>
+                <p className="mt-1 text-sm text-muted">{listMode === 'archive' && !filter ? t('msgr.archiveEmptyHint') : t('msgr.changeQueryHint')}</p>
               </div>
             )}
             {conversationState === 'ready' && visibleConversations.length > 0 && (
               <ul>
                 {visibleConversations.map((conversation) => {
                   const group = isGroup(conversation);
-                  const title = group ? groupTitle(conversation) : conversationTitle(conversation, currentUser.id);
+                  const title = group ? groupTitle(conversation) : conversationTitle(conversation, currentUser.id, t);
                   const peer = group ? null : getConversationPeer(conversation, currentUser.id);
                   const active = selectedId === conversation.id;
                   const unread = unreadBadgeText(conversation.unreadCount ?? 0);
@@ -2220,7 +2351,7 @@ export function MessengerScreen({
                         {unread && (
                           <span
                             className={`grid h-5 min-w-[20px] shrink-0 place-items-center rounded-full px-1.5 text-[11px] font-bold tabular-nums text-white ${conversationIsMuted(conversation) ? 'bg-[#8b93a7]' : 'bg-brand'}`}
-                            aria-label={`${unread} непрочитанных`}
+                            aria-label={t('msgr.unreadCount', { count: unread })}
                           >
                             {unread}
                           </span>
@@ -2240,27 +2371,47 @@ export function MessengerScreen({
               ) : (
                 <WifiOff className="h-3.5 w-3.5 text-danger" />
               )}
-              {socketState === 'connected' ? 'На связи' : socketState === 'connecting' ? 'Подключение…' : 'Нет realtime-связи'}
+              {socketState === 'connected' ? t('msgr.connected') : socketState === 'connecting' ? t('msgr.connecting') : t('msgr.noRealtime')}
             </span>
             <span>Yargram 0.1</span>
           </footer>
         </aside>
 
-        <section className={`chat-panel chat-wallpaper ${selectedId ? 'flex' : 'hidden md:flex'} min-w-0 flex-1 flex-col`} style={currentUser.wallpaperUrl ? { backgroundImage: `url(${currentUser.wallpaperUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' } : undefined} aria-label="Переписка">
+        <section
+          className={`chat-panel chat-wallpaper ${selectedId ? 'flex' : 'hidden md:flex'} relative isolate min-w-0 flex-1 flex-col`}
+          style={
+            // Видео рисуем отдельным слоем: фоновая картинка его не заменит.
+            wallpaperIsVideo || !currentUser.wallpaperUrl
+              ? undefined
+              : {
+                  backgroundImage: `url(${currentUser.wallpaperUrl})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                }
+          }
+          aria-label={t('msgr.correspondence')}
+        >
+          {/* Живой фон: слой под перепиской, нажатия не перехватывает. */}
+          {wallpaperIsVideo && currentUser.wallpaperUrl && (
+            <DecorativeVideo
+              src={currentUser.wallpaperUrl}
+              className="pointer-events-none absolute inset-0 -z-10 h-full w-full object-cover"
+            />
+          )}
           {!selectedConversation ? (
             <div className="grid h-full place-items-center px-8 text-center">
               <div className="max-w-sm animate-fade-in">
                 <span className="mx-auto grid h-24 w-24 place-items-center rounded-[2rem] bg-brand-soft text-brand shadow-sm">
                   <MessageCircleMore className="h-11 w-11" />
                 </span>
-                <h1 className="mt-6 text-2xl font-black tracking-[-0.035em]">Ваши сообщения</h1>
-                <p className="mt-2 text-sm leading-6 text-muted">Выберите диалог слева или найдите человека, которому хотите написать.</p>
+                <h1 className="mt-6 text-2xl font-black tracking-[-0.035em]">{t('msgr.yourMessages')}</h1>
+                <p className="mt-2 text-sm leading-6 text-muted">{t('msgr.chooseDialogHint')}</p>
               </div>
             </div>
           ) : (
             <>
               <header className="flex min-h-[60px] shrink-0 items-center gap-1 border-b border-line bg-surface px-2 py-2 pt-[max(0.5rem,env(safe-area-inset-top))] sm:gap-2 sm:px-4">
-                <IconButton label="Назад к диалогам" className="md:hidden" onClick={() => setSelectedId(null)}>
+                <IconButton label={t('msgr.backToDialogs')} className="md:hidden" onClick={() => setSelectedId(null)}>
                   <ArrowLeft className="h-5 w-5" />
                 </IconButton>
                 <button
@@ -2270,20 +2421,20 @@ export function MessengerScreen({
                   disabled={!selectedPeer && !selectedIsGroup}
                   title={
                     selectedIsGroup
-                      ? 'Информация о группе'
+                      ? t('msgr.groupInfo')
                       : selectedPeer
-                        ? 'Открыть профиль собеседника'
-                        : 'Ваше личное пространство'
+                        ? t('msgr.openPeerProfile')
+                        : t('msgr.yourSpace')
                   }
                 >
                   {selectedConversation.type === 'saved' ? <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brand-soft text-brand"><Bookmark className="h-5 w-5" /></span> : <Avatar
-                    name={selectedIsGroup ? groupTitle(selectedConversation) : conversationTitle(selectedConversation, currentUser.id)}
+                    name={selectedIsGroup ? groupTitle(selectedConversation) : conversationTitle(selectedConversation, currentUser.id, t)}
                     src={conversationAvatar(selectedConversation, currentUser.id)}
                     size="sm"
                     online={!selectedIsGroup && selectedPeer && !selectedBlockedByPeer ? isUserOnline(selectedPeer) : undefined}
                     {...(selectedIsGroup
                       ? { seed: selectedConversation.id }
-                      : avatarProps(selectedPeer, conversationTitle(selectedConversation, currentUser.id)))}
+                      : avatarProps(selectedPeer, conversationTitle(selectedConversation, currentUser.id, t)))}
                   />}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold sm:text-[15px]">
@@ -2295,7 +2446,7 @@ export function MessengerScreen({
                         />
                       ) : (
                         <UserName
-                          name={conversationTitle(selectedConversation, currentUser.id)}
+                          name={conversationTitle(selectedConversation, currentUser.id, t)}
                           user={selectedPeer}
                         />
                       )}
@@ -2310,17 +2461,17 @@ export function MessengerScreen({
                       {selectedIsGroup
                         ? groupSubtitle(selectedConversation)
                         : peerTyping
-                          ? 'Печатает…'
+                          ? t('msgr.typing')
                           : selectedPeer
-                            ? formatLastSeen(selectedPeer)
+                            ? formatLastSeen(selectedPeer, t)
                             : selectedConversation.type === 'saved'
-                              ? 'Сообщения и файлы для себя'
-                              : 'Личный диалог'}
+                              ? t('msgr.selfNotes')
+                              : t('msgr.privateDialog')}
                     </span>
                   </span>
                 </button>
                 <IconButton
-                  label="Поиск в чате"
+                  label={t('msgr.searchInChat')}
                   className={chatSearchOpen ? 'bg-brand-soft text-brand' : ''}
                   onClick={() => setChatSearchOpen((open) => !open)}
                 >
@@ -2328,7 +2479,7 @@ export function MessengerScreen({
                 </IconButton>
                 {/* В группах звонков пока нет: они остаются личными, как в планах. */}
                 {selectedPeer && !selectedIsGroup && <><IconButton
-                  label="Аудиозвонок"
+                  label={t('msgr.audioCall')}
                   disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked || selectedPeerFrozen || viewerFrozen}
                   onClick={() =>
                     selectedPeer &&
@@ -2338,7 +2489,7 @@ export function MessengerScreen({
                   <Phone className="h-5 w-5" />
                 </IconButton>
                 <IconButton
-                  label="Видеозвонок"
+                  label={t('msgr.videoCall')}
                   disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked || selectedPeerDeleted || selectedPeerFrozen || viewerFrozen}
                   onClick={() =>
                     selectedPeer &&
@@ -2349,7 +2500,7 @@ export function MessengerScreen({
                 </IconButton></>}
                 {selectedConversation.type !== 'saved' && <div className="relative">
                   <IconButton
-                    label="Настройки диалога"
+                    label={t('msgr.dialogSettings')}
                     aria-expanded={chatMenuOpen}
                     onClick={() => setChatMenuOpen((open) => !open)}
                   >
@@ -2359,42 +2510,42 @@ export function MessengerScreen({
                     <div className="absolute right-0 top-12 z-40 w-64 animate-fade-in rounded-2xl border border-line bg-elevated p-2 shadow-float">
                       {selectedIsGroup ? (
                         <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setChatMenuOpen(false); setGroupInfoOpen(true); }}>
-                          <UsersRound className="h-4 w-4 text-brand" /> Информация о группе
+                          <UsersRound className="h-4 w-4 text-brand" /> {t('msgr.groupInfo')}
                         </button>
                       ) : (
                         <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setChatMenuOpen(false); setPeerProfileOpen(true); }}>
-                          <UserRound className="h-4 w-4 text-brand" /> Профиль собеседника
+                          <UserRound className="h-4 w-4 text-brand" /> {t('msgr.peerProfile')}
                         </button>
                       )}
-                      <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void updateSelectedConversationSettings({ archived: !selectedConversation.archived }, selectedConversation.archived ? 'Диалог возвращён из архива.' : 'Диалог перемещён в архив.')}>
+                      <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void updateSelectedConversationSettings({ archived: !selectedConversation.archived }, selectedConversation.archived ? t('msgr.dialogReturnedFromArchive') : t('msgr.dialogArchived'))}>
                         {selectedConversation.archived ? <ArchiveRestore className="h-4 w-4 text-brand" /> : <Archive className="h-4 w-4 text-brand" />}
-                        {selectedConversation.archived ? 'Вернуть из архива' : 'Архивировать'}
+                        {selectedConversation.archived ? t('msgr.returnFromArchive') : t('msgr.archive')}
                       </button>
                       {conversationIsMuted(selectedConversation) ? (
-                        <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void updateSelectedConversationSettings({ mutedUntil: null }, 'Уведомления включены.')}>
-                          <Bell className="h-4 w-4 text-brand" /> Включить уведомления
+                        <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void updateSelectedConversationSettings({ mutedUntil: null }, t('msgr.notificationsOn'))}>
+                          <Bell className="h-4 w-4 text-brand" /> {t('msgr.enableNotifications')}
                         </button>
                       ) : (
                         <div className="mt-1 border-t border-line pt-1">
-                          <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-muted">Отключить уведомления</p>
+                          <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-muted">{t('msgr.disableNotifications')}</p>
                           {[
-                            ['На 1 час', 60 * 60 * 1_000],
-                            ['На 8 часов', 8 * 60 * 60 * 1_000],
-                            ['На 1 день', 24 * 60 * 60 * 1_000],
+                            [t('msgr.mute1Hour'), 60 * 60 * 1_000],
+                            [t('msgr.mute8Hours'), 8 * 60 * 60 * 1_000],
+                            [t('msgr.mute1Day'), 24 * 60 * 60 * 1_000],
                           ].map(([label, duration]) => (
                             <button key={String(label)} type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-1.5 text-xs font-semibold hover:bg-brand-soft/55" onClick={() => muteFor(duration as number)}>
                               <BellOff className="h-3.5 w-3.5 text-muted" /> {label}
                             </button>
                           ))}
                           <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-1.5 text-xs font-semibold hover:bg-brand-soft/55" onClick={() => muteFor('forever')}>
-                            <BellOff className="h-3.5 w-3.5 text-muted" /> Навсегда
+                            <BellOff className="h-3.5 w-3.5 text-muted" /> {t('msgr.forever')}
                           </button>
                         </div>
                       )}
                       <div className="mt-1 border-t border-line pt-1">
-                        <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-muted">Папки</p>
+                        <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-muted">{t('msgr.folders')}</p>
                         {folders.length === 0 && (
-                          <p className="px-3 py-1 text-xs text-muted">Создайте папку кнопкой + в списке диалогов.</p>
+                          <p className="px-3 py-1 text-xs text-muted">{t('msgr.createFolderHint')}</p>
                         )}
                         {folders.map((folder) => {
                           const inFolder = folder.conversationIds.includes(selectedConversation.id);
@@ -2414,7 +2565,7 @@ export function MessengerScreen({
                         {activeFolder && (
                           <>
                             <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-muted">
-                              Папка «{activeFolder.name}»
+                              {t('msgr.folderTitle', { name: activeFolder.name })}
                             </p>
                             {folderRenameOpen ? (
                               <div className="flex items-center gap-1 px-2 py-1">
@@ -2430,7 +2581,7 @@ export function MessengerScreen({
                                   }}
                                 />
                                 <IconButton
-                                  label="Сохранить название"
+                                  label={t('msgr.saveName')}
                                   className="h-8 w-8"
                                   disabled={folderBusy}
                                   onClick={() => void renameActiveFolder()}
@@ -2448,7 +2599,7 @@ export function MessengerScreen({
                                   setFolderDeleteConfirm(false);
                                 }}
                               >
-                                <Pencil className="h-3.5 w-3.5 text-muted" /> Переименовать папку
+                                <Pencil className="h-3.5 w-3.5 text-muted" /> {t('msgr.renameFolder')}
                               </button>
                             )}
                             <button
@@ -2458,7 +2609,7 @@ export function MessengerScreen({
                               onClick={() => void deleteActiveFolder()}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
-                              {folderDeleteConfirm ? 'Нажмите ещё раз для удаления' : 'Удалить папку'}
+                              {folderDeleteConfirm ? t('msgr.confirmFolderDelete') : t('msgr.deleteFolder')}
                             </button>
                           </>
                         )}
@@ -2474,7 +2625,7 @@ export function MessengerScreen({
                   className="flex w-full items-center gap-2 border-b border-line bg-brand-soft/50 px-4 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft/70"
                   onClick={() => setScheduledListOpen(true)}
                 >
-                  <Clock className="h-3.5 w-3.5" /> Запланированных сообщений: {pendingScheduled.length}
+                  <Clock className="h-3.5 w-3.5" /> {t('msgr.scheduledCount', { count: pendingScheduled.length })}
                 </button>
               )}
 
@@ -2487,9 +2638,9 @@ export function MessengerScreen({
                     value={chatSearch}
                     onChange={(event) => setChatSearch(event.target.value.slice(0, 4_000))}
                     className="h-9 min-w-0 flex-1 rounded-xl border border-line bg-canvas px-3 text-sm outline-none focus:border-brand/50"
-                    placeholder="Поиск по сообщениям"
+                    placeholder={t('msgr.searchMessages')}
                   />
-                  <IconButton label="Закрыть поиск" className="h-8 w-8 rounded-xl" onClick={() => { setChatSearchOpen(false); setChatSearch(''); }}>
+                  <IconButton label={t('msgr.closeSearch')} className="h-8 w-8 rounded-xl" onClick={() => { setChatSearchOpen(false); setChatSearch(''); }}>
                     <X className="h-4 w-4" />
                   </IconButton>
                 </div>
@@ -2524,14 +2675,14 @@ export function MessengerScreen({
                   <div className="grid h-full min-h-[260px] place-items-center px-8 text-center">
                     <div>
                       <Avatar
-                        name={conversationTitle(selectedConversation, currentUser.id)}
+                        name={conversationTitle(selectedConversation, currentUser.id, t)}
                         src={conversationAvatar(selectedConversation, currentUser.id)}
                         size="xl"
                         className="justify-center"
-                        {...avatarProps(selectedPeer, conversationTitle(selectedConversation, currentUser.id))}
+                        {...avatarProps(selectedPeer, conversationTitle(selectedConversation, currentUser.id, t))}
                       />
-                      <p className="mt-4 font-semibold">Диалог создан</p>
-                      <p className="mt-1 text-sm leading-6 text-muted">Напишите первое сообщение — оно появится здесь мгновенно.</p>
+                      <p className="mt-4 font-semibold">{t('msgr.dialogCreated')}</p>
+                      <p className="mt-1 text-sm leading-6 text-muted">{t('msgr.dialogCreatedHint')}</p>
                     </div>
                   </div>
                 )}
@@ -2577,11 +2728,11 @@ export function MessengerScreen({
                                       className="block rounded-full transition hover:opacity-90"
                                       onClick={() => selectedPeer && setPeerProfileOpen(true)}
                                       disabled={!selectedPeer}
-                                      title={sender?.displayName ? `Открыть профиль ${sender.displayName}` : undefined}
-                                      aria-label={sender?.displayName ? `Открыть профиль ${sender.displayName}` : undefined}
+                                      title={sender?.displayName ? t('msgr.openProfileOf', { name: sender.displayName }) : undefined}
+                                      aria-label={sender?.displayName ? t('msgr.openProfileOf', { name: sender.displayName }) : undefined}
                                     >
                                       <Avatar
-                                        name={sender?.displayName ?? 'Пользователь'}
+                                        name={sender?.displayName ?? t('msgr.userFallback')}
                                         src={sender?.avatarUrl ?? sender?.avatar?.url}
                                         size="sm"
                                         {...avatarProps(sender ?? null)}
@@ -2595,7 +2746,7 @@ export function MessengerScreen({
                                   <button
                                     type="button"
                                     className="mb-1 grid h-8 w-8 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface hover:text-brand"
-                                    aria-label="Действия с сообщением"
+                                    aria-label={t('msgr.messageActions')}
                                     aria-expanded={messageActionId === message.id}
                                     onClick={() => setMessageActionId((current) => (current === message.id ? null : message.id))}
                                   >
@@ -2605,32 +2756,32 @@ export function MessengerScreen({
                                 {messageActionId === message.id && (
                                   <div className={`absolute bottom-10 z-30 w-56 max-h-[70dvh] overflow-y-auto rounded-2xl border border-line bg-elevated p-1.5 text-ink shadow-float ${mine ? 'right-9' : 'left-9'}`}>
                                     <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setMessageActionId(null); setReactionPickerId(message.id); }}>
-                                      <Smile className="h-4 w-4 text-brand" /> Реакция
+                                      <Smile className="h-4 w-4 text-brand" /> {t('msgr.reaction')}
                                     </button>
                                     <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => beginReply(message)}>
-                                      <Reply className="h-4 w-4 text-brand" /> Ответить
+                                      <Reply className="h-4 w-4 text-brand" /> {t('msgr.reply')}
                                     </button>
                                     <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void copyMessage(message)}>
-                                      <Copy className="h-4 w-4 text-brand" /> Копировать
+                                      <Copy className="h-4 w-4 text-brand" /> {t('common.copy')}
                                     </button>
                                     <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setMessageActionId(null); setForwardingMessage(message); }}>
-                                      <Forward className="h-4 w-4 text-brand" /> Переслать
+                                      <Forward className="h-4 w-4 text-brand" /> {t('msgr.forward')}
                                     </button>
                                     <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void toggleFavorite(message)}>
                                       {favorite ? <StarOff className="h-4 w-4 text-brand" /> : <Star className="h-4 w-4 text-brand" />}
-                                      {favorite ? 'Убрать из Избранного' : 'В Избранное'}
+                                      {favorite ? t('msgr.removeFromFavorites') : t('msgr.toFavorites')}
                                     </button>
                                     <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void togglePin(message)}>
                                       {pinned ? <PinOff className="h-4 w-4 text-brand" /> : <Pin className="h-4 w-4 text-brand" />}
-                                      {pinned ? 'Открепить' : 'Закрепить'}
+                                      {pinned ? t('msgr.unpin') : t('msgr.pin')}
                                     </button>
                                     {mine && (
                                       <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => beginEdit(message)}>
-                                        <Pencil className="h-4 w-4 text-brand" /> Изменить
+                                        <Pencil className="h-4 w-4 text-brand" /> {t('common.edit')}
                                       </button>
                                     )}
                                     <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold text-danger hover:bg-danger/10" onClick={() => void deleteMessage(message)}>
-                                      <Trash2 className="h-4 w-4" /> Удалить у обоих
+                                      <Trash2 className="h-4 w-4" /> {t('msgr.deleteForBoth')}
                                     </button>
                                   </div>
                                 )}
@@ -2655,7 +2806,7 @@ export function MessengerScreen({
                                       <p className="mb-1 flex items-center gap-1.5 text-[11px] font-bold text-brand">
                                         <UserName
                                           size="sm"
-                                          name={message.sender?.displayName ?? message.author?.displayName ?? selectedPeer?.displayName ?? 'Собеседник'}
+                                          name={message.sender?.displayName ?? message.author?.displayName ?? selectedPeer?.displayName ?? t('msgr.peerFallback')}
                                           user={message.sender ?? message.author ?? selectedPeer}
                                         />
                                         {/* В группе рядом с именем — тег, покрашенный по роли. */}
@@ -2664,7 +2815,7 @@ export function MessengerScreen({
                                     )}
                                     {message.forwardedFrom && (
                                       <p className={`mb-1 flex items-center gap-1 text-[10px] font-semibold ${mine ? 'text-ink/65' : 'text-muted'}`}>
-                                        <Forward className="h-3 w-3" /> Переслано от <UserName size="sm" name={message.forwardedFrom.sender?.displayName ?? 'пользователя'} user={message.forwardedFrom.sender} />
+                                        <Forward className="h-3 w-3" /> {t('msgr.forwardedFrom')} <UserName size="sm" name={message.forwardedFrom.sender?.displayName ?? t('msgr.forwardedFromUser')} user={message.forwardedFrom.sender} />
                                       </p>
                                     )}
                                     {message.replyTo ? (
@@ -2676,7 +2827,7 @@ export function MessengerScreen({
                                         <span className={`block text-[10px] font-bold ${mine ? 'text-brand' : 'text-brand'}`}>
                                           <UserName
                                             size="sm"
-                                            name={message.replyTo.sender?.displayName ?? (messageSenderId(message.replyTo) === currentUser.id ? currentUser.displayName : selectedPeer?.displayName ?? 'Собеседник')}
+                                            name={message.replyTo.sender?.displayName ?? (messageSenderId(message.replyTo) === currentUser.id ? currentUser.displayName : selectedPeer?.displayName ?? t('msgr.peerFallback'))}
                                             user={message.replyTo.sender ?? (messageSenderId(message.replyTo) === currentUser.id ? currentUser : selectedPeer)}
                                           />
                                         </span>
@@ -2684,7 +2835,7 @@ export function MessengerScreen({
                                       </button>
                                     ) : message.replyToId ? (
                                       <div className={`mb-2 rounded-xl border-l-2 px-2.5 py-1.5 text-xs ${mine ? 'border-brand/50 bg-brand/10 text-ink/65' : 'border-line bg-canvas text-muted'}`}>
-                                        Исходное сообщение удалено
+                                        {t('msgr.originalDeleted')}
                                       </div>
                                     ) : null}
                                     <MessageAttachments
@@ -2703,19 +2854,19 @@ export function MessengerScreen({
                                         onVote={(optionIds) =>
                                           void runPollAction(
                                             () => api.votePoll(token, message.id, optionIds),
-                                            'Не удалось проголосовать.',
+                                            t('msgr.voteFailed'),
                                           )
                                         }
                                         onAddOption={(text) =>
                                           void runPollAction(
                                             () => api.addPollOption(token, message.id, text),
-                                            'Не удалось добавить вариант.',
+                                            t('msgr.addOptionFailed'),
                                           )
                                         }
                                         onClosePoll={() =>
                                           void runPollAction(
                                             () => api.closePoll(token, message.id),
-                                            'Не удалось остановить опрос.',
+                                            t('msgr.stopPollFailed'),
                                           )
                                         }
                                       />
@@ -2726,21 +2877,42 @@ export function MessengerScreen({
                                         </p>
                                       )
                                     )}
+                                    {/* Кнопки бота: под текстом, во всю ширину пузыря.
+                                        Нажатие уходит кодом действия, а не сообщением. */}
+                                    {message.keyboard && message.keyboard.length > 0 && (
+                                      <div className="mt-2 space-y-1">
+                                        {message.keyboard.map((row, rowIndex) => (
+                                          <div key={`${message.id}-row-${rowIndex}`} className="flex gap-1">
+                                            {row.map((button) => (
+                                              <button
+                                                key={`${message.id}-${button.action}`}
+                                                type="button"
+                                                disabled={botActionBusy}
+                                                onClick={() => void pressBotButton(message.conversationId, button.action)}
+                                                className={`flex-1 rounded-lg border border-brand/30 bg-brand-soft/50 px-2 py-1.5 text-[12px] font-bold text-brand transition hover:bg-brand-soft disabled:opacity-60 ${mine ? 'bg-brand/10' : ''}`}
+                                              >
+                                                {button.label}
+                                              </button>
+                                            ))}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                     <span className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${mine ? 'text-ink/60' : 'text-muted'}`}>
-                                      {message.editedAt && !message.failed && 'изменено · '}
-                                      {message.failed ? 'Не отправлено' : formatMessageTime(message.createdAt)}
-                                      {favorite && <Star className="h-3 w-3 fill-current" aria-label="В Избранном" />}
+                                      {message.editedAt && !message.failed && t('msgr.edited')}
+                                      {message.failed ? t('msgr.notSent') : formatMessageTime(message.createdAt)}
+                                      {favorite && <Star className="h-3 w-3 fill-current" aria-label={t('msgr.inFavorites')} />}
                                       {mine && !message.failed && (
                                         message.pending
                                           ? <Spinner className="h-3 w-3" />
                                           : readByPeer
-                                            ? <CheckCheck className="h-3.5 w-3.5" aria-label="Прочитано" />
-                                            : <Check className="h-3.5 w-3.5" aria-label="Отправлено" />
+                                            ? <CheckCheck className="h-3.5 w-3.5" aria-label={t('msgr.read')} />
+                                            : <Check className="h-3.5 w-3.5" aria-label={t('msgr.sent')} />
                                       )}
                                     </span>
                                     {message.failed && (
                                       <button type="button" className={`mt-2 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold ${mine ? 'bg-danger/10 text-danger' : 'bg-danger/10 text-danger'}`} disabled={retryingId === message.id} onClick={() => void retryMessage(message)}>
-                                        <RotateCcw className={`h-3 w-3 ${retryingId === message.id ? 'animate-spin' : ''}`} /> Повторить отправку
+                                        <RotateCcw className={`h-3 w-3 ${retryingId === message.id ? 'animate-spin' : ''}`} /> {t('msgr.retrySend')}
                                       </button>
                                     )}
                                   </div>
@@ -2774,7 +2946,7 @@ export function MessengerScreen({
                 )}
                 {selectedBlocked && (
                   <p className="mx-auto mb-2 max-w-[920px] rounded-xl bg-danger/10 px-3 py-2 text-center text-xs font-semibold text-danger">
-                    Общение заблокировано. Разблокируйте пользователя в его профиле.
+                    {t('msgr.communicationBlocked')}
                   </p>
                 )}
                 {recording && (
@@ -2783,9 +2955,9 @@ export function MessengerScreen({
                       <span className="absolute inline-flex h-4 w-4 animate-ping rounded-full bg-danger/40" />
                       <span className="relative h-3.5 w-3.5 rounded-full bg-danger" />
                     </span>
-                    {recordPreview && <video autoPlay muted playsInline aria-label="Предпросмотр видеокружка" className="h-20 w-20 shrink-0 rounded-full object-cover" ref={(element) => { if (element && element.srcObject !== recordPreview) element.srcObject = recordPreview; }} />}
+                    {recordPreview && <video autoPlay muted playsInline aria-label={t('msgr.videoCirclePreview')} className="h-20 w-20 shrink-0 rounded-full object-cover" ref={(element) => { if (element && element.srcObject !== recordPreview) element.srcObject = recordPreview; }} />}
                     <span className="min-w-0 flex-1">
-                      <span className="block text-xs font-bold text-danger">{recordMode === 'video_circle' ? 'Идёт запись видеокружка' : 'Идёт запись голосового сообщения'}</span>
+                      <span className="block text-xs font-bold text-danger">{recordMode === 'video_circle' ? t('msgr.recordingVideoCircle') : t('msgr.recordingVoice')}</span>
                       <span className="block font-mono text-sm font-bold text-ink">
                         {Math.floor(recordingSeconds / 60)}:{String(recordingSeconds % 60).padStart(2, '0')}{recordMode === 'video_circle' ? ' / 1:00' : ''}
                       </span>
@@ -2794,7 +2966,7 @@ export function MessengerScreen({
                       type="button"
                       className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-danger text-white transition hover:bg-danger/85"
                       onClick={stopVoiceRecording}
-                      aria-label="Остановить запись и отправить"
+                      aria-label={t('msgr.stopAndSend')}
                     >
                       <Mic className="h-4 w-4" />
                     </button>
@@ -2802,7 +2974,7 @@ export function MessengerScreen({
                       type="button"
                       className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-danger transition hover:bg-danger/10"
                       onClick={cancelVoiceRecording}
-                      aria-label="Отменить запись"
+                      aria-label={t('msgr.cancelRecording')}
                     >
                       <X className="h-4 w-4" />
                     </button>
@@ -2818,12 +2990,12 @@ export function MessengerScreen({
                     {editingMessage ? <Pencil className="h-4 w-4 shrink-0 text-brand" /> : <Reply className="h-4 w-4 shrink-0 text-brand" />}
                     <div className="min-w-0 flex-1">
                       <p className="text-[11px] font-bold text-brand">
-                        {editingMessage ? 'Изменение сообщения' : 'Ответ на сообщение'}
+                        {editingMessage ? t('msgr.editingMessage') : t('msgr.replyingTo')}
                       </p>
                       <p className="truncate text-xs text-muted">{(editingMessage ?? replyingTo)?.text}</p>
                     </div>
                     <IconButton
-                      label="Отменить"
+                      label={t('msgr.cancel')}
                       className="h-8 w-8 rounded-xl"
                       onClick={() => {
                         if (editingMessage) setDraft('');
@@ -2840,27 +3012,25 @@ export function MessengerScreen({
                     {viewerFrozen ? (
                       <>
                         <Snowflake className="h-4 w-4 shrink-0 text-brand" />
-                        Аккаунт заморожен — доступен только просмотр. Отправка сообщений, звонки
-                        и изменения недоступны.
+                        {t('msgr.frozenViewOnlyLong')}
                       </>
                     ) : selectedPeerDeleted ? (
                       <>
                         <UserRound className="h-4 w-4 shrink-0 text-muted" />
-                        Аккаунт удалён — поле ввода закрыто. Сообщения из истории остаются доступными.
+                        {t('msgr.peerDeletedCompose')}
                       </>
                     ) : selectedPeerFrozen ? (
                       <>
                         <Snowflake className="h-4 w-4 shrink-0 text-brand" />
-                        Аккаунт собеседника заморожен — отправка недоступна. История переписки
-                        остаётся доступной.
+                        {t('msgr.peerFrozenCompose')}
                       </>
                     ) : (
                       <>
                         <Ban className="h-4 w-4 shrink-0 text-muted" />
                         {/* Мьют со сроком: говорим, до какого времени закрыто письмо. */}
                         {muteDeadline
-                          ? `В этой группе вам запрещено писать ${muteDeadline}.`
-                          : 'В этой группе вам запрещено писать. Права выдаёт владелец группы.'}
+                          ? t('msgr.groupWriteForbiddenUntil', { until: muteDeadline })
+                          : t('msgr.groupWriteForbidden')}
                       </>
                     )}
                   </p>
@@ -2876,7 +3046,7 @@ export function MessengerScreen({
                   />
                   {canSendPolls && (
                     <IconButton
-                      label="Создать опрос"
+                      label={t('msgr.createPoll')}
                       type="button"
                       disabled={sending || selectedBlockedByMe || Boolean(editingMessage)}
                       className="h-11 w-11 shrink-0"
@@ -2886,7 +3056,7 @@ export function MessengerScreen({
                     </IconButton>
                   )}
                   <IconButton
-                    label={canAttach ? 'Прикрепить фото или файл' : 'В этой группе запрещены медиа'}
+                    label={canAttach ? t('msgr.attachMedia') : t('msgr.mediaForbidden')}
                     type="button"
                     disabled={sending || selectedBlockedByMe || !canAttach || Boolean(editingMessage)}
                     className="h-11 w-11 shrink-0"
@@ -2895,7 +3065,7 @@ export function MessengerScreen({
                     <FileUp className="h-5 w-5" />
                   </IconButton>
                   <IconButton
-                    label={recording ? 'Остановить запись' : recordPending ? 'Ожидание доступа к устройству' : recordMode === 'video_circle' ? 'Записать видеокружок' : 'Голосовое сообщение'}
+                    label={recording ? t('msgr.stopRecording') : recordPending ? t('msgr.waitingDevice') : recordMode === 'video_circle' ? t('msgr.recordVideoCircle') : t('msgr.voiceMessage')}
                     type="button"
                     disabled={sending || selectedBlockedByMe || !canAttach || Boolean(editingMessage) || recordPending}
                     className={`h-11 w-11 shrink-0 ${recording ? 'bg-danger text-white hover:bg-danger/85' : ''}`}
@@ -2906,12 +3076,12 @@ export function MessengerScreen({
                   >
                     {recording ? <span className="h-3 w-3 rounded-full bg-white" /> : recordMode === 'video_circle' ? <Video className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
                   </IconButton>
-                  <IconButton type="button" label={recordMode === 'voice' ? 'Переключить на видеокружок' : 'Переключить на голосовое сообщение'} disabled={recording || recordPending || sending} className="h-11 w-8 shrink-0" onClick={() => setRecordMode((mode) => mode === 'voice' ? 'video_circle' : 'voice')}>
+                  <IconButton type="button" label={recordMode === 'voice' ? t('msgr.switchToVideoCircle') : t('msgr.switchToVoice')} disabled={recording || recordPending || sending} className="h-11 w-8 shrink-0" onClick={() => setRecordMode((mode) => mode === 'voice' ? 'video_circle' : 'voice')}>
                     {recordMode === 'voice' ? <Video className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
                   </IconButton>
                   <div className="relative">
                     <IconButton
-                      label="Добавить эмодзи"
+                      label={t('msgr.addEmoji')}
                       type="button"
                       disabled={sending || selectedBlockedByMe}
                       className={`h-11 w-11 shrink-0 ${emojiOpen ? 'bg-brand-soft text-brand' : ''}`}
@@ -2939,7 +3109,7 @@ export function MessengerScreen({
                   </div>
                   <div className="relative">
                     <IconButton
-                      label="Отправить позже"
+                      label={t('msgr.sendLater')}
                       type="button"
                       disabled={sending || selectedBlockedByMe || Boolean(editingMessage) || recording}
                       className={`h-11 w-11 shrink-0 ${scheduleOpen ? 'bg-brand-soft text-brand' : ''}`}
@@ -2949,7 +3119,7 @@ export function MessengerScreen({
                     </IconButton>
                     {scheduleOpen && (
                       <div className="absolute bottom-14 right-0 z-30 w-64 animate-fade-in rounded-2xl border border-line bg-elevated p-3 shadow-float">
-                        <p className="text-sm font-semibold">Отправить позже</p>
+                        <p className="text-sm font-semibold">{t('msgr.sendLater')}</p>
                         <input
                           type="datetime-local"
                           value={scheduleAt}
@@ -2963,14 +3133,14 @@ export function MessengerScreen({
                           loading={scheduleBusy}
                           onClick={() => void scheduleMessage()}
                         >
-                          Запланировать
+                          {t('msgr.schedule')}
                         </Button>
                       </div>
                     )}
                   </div>
 
                   <label className="min-w-0 flex-1">
-                    <span className="sr-only">Сообщение</span>
+                    <span className="sr-only">{t('msgr.messageLabel')}</span>
                     <textarea
                       ref={textareaRef}
                       value={draft}
@@ -2980,20 +3150,20 @@ export function MessengerScreen({
                       className="max-h-32 min-h-11 w-full resize-none rounded-[1.2rem] border border-line bg-canvas px-4 py-2.5 text-[15px] leading-6 outline-none transition placeholder:text-muted/65 focus:border-brand/50 focus:ring-4 focus:ring-brand/10"
                       placeholder={
                         draftLinkBlocked
-                          ? 'В этой группе запрещены ссылки'
+                          ? t('msgr.linksForbidden')
                           : selectedBlockedByMe
-                            ? 'Отправка недоступна'
+                            ? t('msgr.sendingUnavailable')
                             : editingMessage
-                              ? 'Измените сообщение…'
+                              ? t('msgr.editMessagePlaceholder')
                               : replyingTo
-                                ? 'Напишите ответ…'
-                                : 'Сообщение…'
+                                ? t('msgr.replyPlaceholder')
+                                : t('msgr.messagePlaceholder')
                       }
                       disabled={sending || selectedBlockedByMe}
                     />
                   </label>
                   <IconButton
-                    label="Отправить сообщение"
+                    label={t('msgr.sendMessage')}
                     type="submit"
                     disabled={
                       sending ||
@@ -3059,6 +3229,131 @@ export function MessengerScreen({
           onUnauthorized={() => onLogout(true)}
         />
       )}
+      {settingsOpen && (
+        <SettingsScreen
+          user={currentUser}
+          onOpenAccount={() => {
+            setSettingsOpen(false);
+            setProfileOpen(true);
+          }}
+          onOpenLanguage={() => {
+            setSettingsOpen(false);
+            setLanguageOpen(true);
+          }}
+          onOpenPrivacy={() => {
+            setSettingsOpen(false);
+            setPrivacyOpen(true);
+          }}
+          onOpenSessions={() => {
+            setSettingsOpen(false);
+            setSessionsOpen(true);
+          }}
+          onOpenThemes={() => {
+            setSettingsOpen(false);
+            setThemesOpen(true);
+          }}
+          onOpenScale={() => {
+            setSettingsOpen(false);
+            setScaleOpen(true);
+          }}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {languageOpen && (
+        <LanguageScreen
+          // Стрелка ведёт не «в никуда», а назад в список настроек: открывая
+          // раздел, мы закрыли список, поэтому возврат — снова его открыть.
+          onBack={() => {
+            setLanguageOpen(false);
+            setSettingsOpen(true);
+          }}
+          onClose={() => setLanguageOpen(false)}
+        />
+      )}
+      {privacyOpen && (
+        <PrivacyScreen
+          user={currentUser}
+          onToggleLastSeen={async (value) => {
+            // Сохраняем сразу: «Время захода» — единственный флаг приватности,
+            // который сервер действительно хранит.
+            const updated = await api.updateProfile(token, { showLastSeen: value });
+            onUserUpdated(updated);
+          }}
+          onBack={() => {
+            setPrivacyOpen(false);
+            setSettingsOpen(true);
+          }}
+          onClose={() => setPrivacyOpen(false)}
+        />
+      )}
+      {sessionsOpen && (
+        <SessionsScreen
+          token={token}
+          user={currentUser}
+          onAutoTerminateChange={async (days) => {
+            const updated = await api.updateProfile(token, { sessionAutoTerminateDays: days });
+            onUserUpdated(updated);
+          }}
+          onBack={() => {
+            setSessionsOpen(false);
+            setSettingsOpen(true);
+          }}
+          onClose={() => setSessionsOpen(false)}
+        />
+      )}
+      {themesOpen && (
+        <ThemesScreen
+          activeTheme={themeControls.activeTheme}
+          themes={themeControls.themes}
+          customThemes={themeControls.customThemes}
+          createId={themeControls.createId}
+          onActivate={themeControls.activate}
+          onSave={themeControls.saveCustom}
+          onRemove={themeControls.removeCustom}
+          onImport={themeControls.importTheme}
+          currentWallpaperUrl={currentUser.wallpaperUrl}
+          // Встроенные обои лежат рядом с интерфейсом, поэтому это не загрузка,
+          // а путь вида `/wallpapers/…` — сервер такие пути принимает наравне
+          // со ссылками и своими файлами.
+          onApplyWallpaper={async (url) => {
+            const updated = await api.updateProfile(token, {
+              wallpaperUrl: url,
+              wallpaperMimeType: 'image/png',
+            });
+            onUserUpdated(updated);
+          }}
+          onClearWallpaper={async () => {
+            const updated = await api.updateProfile(token, {
+              wallpaperUrl: '',
+              wallpaperMimeType: '',
+            });
+            onUserUpdated(updated);
+          }}
+          onBack={() => {
+            setThemesOpen(false);
+            setSettingsOpen(true);
+          }}
+          onClose={() => setThemesOpen(false)}
+        />
+      )}
+      {scaleOpen && (
+        <ScaleScreen
+          onBack={() => {
+            setScaleOpen(false);
+            setSettingsOpen(true);
+          }}
+          onClose={() => setScaleOpen(false)}
+        />
+      )}
+      {/* Тема из ссылки: сначала спрашиваем, менять ли оформление. */}
+      <ThemeLinkImport onImport={themeControls.importTheme} />
+      {sessionAlert && (
+        <NewSessionAlert
+          session={sessionAlert}
+          onAcknowledge={() => void acknowledgeSessionAlert()}
+          onTerminate={() => void terminateSessionAlert()}
+        />
+      )}
       {profileOpen && (
         <ProfileModal
           token={token}
@@ -3105,7 +3400,7 @@ export function MessengerScreen({
             setPeerProfileOpen(false);
             void webRtc.startCall(selectedConversation.id, selectedPeer, 'video');
           }}
-          onMore={() => setNotice('Дополнительные действия появятся позже.')}
+          onMore={() => setNotice(t('msgr.moreLater'))}
           onBlockedChange={handleBlockedChange}
           onUnauthorized={() => onLogout(true)}
           viewerIsOwner={Boolean(currentUser?.isOwner)}
@@ -3147,7 +3442,7 @@ export function MessengerScreen({
                 ? { ...conversation, lastMessage: message, updatedAt: message.createdAt }
                 : conversation,
             )));
-            setNotice('Сообщение переслано.');
+            setNotice(t('msgr.messageForwarded'));
           }}
         />
       )}
@@ -3166,8 +3461,18 @@ export function MessengerScreen({
             onUnauthorized={() => onLogout(true)}
           />
         )}
-      {scheduledListOpen && (
-        <ScheduledMessagesModal
+        {friendsOpen && (
+          <FriendsModal
+            token={token}
+            onClose={() => setFriendsOpen(false)}
+            onUnauthorized={() => onLogout(true)}
+            onOpenProfile={(user) => {
+              setFriendsOpen(false);
+              setMemberProfile(user);
+            }}
+          />
+        )}
+      {scheduledListOpen && (        <ScheduledMessagesModal
           items={scheduledMessages}
           conversations={conversations}
           currentUserId={currentUser.id}

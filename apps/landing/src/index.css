@@ -1,0 +1,155 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Лендинг не берёт переменные из приложения: у Yargram тема — свойство
+ * аккаунта и лежит на устройстве, а сайт должен выглядеть одинаково у всех,
+ * кто открыл ссылку впервые. Поэтому здесь две собственные палитры: светлая
+ * в `:root` и тёмная в `[data-theme="dark"]`. Переключатель ниже ставит этот
+ * атрибут на <html> — и всё дерево меняет цвета само.
+ */
+:root {
+  color-scheme: light;
+  --page: 246 248 252;
+  --card: 255 255 255;
+  --title: 22 35 46;
+  --body: 99 121 140;
+  --stroke: 227 233 240;
+  --accent: 51 144 236;
+  --accent-strong: 35 121 207;
+  --accent-deep: 27 95 158;
+  --accent-soft: 232 242 253;
+  --ok: 58 165 108;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --page: 14 20 32;
+  --card: 22 31 44;
+  --title: 233 241 248;
+  --body: 147 167 184;
+  --stroke: 38 50 63;
+  --accent: 82 165 241;
+  --accent-strong: 105 180 246;
+  --accent-deep: 137 195 246;
+  --accent-soft: 30 48 70;
+  --ok: 86 190 139;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  /* 🔥 Цвета берём из переменных, а не из значений: иначе фон и текст остались
+     бы светлыми и на тёмной теме. Переключатель ставит `data-theme` на <html>. */
+  background-color: rgb(var(--page));
+  color: rgb(var(--title));
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Уважаем отключённую анимацию: полосы и всплытие карточек — украшение. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*
+ * Лёгкое увеличение карточки под курсором.
+ *
+ * 🔥 Через `transform: scale()`, а не через изменение размеров: `scale` считает
+ * видеокарта, поэтому соседние карточки не «прыгают» от пересчёта раскладки, и
+ * тень можно увеличить тем же движением. `:focus-within` — чтобы карточка
+ * отзывалась и при обходе с клавиатуры, а не только мышью.
+ */
+.card-lift {
+  transition:
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.card-lift:hover,
+.card-lift:focus-within {
+  transform: scale(1.02);
+  z-index: 1;
+}
+
+/* Уважаем просьбу «меньше движения»: увеличение выключаем, остаётся тень. */
+@media (prefers-reduced-motion: reduce) {
+  .card-lift:hover,
+  .card-lift:focus-within {
+    transform: none;
+  }
+}
+
+/*
+ * Мягкое свечение под шапкой. Нарисовано градиентом, а не картинкой:
+ * лендинг должен открываться мгновенно, поэтому тяжёлых изображений в первом
+ * экране нет вовсе — только логотип-вектор.
+ */
+.hero-glow {
+  position: absolute;
+  inset: -20% -10% auto -10%;
+  height: 120%;
+  pointer-events: none;
+  background-image:
+    radial-gradient(ellipse 46% 46% at 18% 24%, rgb(var(--accent) / 0.16), transparent 62%),
+    radial-gradient(ellipse 42% 42% at 84% 12%, rgb(137 100 235 / 0.14), transparent 62%),
+    radial-gradient(ellipse 52% 40% at 62% 92%, rgb(58 165 108 / 0.1), transparent 66%);
+  z-index: 0;
+}
+
+/* Тонкая сетка поверх свечения: даёт «экранность», не отвлекая. */
+.hero-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgb(var(--stroke) / 0.6) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--stroke) / 0.6) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black, transparent 78%);
+  z-index: 0;
+}
+
+/* Полоса прокрутки в тон странице, без светлой полосы на тёмной теме. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--stroke));
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-track {
+  background-color: transparent;
+}

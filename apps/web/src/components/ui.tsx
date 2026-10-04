@@ -1,6 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { AlertCircle, LoaderCircle, RotateCcw, UserRound } from 'lucide-react';
 import { initials } from '../lib/format';
+import { useTranslation } from '../hooks/useLanguage';
 
 export function Spinner({ className = 'h-5 w-5' }: { className?: string }) {
   return <LoaderCircle className={`${className} animate-spin`} aria-hidden="true" />;
@@ -72,6 +73,7 @@ export function avatarColor(seed: string): string {
 }
 
 export function Avatar({ name, src, size = 'md', online, className = '', seed, placeholder = false }: AvatarProps) {
+  const t = useTranslation();
   return (
     <span className={`relative inline-flex shrink-0 ${className}`}>
       <span
@@ -90,7 +92,7 @@ export function Avatar({ name, src, size = 'md', online, className = '', seed, p
       {online !== undefined && (
         <span
           className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-[3px] border-surface ${online ? 'bg-success' : 'bg-muted/45'}`}
-          title={online ? 'В сети' : 'Не в сети'}
+          title={online ? t('presence.online') : t('presence.offline')}
         />
       )}
     </span>
@@ -117,17 +119,18 @@ export function IconButton({
 }
 
 export function InlineError({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const t = useTranslation();
   return (
     <div className="mx-auto flex max-w-sm flex-col items-center px-6 py-10 text-center" role="alert">
       <span className="mb-3 grid h-12 w-12 place-items-center rounded-xl bg-danger/10 text-danger">
         <AlertCircle className="h-6 w-6" aria-hidden="true" />
       </span>
-      <p className="text-sm font-semibold text-ink">Что-то пошло не так</p>
+      <p className="text-sm font-semibold text-ink">{t('error.somethingWrong')}</p>
       <p className="mt-1 text-sm leading-6 text-muted">{message}</p>
       {onRetry && (
         <Button type="button" variant="secondary" className="mt-4 min-h-10" onClick={onRetry}>
           <RotateCcw className="h-4 w-4" aria-hidden="true" />
-          Повторить
+          {t('common.retry')}
         </Button>
       )}
     </div>
@@ -135,8 +138,9 @@ export function InlineError({ message, onRetry }: { message: string; onRetry?: (
 }
 
 export function ConversationSkeleton() {
+  const t = useTranslation();
   return (
-    <div className="space-y-1 px-3" aria-label="Загрузка диалогов">
+    <div className="space-y-1 px-3" aria-label={t('loading.dialogs')}>
       {Array.from({ length: 6 }, (_, index) => (
         <div key={index} className="flex animate-pulse-soft items-center gap-3 rounded-xl px-2 py-3">
           <div className="h-12 w-12 shrink-0 rounded-xl bg-line/65" />
@@ -151,8 +155,9 @@ export function ConversationSkeleton() {
 }
 
 export function MessageSkeleton() {
+  const t = useTranslation();
   return (
-    <div className="flex flex-1 flex-col justify-end gap-3 px-5 py-6" aria-label="Загрузка сообщений">
+    <div className="flex flex-1 flex-col justify-end gap-3 px-5 py-6" aria-label={t('loading.messages')}>
       {[44, 65, 36, 58, 48].map((width, index) => (
         <div
           key={index}

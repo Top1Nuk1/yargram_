@@ -5,22 +5,30 @@
   "description": "Yargram 0.1 messenger for the Radmin VPN network",
   "workspaces": [
     "apps/server",
-    "apps/web"
+    "apps/web",
+    "apps/landing"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "install": "node scripts/install-workspaces.mjs",
-    "build": "npm run build --workspace @yargram/web && npm run build --workspace @yargram/server",
-    "dev": "concurrently --kill-others --names server,web --prefix-colors blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "build": "npm run build --workspace @yargram/web && npm run build --workspace @yargram/server && npm run build --workspace @yargram/landing",
+    "dev": "concurrently --kill-others --names server,web,landing --prefix-colors blue,magenta,green \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:landing\"",
     "dev:server": "npm run dev --workspace @yargram/server",
     "dev:web": "npm run dev --workspace @yargram/web",
+    "dev:landing": "npm run dev --workspace @yargram/landing",
     "start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/start-yargram.ps1",
     "smoke": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-test.ps1",
     "db:local": "node scripts/local-postgres.mjs",
     "db:use-local": "node scripts/use-local-postgres.mjs",
     "db:import": "node --import tsx apps/server/src/migrate-json.ts",
+    "backup": "node scripts/backup.mjs --force",
+    "backup:status": "node scripts/backup.mjs --status",
+    "bot:create": "node scripts/create-support-bot.mjs",
+    "mail:test": "node scripts/test-mail.mjs",
+    "mail:code": "node scripts/send-code-mail.mjs",
+    "mail:password": "node scripts/set-mail-password.mjs",
     "lint": "eslint . --max-warnings=0",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",

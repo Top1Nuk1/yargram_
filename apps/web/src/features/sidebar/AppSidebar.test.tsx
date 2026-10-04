@@ -43,15 +43,31 @@ describe('AppSidebar', () => {
     expect(menuLabels(container)).not.toContain('Админ-панель');
   });
 
-  it('puts the admin panel between the settings and the night mode toggle', () => {
+  it('ставит поддержку и админ-панель между настройками и ночным режимом', () => {
     const { container } = renderSidebar(user({ isOwner: true }));
     const labels = menuLabels(container);
     const settings = labels.findIndex((label) => label === 'Настройки');
+    const support = labels.findIndex((label) => label === 'Поддержка');
     const admin = labels.findIndex((label) => label === 'Админ-панель');
     const theme = labels.findIndex((label) => label.startsWith('Ночной режим'));
     expect(settings).toBeGreaterThanOrEqual(0);
-    expect(admin).toBe(settings + 1);
+    expect(support).toBe(settings + 1);
+    expect(admin).toBe(support + 1);
     expect(theme).toBe(admin + 1);
+  });
+
+  it('показывает поддержку всем, а не только владельцу', () => {
+    expect(menuLabels(renderSidebar(user()).container)).toContain('Поддержка');
+  });
+
+  it('открывает поддержку через пункт меню', () => {
+    const { onAction, container } = renderSidebar(user());
+    const row = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Поддержка',
+    );
+    expect(row).toBeTruthy();
+    row?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onAction).toHaveBeenCalledWith('support');
   });
 
   it('opens the admin panel through the menu action', () => {
@@ -62,5 +78,42 @@ describe('AppSidebar', () => {
     expect(row).toBeTruthy();
     row?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(onAction).toHaveBeenCalledWith('admin');
+  });
+
+  /** Кнопка «Добавить аккаунт» из переключателя профилей. */
+  function addAccountButton(container: HTMLElement): HTMLButtonElement | undefined {
+    return Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Добавить аккаунт',
+    ) as HTMLButtonElement | undefined;
+  }
+
+  it('закрывает добавление аккаунта на пределе устройства и объясняет почему', () => {
+    const accounts: StoredAccount[] = Array.from({ length: 3 }, (_, index) => ({
+      token: `t-${index}`,
+      user: user({ id: `u-${index}`, username: `user${index}` }),
+    }));
+    const { container } = renderSidebar(accounts[0]!.user, accounts);
+    expect(addAccountButton(container)?.disabled).toBe(true);
+    expect(container.textContent).toContain('Предел устройства — 3 аккаунта');
+  });
+
+  it('поднимает предел до четырёх, когда у аккаунта есть галочка', () => {
+    const accounts: StoredAccount[] = [
+      { token: 't-0', user: user({ id: 'u-0', isVerified: true }) },
+      { token: 't-1', user: user({ id: 'u-1' }) },
+      { token: 't-2', user: user({ id: 'u-2' }) },
+    ];
+    const { container } = renderSidebar(accounts[0]!.user, accounts);
+    expect(addAccountButton(container)?.disabled).toBe(false);
+    expect(container.textContent).not.toContain('Предел устройства');
+  });
+
+  it('не ограничивает владельца', () => {
+    const accounts: StoredAccount[] = Array.from({ length: 6 }, (_, index) => ({
+      token: `t-${index}`,
+      user: user({ id: `u-${index}`, isOwner: index === 0 }),
+    }));
+    const { container } = renderSidebar(accounts[0]!.user, accounts);
+    expect(addAccountButton(container)?.disabled).toBe(false);
   });
 });

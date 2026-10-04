@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { IconButton, Spinner } from '../../components/ui';
+import { useTranslation } from '../../hooks/useLanguage';
 import type { Attachment } from '../../types';
 import { formatFileSize, isImageAttachment, isVoiceAttachment, type UploadKind } from './messengerUtils';
 import { discoverAudioDuration, finiteDuration, seekTime } from './mediaDuration';
@@ -42,9 +43,10 @@ interface AttachmentDraftTrayProps {
 }
 
 export function AttachmentDraftTray({ items, onRemove, onRetry }: AttachmentDraftTrayProps) {
+  const t = useTranslation();
   if (items.length === 0) return null;
   return (
-    <div className="mx-auto mb-2 flex max-w-[920px] gap-2 overflow-x-auto rounded-2xl border border-line bg-canvas/75 p-2" aria-label="Выбранные файлы">
+    <div className="mx-auto mb-2 flex max-w-[920px] gap-2 overflow-x-auto rounded-2xl border border-line bg-canvas/75 p-2" aria-label={t('attach.selectedFiles')}>
       {items.map((item) => (
         <article key={item.localId} className="relative flex w-56 shrink-0 items-center gap-2.5 overflow-hidden rounded-xl border border-line bg-surface p-2 shadow-sm">
           <span className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-lg bg-brand-soft text-brand">
@@ -58,9 +60,9 @@ export function AttachmentDraftTray({ items, onRemove, onRetry }: AttachmentDraf
             <span className="block truncate text-xs font-bold text-ink" title={item.file.name}>{item.file.name}</span>
             <span className={`mt-0.5 block truncate text-[10px] ${item.status === 'error' ? 'text-danger' : 'text-muted'}`}>
               {item.status === 'uploading'
-                ? `Загрузка ${item.progress}%`
+                ? t('attach.uploading', { percent: item.progress })
                 : item.status === 'error'
-                  ? item.error ?? 'Ошибка загрузки'
+                  ? item.error ?? t('attach.uploadError')
                   : formatFileSize(item.file.size)}
             </span>
             {item.status === 'uploading' && (
@@ -72,11 +74,11 @@ export function AttachmentDraftTray({ items, onRemove, onRetry }: AttachmentDraf
           {item.status === 'uploading' ? (
             <Spinner className="h-4 w-4 shrink-0 text-brand" />
           ) : item.status === 'error' && onRetry ? (
-            <button type="button" className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-danger hover:bg-danger/10" onClick={() => onRetry(item.localId)} aria-label={`Повторить загрузку ${item.file.name}`}>
+            <button type="button" className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-danger hover:bg-danger/10" onClick={() => onRetry(item.localId)} aria-label={t('attach.retryUpload', { name: item.file.name })}>
               <RotateCcw className="h-3.5 w-3.5" />
             </button>
           ) : (
-            <button type="button" className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-muted hover:bg-line/60" onClick={() => onRemove(item.localId)} aria-label={`Убрать ${item.file.name}`}>
+            <button type="button" className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-muted hover:bg-line/60" onClick={() => onRemove(item.localId)} aria-label={t('attach.removeFile', { name: item.file.name })}>
               <X className="h-3.5 w-3.5" />
             </button>
           )}
@@ -93,6 +95,7 @@ interface MessageAttachmentsProps {
 }
 
 export function MessageAttachments({ attachments, mine, onOpenImage }: MessageAttachmentsProps) {
+  const t = useTranslation();
   const circles = attachments.filter(isVideoCircle);
   const images = attachments.filter((attachment) => !isVideoCircle(attachment) && isImageAttachment(attachment));
   const voice = attachments.filter((attachment) => !isVideoCircle(attachment) && isVoiceAttachment(attachment));
@@ -113,7 +116,7 @@ export function MessageAttachments({ attachments, mine, onOpenImage }: MessageAt
               type="button"
               className={`group relative overflow-hidden bg-black/10 ${images.length === 1 ? 'max-h-[390px]' : 'h-36 sm:h-44'} ${images.length === 3 && index === 0 ? 'row-span-2 h-full' : ''}`}
               onClick={() => onOpenImage(attachment)}
-              aria-label={`Открыть ${attachment.fileName}`}
+              aria-label={t('attach.openFile', { name: attachment.fileName })}
             >
               <img
                 src={attachment.url}
@@ -135,7 +138,7 @@ export function MessageAttachments({ attachments, mine, onOpenImage }: MessageAt
           href={`${attachment.url}${attachment.url.includes('?') ? '&' : '?'}download=1`}
           download={attachment.fileName}
           className={`flex min-w-[230px] max-w-[390px] items-center gap-3 rounded-xl border p-2.5 transition ${mine ? 'border-white/20 bg-white/10 hover:bg-white/15' : 'border-line bg-canvas/70 hover:border-brand/35'}`}
-          title={`Скачать ${attachment.fileName}`}
+          title={t('attach.downloadFile', { name: attachment.fileName })}
         >
           <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${mine ? 'bg-white/15 text-white' : 'bg-brand-soft text-brand'}`}>
             <FileText className="h-5 w-5" />
@@ -171,17 +174,79 @@ function waveformHeights(seed: string, count: number): number[] {
   return heights;
 }
 
+/**
+ * Видеокружок. Нативные `controls` рисуют прямоугольную панель поверх круглого
+ * кадра — из-за неё кружок и выглядел «квадратом». Поэтому управление своё:
+ * один круглый слой с иконкой, всё остальное время кадр чистый.
+ */
 export function VideoCircle({ attachment }: { attachment: Attachment }) {
+  const t = useTranslation();
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const recordedDuration = finiteDuration((attachment as MediaAttachment).durationSeconds);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return undefined;
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    const onTime = () => {
+      const total = finiteDuration(video.duration) ?? recordedDuration;
+      setProgress(total ? Math.min(1, video.currentTime / total) : 0);
+    };
+    const onEnded = () => { setPlaying(false); setProgress(0); };
+    const onError = () => { setPlaying(false); setFailed(true); };
+    const handlers = { play: onPlay, pause: onPause, timeupdate: onTime, ended: onEnded, error: onError };
+    for (const [event, handler] of Object.entries(handlers)) video.addEventListener(event, handler);
+    return () => {
+      for (const [event, handler] of Object.entries(handlers)) video.removeEventListener(event, handler);
+      video.pause();
+    };
+  }, [recordedDuration]);
+
+  const toggle = () => {
+    const video = videoRef.current;
+    if (!video || failed) return;
+    if (video.paused) {
+      if (video.ended) video.currentTime = 0;
+      void video.play().catch(() => setFailed(true));
+    } else {
+      video.pause();
+    }
+  };
+
   return (
-    <video
-      key={attachment.url}
-      src={attachment.url}
-      playsInline
-      controls
-      preload="metadata"
-      aria-label={`Видеосообщение: ${attachment.fileName}`}
-      className="aspect-square w-[min(260px,65vw)] rounded-full bg-black object-cover"
-    />
+    // Ключ на обёртке: при смене источника пересобирается весь кружок вместе
+    // с состоянием проигрывания, а не только элемент видео.
+    <div key={attachment.url} className="relative aspect-square w-[min(260px,65vw)] overflow-hidden rounded-full bg-black">
+      <video
+        ref={videoRef}
+        src={attachment.url}
+        playsInline
+        preload="metadata"
+        aria-label={t('attach.videoMessage', { name: attachment.fileName })}
+        className="h-full w-full object-cover"
+        onClick={toggle}
+      />
+      {/* Слой управления: исчезает во время проигрывания, чтобы не закрывать кадр. */}
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={playing ? t('attach.pauseVideoCircle') : t('attach.playVideoCircle')}
+        className={`absolute inset-0 grid place-items-center transition ${playing ? 'opacity-0 hover:opacity-100 focus-visible:opacity-100' : 'opacity-100'}`}
+      >
+        <span className="grid h-12 w-12 place-items-center rounded-full bg-black/45 text-white backdrop-blur-sm">
+          {failed ? <RotateCcw className="h-5 w-5" /> : playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+        </span>
+      </button>
+      {!failed && (
+        <span className="absolute inset-x-0 bottom-0 h-1 bg-white/20" aria-hidden="true">
+          <span className="block h-full bg-white/80 transition-[width] duration-150" style={{ width: `${progress * 100}%` }} />
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -191,6 +256,7 @@ export function VoiceMessage(props: { attachment: Attachment; mine: boolean }) {
 }
 
 function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boolean }) {
+  const t = useTranslation();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
@@ -285,7 +351,7 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
         type="button"
         className={`grid h-10 w-10 shrink-0 place-items-center rounded-full transition ${accent}`}
         onClick={togglePlayback}
-        aria-label={playing ? 'Остановить голосовое сообщение' : 'Слушать голосовое сообщение'}
+        aria-label={playing ? t('attach.pauseVoice') : t('attach.playVoice')}
       >
         {playing ? <Pause className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4" />}
       </button>
@@ -319,13 +385,13 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
             } catch { setError(true); }
           }}
           className="h-1 w-full cursor-pointer accent-[#8c7cff] disabled:cursor-default disabled:opacity-40"
-          aria-label="Перемотка голосового сообщения"
+          aria-label={t('attach.seekVoice')}
         />
         <p className="mt-0.5 flex justify-between text-[10px] font-semibold text-muted">
           <span>{formatAudioTime(current)}</span>
           <span>{duration ? formatAudioTime(duration) : '—:—'}</span>
         </p>
-        {error && <p role="status" className="text-[10px] text-danger">Не удалось воспроизвести. Попробуйте ещё раз.</p>}
+        {error && <p role="status" className="text-[10px] text-danger">{t('attach.playFailed')}</p>}
       </div>
     </div>
   );
@@ -338,6 +404,7 @@ interface ImageViewerProps {
 }
 
 export function ImageViewer({ images, initialId, onClose }: ImageViewerProps) {
+  const t = useTranslation();
   const initialIndex = Math.max(0, images.findIndex((attachment) => attachment.id === initialId));
   const [index, setIndex] = useState(initialIndex);
   const [zoom, setZoom] = useState(1);
@@ -364,17 +431,17 @@ export function ImageViewer({ images, initialId, onClose }: ImageViewerProps) {
 
   if (!current) return null;
   return (
-    <div className="fixed inset-0 z-[80] flex flex-col bg-[#080810]/95 text-white backdrop-blur-lg" role="dialog" aria-modal="true" aria-label="Просмотр фотографии">
+    <div className="fixed inset-0 z-[80] flex flex-col bg-[#080810]/95 text-white backdrop-blur-lg" role="dialog" aria-modal="true" aria-label={t('attach.photoViewer')}>
       <header className="flex min-h-16 items-center gap-3 border-b border-white/10 px-3 sm:px-5">
         <ImageIcon className="h-5 w-5 text-white/65" />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-bold">{current.fileName}</p>
-          <p className="text-[11px] text-white/55">{formatFileSize(current.size)} · {index + 1} из {images.length}</p>
+          <p className="text-[11px] text-white/55">{formatFileSize(current.size)} · {t('attach.photoCounter', { index: index + 1, total: images.length })}</p>
         </div>
-        <a href={`${current.url}${current.url.includes('?') ? '&' : '?'}download=1`} download={current.fileName} className="grid h-10 w-10 place-items-center rounded-2xl text-white/75 hover:bg-white/10 hover:text-white" aria-label="Скачать фотографию">
+        <a href={`${current.url}${current.url.includes('?') ? '&' : '?'}download=1`} download={current.fileName} className="grid h-10 w-10 place-items-center rounded-2xl text-white/75 hover:bg-white/10 hover:text-white" aria-label={t('attach.downloadPhoto')}>
           <Download className="h-5 w-5" />
         </a>
-        <IconButton label="Закрыть" className="text-white/75 hover:bg-white/10 hover:text-white" onClick={onClose}>
+        <IconButton label={t('common.close')} className="text-white/75 hover:bg-white/10 hover:text-white" onClick={onClose}>
           <X className="h-5 w-5" />
         </IconButton>
       </header>
@@ -389,21 +456,21 @@ export function ImageViewer({ images, initialId, onClose }: ImageViewerProps) {
         </div>
         {images.length > 1 && (
           <>
-            <button type="button" className="fixed left-3 top-1/2 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white shadow-lg backdrop-blur hover:bg-black/65 sm:left-6" onClick={controls.previous} aria-label="Предыдущее фото">
+            <button type="button" className="fixed left-3 top-1/2 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white shadow-lg backdrop-blur hover:bg-black/65 sm:left-6" onClick={controls.previous} aria-label={t('attach.previousPhoto')}>
               <ChevronLeft className="h-6 w-6" />
             </button>
-            <button type="button" className="fixed right-3 top-1/2 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white shadow-lg backdrop-blur hover:bg-black/65 sm:right-6" onClick={controls.next} aria-label="Следующее фото">
+            <button type="button" className="fixed right-3 top-1/2 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white shadow-lg backdrop-blur hover:bg-black/65 sm:right-6" onClick={controls.next} aria-label={t('attach.nextPhoto')}>
               <ChevronRight className="h-6 w-6" />
             </button>
           </>
         )}
       </div>
       <footer className="flex min-h-16 items-center justify-center gap-2 border-t border-white/10 px-4">
-        <IconButton label="Уменьшить" className="text-white/75 hover:bg-white/10 hover:text-white" disabled={zoom <= 0.5} onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}>
+        <IconButton label={t('attach.zoomOut')} className="text-white/75 hover:bg-white/10 hover:text-white" disabled={zoom <= 0.5} onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}>
           <Minus className="h-5 w-5" />
         </IconButton>
         <span className="w-14 text-center text-xs font-bold text-white/70">{Math.round(zoom * 100)}%</span>
-        <IconButton label="Увеличить" className="text-white/75 hover:bg-white/10 hover:text-white" disabled={zoom >= 3} onClick={() => setZoom((value) => Math.min(3, value + 0.25))}>
+        <IconButton label={t('attach.zoomIn')} className="text-white/75 hover:bg-white/10 hover:text-white" disabled={zoom >= 3} onClick={() => setZoom((value) => Math.min(3, value + 0.25))}>
           <Plus className="h-5 w-5" />
         </IconButton>
       </footer>

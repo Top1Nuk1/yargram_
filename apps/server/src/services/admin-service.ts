@@ -4,6 +4,7 @@ import type { Repositories, UpdateConversationInput, UserRepository } from "../r
 import {
   deletedPlaceholderFor,
   publicAccountStateFor,
+  toPublicUser,
   type Conversation,
   type User,
 } from "../domain/models.js";
@@ -23,6 +24,7 @@ export type AdminGroupMarksInput = {
   isVerified?: boolean | undefined;
   badge?: "yargram" | null | undefined;
   scam?: boolean | undefined;
+  fake?: boolean | undefined;
 };
 
 /** Группа в списке админ-панели: название, размер и текущие знаки. */
@@ -33,6 +35,7 @@ export type AdminGroupView = {
   isVerified: boolean;
   badge: "yargram" | null;
   scam: boolean;
+  fake: boolean;
   /** Код из ссылки-приглашения: по нему группу тоже можно найти. */
   inviteCode: string | null;
 };
@@ -40,14 +43,156 @@ export type AdminGroupView = {
 /** Сколько групп отдаём на один поисковый запрос. */
 const GROUPS_SEARCH_LIMIT = 20;
 
-function groupView(conversation: Conversation): AdminGroupView {
+/**
+ * Сводка для админ-панели: сколько всего заведено в Yargram.
+ *
+ * Считаем и `totalUsers`, и `groups`: владельцу нужно видеть размер установки
+ * целиком, а не только тех, кто попал в поиск. Аккаунты считаются **вместе с
+ * удалёнными**: удаление мягкое, и запись остаётся в базе, держа почту и ник
+ * занятыми.
+ */
+export type AdminStats = {
+  totalUsers: number;
+  groups: number;
+};
+
+/**
+ * Строка списка аккаунтов в админ-панели.
+ *
+ * Отдаём наружу почти весь профиль, но в одном месте: владельцу нужно разом
+ * видеть и знаки, и юзернеймы, и даты. Удалённый и замороженный аккаунт
+ * присылаем **как есть** — с настоящим ником и аватаром, а не заглушкой
+ * «Удалённый аккаунт»: владелец как раз и ищет, кого удалил, по имени.
+ * Имени и аватара в строке, впрочем, хватает и клиенту: даты лежат рядом.
+ */
+export type AdminAccountView = {
+  id: string;
+  displayName: string;
+  username: string | null;
+  /** Дополнительные ники: их бывает много, показываем списком. */
+  usernames: string[];
+  avatarUrl: string | null;
+  /** Знаки владельца — те же, что у профиля. */
+  isVerified: boolean;
+  badge: "yargram" | null;
+  scam: boolean;
+  fake: boolean;
+  isOwner: boolean;
+  isFrozen: boolean;
+  isDeleted: boolean;
+  createdAt: string;
+  /** Когда аккаунт удалили. Пусто, если он не удалён. */
+  deletedAt: string | null;
+  /**
+   * Когда владелец последний раз заходил. Отдаём **истинное** значение, даже если
+   * он скрыл время захода от других: админке нужен факт входа, а не то, что
+   * видно посторонним. Никогда не пусто — у старых записей подставляется
+   * `createdAt` (см. `userSchema`).
+   */
+  lastSeenAt: string;
+};
+
+/** Какие аккаунты показывает список по состоянию записи. */
+export type AdminAccountsFilter = "all" | "active" | "frozen" | "deleted";
+
+/**
+ * Знак владельца, по которому можно отсеять список. Отдельно от состояния:
+ * знаки комбинируются между собой и с любым состоянием, поэтому это не
+ * значение перечисления, а набор включённых галочек.
+ */
+export type AdminAccountsMark = "verified" | "badge" | "scam" | "fake" | "owner";
+
+/** По чему искать: только ник, только @юзернеймы или и то и другое. */
+export type AdminAccountsScope = "any" | "name" | "handle";
+
+/** Что пришло в `listAccounts` после разбора запроса. */
+export type AdminAccountsQuery = {
+  query?: string;
+  filter?: AdminAccountsFilter;
+  /** Знаки, которые обязаны быть у аккаунта: включённые галочки складываются. */
+  marks?: AdminAccountsMark[];
+  scope?: AdminAccountsScope;
+};
+
+/** Сколько аккаунтов отдаём разом: список — обзорный, а не выгрузка базы. */
+const ACCOUNTS_LIMIT = 200;
+
+/** Состояние записи: живой, замороженный или удалённый. */
+function matchesState(user: User, filter: AdminAccountsFilter): boolean {
+  // Замороженный и удалённый — разные состояния: удалённый уже не войдёт,
+  // замороженный войти может, но писать не может. Поэтому и фильтры разные.
+  if (filter === "deleted") return user.isDeleted === true;
+  if (filter === "frozen") return user.isFrozen === true && user.isDeleted !== true;
+  if (filter === "active") return user.isDeleted !== true && user.isFrozen !== true;
+  return true;
+}
+
+/**
+ * Знаки. Включённые галочки складываются: выбрали «галочка» и «SCAM» — значит
+ * у аккаунта должны быть оба, а не любой из них. Иначе фильтр был бы бесполезен:
+ * SCAM-аккаунтов мало, и «или» вернуло бы почти весь список через галочки.
+ */
+function matchesMarks(user: User, marks: AdminAccountsMark[]): boolean {
+  return marks.every((mark) => {
+    if (mark === "verified") return user.isVerified === true;
+    if (mark === "badge") return user.badge === "yargram";
+    if (mark === "scam") return user.scam === true;
+    if (mark === "fake") return user.fake === true;
+    return user.isOwner === true;
+  });
+}
+
+/**
+ * Поиск. Область выбирается владельцем, а не угадывается: по нику, по
+ * @юзернеймам или по обоим вместе с почтой.
+ */
+function matchesQuery(user: User, wanted: string, scope: AdminAccountsScope): boolean {
+  if (!wanted) return true;
+  const handles = [user.username ?? "", ...(user.usernames ?? [])];
+  const byHandle = handles.some((handle) => handle.toLowerCase().includes(wanted));
+  const byName = user.displayName.toLowerCase().includes(wanted);
+  if (scope === "name") return byName;
+  if (scope === "handle") return byHandle;
+  // Почту оставляем только во «всё сразу»: искать по ней адрес владелец может,
+  // а отдельной областью это было бы уже слишком узко.
+  return byName || byHandle || user.email.toLowerCase().includes(wanted);
+}
+
+/**
+ * Аккаунт в списке владельца. Аватар подписываем заново — `toPublicUser`
+ * обновляет временную ссылку, иначе в списке был бы старый адрес с истёкшим
+ * сроком. Отдельный `toPublicUser` тут, впрочем, не нужен: лишние поля
+ * (био, баннер, блокировки) в списке ни к чему.
+ */
+function toAdminAccountView(user: User): AdminAccountView {
+  const publicUser = toPublicUser(user);
   return {
+    id: user.id,
+    displayName: user.displayName,
+    username: user.username ?? null,
+    usernames: user.usernames ?? [],
+    avatarUrl: publicUser.avatarUrl ?? null,
+    isVerified: user.isVerified ?? false,
+    badge: user.badge ?? null,
+    scam: user.scam ?? false,
+    fake: user.fake ?? false,
+    isOwner: user.isOwner ?? false,
+    isFrozen: user.isFrozen ?? false,
+    isDeleted: user.isDeleted ?? false,
+    createdAt: user.createdAt,
+    deletedAt: user.deletedAt ?? null,
+    lastSeenAt: user.lastSeenAt,
+  };
+}
+
+function groupView(conversation: Conversation): AdminGroupView {  return {
     id: conversation.id,
     title: conversation.title ?? "",
     memberCount: conversation.memberIds.length,
     isVerified: conversation.isVerified ?? false,
     badge: conversation.badge ?? null,
     scam: conversation.scam ?? false,
+    fake: conversation.fake ?? false,
     inviteCode: conversation.inviteCode ?? null,
   };
 }
@@ -150,14 +295,59 @@ export class AdminService {
       ...(input.usernames === undefined ? {} : { usernames: normalizedUsernames }),
       ...(input.adminUserIds === undefined ? {} : { adminUserIds: input.adminUserIds }),
     };
-    if (input.isOwner === true) {
-      update.badge = "yargram";
-    } else if (input.badge !== undefined) {
+    if (input.badge !== undefined) {
       update.badge = input.badge;
     }
 
     const updated = await this.users.update(target.id, update);
     if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    return updated;
+  }
+
+  /**
+   * Пометить аккаунт как приложение Yargram или снять пометку.
+   *
+   * Смысл пометки узкий и намеренно огороженный: отдельное приложение — это
+   * всё-таки аккаунт в базе, и ему нужно право выдать себе значок «Yargram»
+   * без вмешательства владельца. Право действует только на свой же аккаунт и
+   * только когда владелец заранее отметил его приложением — обычный
+   * пользователь этой пометкой не заводится, а галочку себе всё равно
+   * выдать не может.
+   */
+  async setApp(grantorId: string, targetUserId: string, isApp: boolean): Promise<User> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can mark an account as an app");
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
+    const updated = await this.users.update(targetUserId, { isApp });
+    if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    // Снятие пометки заодно снимает и значок: иначе он остался бы висеть на
+    // аккаунте, который приложением уже не считается.
+    if (!isApp && target.badge === "yargram") {
+      const cleared = await this.users.update(targetUserId, { badge: null });
+      return cleared ?? updated;
+    }
+    return updated;
+  }
+
+  /**
+   * Знак «Yargram» на своём аккаунте. Раньше это умел только владелец через
+   * `grant`; приложению нужно то же самое, но самообслуживанием — приложение
+   * регистрируется на устройстве у человека, и ждать владельца там некому.
+   *
+   * Выдать знак себе можно единственным способом — будучи приложением. Всё
+   * остальное по-прежнему идёт через админ-панель владельца.
+   */
+  async setOwnBadge(userId: string, badge: "yargram" | null): Promise<User> {
+    const user = await this.users.findById(userId);
+    if (!user) throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+    if (!user.isApp) {
+      throw new AppError(403, "NOT_APP", "Only Yargram applications can set their own badge");
+    }
+    const updated = await this.users.update(userId, { badge });
+    if (!updated) throw new AppError(404, "USER_NOT_FOUND", "User no longer exists");
     return updated;
   }
 
@@ -209,6 +399,72 @@ export class AdminService {
   }
 
   /**
+   * Отметка FAKE — тоже только владелец. Механика та же, что у SCAM: рядом с
+   * именем горит «FAKE», а описание подменяется предупреждением о подделке под
+   * официальный аккаунт. Снятие отметки возвращает человеку его описание.
+   */
+  async setFake(grantorId: string, targetUserId: string, fake: boolean): Promise<User> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can mark accounts as FAKE");
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
+    const updated = await this.users.update(targetUserId, { fake });
+    if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    return updated;
+  }
+
+  /**
+   * Сколько всего аккаунтов и групп в Yargram. Только владелец: это сводка по
+   * всей установке, а не по своим собеседникам.
+   */
+  async stats(grantorId: string): Promise<AdminStats> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can see the installation stats");
+    }
+    // Считаем параллельно: два независимых запроса, ждать их по очереди незачем.
+    const [totalUsers, groups] = await Promise.all([
+      this.users.count(),
+      this.repositories.conversations.countGroups(),
+    ]);
+    return { totalUsers, groups };
+  }
+
+  /**
+   * Список аккаунтов для админ-панели: владелец раскрывает сводку и видит,
+   * кто вообще заведён.
+   *
+   * Фильтры разделены на три независимых слоя, чтобы ими можно было
+   * пользоваться по отдельности и вместе:
+   * - `filter` — состояние записи (живой / замороженный / удалённый);
+   * - `marks` — знаки владельца, которые обязаны быть у аккаунта (все
+   *   включённые сразу: «галочка И значок», а не «или»);
+   * - `scope` — где искать введённое: в нике, в юзернеймах или везде.
+   *
+   * Ограничение выдачи есть намеренно: список обзорный. Точный поиск одного
+   * человека живёт в `POST /admin/lookup`.
+   */
+  async listAccounts(grantorId: string, input: AdminAccountsQuery = {}): Promise<AdminAccountView[]> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can list accounts");
+    }
+    const filter = input.filter ?? "all";
+    const scope = input.scope ?? "any";
+    const marks = input.marks ?? [];
+    const wanted = input.query?.trim().replace(/^@/, "").toLowerCase() ?? "";
+    const users = await this.users.listAll();
+    return users
+      .filter((user) => matchesState(user, filter))
+      .filter((user) => matchesMarks(user, marks))
+      .filter((user) => matchesQuery(user, wanted, scope))
+      .slice(0, ACCOUNTS_LIMIT)
+      .map(toAdminAccountView);
+  }
+
+  /**
    * Поиск групп для админ-панели. Владелец Yargram помечает не человека, а
    * саму группу, поэтому группу нужно как-то найти: по названию, по коду из
    * ссылки-приглашения или по id.
@@ -245,6 +501,7 @@ export class AdminService {
       ...(input.isVerified === undefined ? {} : { isVerified: input.isVerified }),
       ...(input.badge === undefined ? {} : { badge: input.badge }),
       ...(input.scam === undefined ? {} : { scam: input.scam }),
+      ...(input.fake === undefined ? {} : { fake: input.fake }),
     };
     const updated = await this.repositories.conversations.update(group.id, patch);
     return groupView(updated);
@@ -309,10 +566,17 @@ export class AdminService {
     for (const note of await this.repositories.favoriteNotes.list(targetUserId)) {
       await this.repositories.favoriteNotes.delete(note.id, targetUserId);
     }
+    // Сеансы: входов в удалённый аккаунт быть не должно, иначе по списку
+    // активных сеансов в него всё ещё «можно попасть».
+    await this.repositories.sessions.deleteForUser(targetUserId);
     // Аватар с диска и запись о нём. Файлы из переписки остаются.
     await this.removeUserAvatars?.(targetUserId);
 
-    // Вычёркиваем удалённого из чужих списков блокировок и администрирования.
+    // Вычёркиваем удалённого из чужих списков: блокировок, администрирования и
+    // дружбы. Списки дружбы взаимные, поэтому запись может остаться на любой
+    // стороне — чистить надо все три, иначе у собеседника навсегда повиснет
+    // «друг», которого уже нет, а сервер при попытке открыть его профиль
+    // отдаст заглушку «Удалённый аккаунт».
     for (const user of await this.repositories.users.list({ limit: 10_000 })) {
       const cleanup: Partial<User> = {};
       if (user.blockedUserIds.includes(targetUserId)) {
@@ -320,6 +584,19 @@ export class AdminService {
       }
       if ((user.adminUserIds ?? []).includes(targetUserId)) {
         cleanup.adminUserIds = (user.adminUserIds ?? []).filter((id) => id !== targetUserId);
+      }
+      if ((user.friendIds ?? []).includes(targetUserId)) {
+        cleanup.friendIds = (user.friendIds ?? []).filter((id) => id !== targetUserId);
+      }
+      if ((user.outgoingFriendRequestIds ?? []).includes(targetUserId)) {
+        cleanup.outgoingFriendRequestIds = (user.outgoingFriendRequestIds ?? []).filter(
+          (id) => id !== targetUserId,
+        );
+      }
+      if ((user.incomingFriendRequestIds ?? []).includes(targetUserId)) {
+        cleanup.incomingFriendRequestIds = (user.incomingFriendRequestIds ?? []).filter(
+          (id) => id !== targetUserId,
+        );
       }
       if (Object.keys(cleanup).length === 0) continue;
       await this.users.update(user.id, cleanup);

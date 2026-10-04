@@ -3,7 +3,7 @@ import { mediaUrlFor } from "../lib/media-links.js";
 export const allowedReactionEmojis = ["👍", "❤️", "😂", "😎", "🔥", "😢", "😮", "🍓", "🍷"] as const;
 
 export type ReactionEmoji = (typeof allowedReactionEmojis)[number];
-export type AttachmentKind = "image" | "file" | "avatar";
+export type AttachmentKind = "image" | "file" | "avatar" | "banner" | "wallpaper";
 
 export type Attachment = {
   id: string;
@@ -22,6 +22,9 @@ export type AttachmentView = Omit<Attachment, "storedFileName"> & {
   url: string;
 };
 
+/** Зачем выдан код из письма: подтверждение регистрации, вход или сброс пароля. */
+export type EmailCodePurpose = "register" | "login" | "reset";
+
 export type User = {
   id: string;
   email: string;
@@ -38,13 +41,39 @@ export type User = {
   createdAt: string;
   themeColor?: string; // HEX, e.g. "#ff6600"
   wallpaperUrl?: string; // URL to custom wallpaper
+  /** Тип загруженного фона: `image/*` или `video/*`. Ссылка на фон хранится
+   *  строкой, и по ней не видно, видео это или картинка, — а рисовать их надо
+   *  по-разному: `<video>` вместо фоновой картинки. */
+  wallpaperMimeType?: string;
+  /** Баннер профиля, как в Discord: полоса над аватаром. Может быть заливкой
+   *  (`bannerColor`) или картинкой (`banner`) — картинка важнее заливки. */
+  bannerColor?: string; // HEX, e.g. "#00d8c0"
+  banner?: AttachmentView;
+  /** Ссылка на баннер: ставится, когда баннер задан прямой URL-кой, без загрузки
+   *  файла. Важнее `banner` (вложение), но если вложения нет — берётся эта ссылка. */
+  bannerUrl?: string | null;
   isVerified?: boolean; // checkmark shown right of username
   badge?: "yargram" | null; // Yargram icon shown left of username
   /** Отметка SCAM: владелец пометил аккаунт как мошеннический. Описание
    *  при этом подменяется предупреждением, и менять его нельзя. */
   scam?: boolean;
+  /** Отметка FAKE: аккаунт выдаёт себя за официальный. Работает так же, как
+   *  SCAM, но с другим текстом. Обе отметки одновременно — важнее SCAM. */
+  fake?: boolean;
   usernames?: string[]; // admin-assignable alternate usernames
   adminUserIds?: string[]; // users this account can administer
+  /** Друзья: взаимный список, обе стороны хранят друг друга. */
+  friendIds?: string[];
+  /** Исходящие заявки — те, кому я предложил дружбу и кто ещё не ответил. */
+  outgoingFriendRequestIds?: string[];
+  /** Входящие заявки: их пишет автор заявки в чужой список, поэтому это
+   *  единственное поле дружбы, которое меняют от чужого имени. */
+  incomingFriendRequestIds?: string[];
+  /** Это приложение Yargram, а не человек: ему разрешён знак «Yargram». */
+  isApp?: boolean;
+  /** Это бот, а не человек: рядом с именем рисуется метка «бот», а войти в
+   *  такой аккаунт нельзя — у него нет настоящего пароля. */
+  isBot?: boolean;
   isOwner?: boolean; // Top1Nuk1 level ownership
   isBanned?: boolean; // account banned by admin
   isFrozen?: boolean; // account suspended by admin
@@ -53,10 +82,50 @@ export type User = {
   isDeleted?: boolean;
   deletedAt?: string;
   birthday?: string; // ISO date (YYYY-MM-DD), отображается в профиле
+  /** Почта подтверждена кодом из письма. Отсутствие поля считается `true`:
+   *  у аккаунтов, созданных до появления подтверждения, поля просто нет, и
+   *  запирать их мы не должны. */
+  emailVerified?: boolean;
+  /** Хеш действующего кода (bcrypt). Сам код в базе не лежит: если база
+   *  утечёт, по ней нельзя войти. */
+  emailCodeHash?: string | null;
+  emailCodePurpose?: EmailCodePurpose | null;
+  /** ISO-время, после которого код недействителен. */
+  emailCodeExpiresAt?: string | null;
+  /** Сколько раз код ввели неверно: после лимита код сгорает. */
+  emailCodeAttempts?: number;
+  /** Через сколько дней бездействия сеанс завершается сам. `null` — никогда:
+   *  сеанс живёт, пока человек его сам не закроет. */
+  sessionAutoTerminateDays?: number | null;
 };
 
-export type LastSeenStatus = "recently" | "within_week" | "within_month" | "long_ago";
+/**
+ * Регистрация не состоялась: человек завёл аккаунт, но код из письма так и не
+ * ввёл, а срок кода уже вышел.
+ *
+ * Такой аккаунт не подтверждён, токена у него никогда не было, и внутри ничего
+ * нет — ни переписки, ни друзей. Держать его нельзя: почта и ник остались бы
+ * занятыми навсегда, и человек не смог бы даже зарегистрироваться заново.
+ * Поэтому незавершённую регистрацию стирают начисто, «будто её не было».
+ *
+ * 🔥 Правило живёт здесь, а не в сервисе: по нему и `AuthService` (сразу, когда
+ * человек пробует ту же почту), и уборщик `RegistrationCleanupService` (по
+ * таймеру). Копия правила на SQL — в `postgres-repositories.ts`; меняя одно,
+ * менять и другое.
+ *
+ * Явные действия владельца уважаем: замороженный или удалённый аккаунт не
+ * трогаем, даже если почта не подтверждена, — иначе уборка отменяла бы решение
+ * владельца.
+ */
+export function isFailedRegistration(user: User, now: Date = new Date()): boolean {
+  if (user.emailVerified !== false) return false;
+  if (user.isDeleted || user.isFrozen) return false;
+  // Кода нет вовсе — подтверждать нечего, регистрация уже не завершится.
+  if (!user.emailCodeExpiresAt) return true;
+  return new Date(user.emailCodeExpiresAt).getTime() <= now.getTime();
+}
 
+export type LastSeenStatus = "recently" | "within_week" | "within_month" | "long_ago";
 export type PublicUser = {
   id: string;
   displayName: string;
@@ -68,9 +137,14 @@ export type PublicUser = {
   lastSeenStatus: LastSeenStatus | null;
   online: boolean;
   createdAt: string;
+  /** Баннер профиля виден всем: заливка цветом или картинка. */
+  bannerColor?: string | undefined;
+  banner: AttachmentView | null;
+  bannerUrl: string | null;
   isVerified?: boolean | undefined;
   badge?: "yargram" | null | undefined;
   scam?: boolean | undefined;
+  fake?: boolean | undefined;
   usernames?: string[] | undefined;
   adminUserIds?: string[] | undefined;
   isOwner?: boolean | undefined;
@@ -78,14 +152,24 @@ export type PublicUser = {
   isFrozen?: boolean | undefined;
   isDeleted?: boolean | undefined;
   birthday?: string | undefined;
+  /** Дружба видна всем: по ней рисуется кнопка и подпись «в друзьях». */
+  friendIds?: string[] | undefined;
+  isApp?: boolean | undefined;
+  isBot?: boolean | undefined;
 };
 
 export type CurrentUser = PublicUser & {
   email: string;
   showLastSeen: boolean;
   notificationSoundEnabled: boolean;
+  /** Почта подтверждена кодом из письма. У старых аккаунтов поля нет —
+   *  считаем подтверждённой, чтобы не запирать их. */
+  emailVerified: boolean;
   themeColor?: string;
   wallpaperUrl?: string;
+  wallpaperMimeType?: string;
+  /** Через сколько дней бездействия сеанс завершается сам; `null` — никогда. */
+  sessionAutoTerminateDays?: number | null;
 };
 
 /**
@@ -199,14 +283,22 @@ export type Conversation = {
   history?: GroupEvent[] | undefined;
   // ---- Знаки владельца Yargram ----
   /**
-   * Галочка, значок Yargram и отметка SCAM есть не только у аккаунтов, но и у
-   * групп: владелец Yargram помечает саму группу, а не её создателя. Хранятся
-   * отдельно от профиля владельца группы, иначе отметка переезжала бы вместе
-   * со сменой владельца.
+   * Галочка, значок Yargram, отметка SCAM и отметка FAKE есть не только у
+   * аккаунтов, но и у групп: владелец Yargram помечает саму группу, а не её
+   * создателя. Хранятся отдельно от профиля владельца группы, иначе отметка
+   * переезжала бы вместе со сменой владельца.
    */
   isVerified?: boolean | undefined;
   badge?: "yargram" | null | undefined;
   scam?: boolean | undefined;
+  /** Отметка FAKE: группа выдаёт себя за официальную. Как у аккаунта. */
+  fake?: boolean | undefined;
+  /**
+   * Служебная группа поддержки: в неё бот пересылает обращения, а владельцы
+   * отвечают. Она не показывается обычным людям и не ищется по приглашению —
+   * отдельная метка нужна, чтобы найти её и не путать с обычной группой.
+   */
+  isSupportInbox?: boolean | undefined;
 };
 
 /** Права администратора по умолчанию: всё, кроме смены владельца. */
@@ -342,16 +434,44 @@ export type Poll = {
   closed: boolean;
 };
 
+/** Кнопка в сообщении бота: подпись и код действия, который клиент шлёт обратно. */
+export type BotButton = {
+  label: string;
+  /** Код действия. Клиент не пишет его в чат, а отправляет серверу отдельно. */
+  action: string;
+};
+
+/** Клавиатура бота — ряды кнопок под текстом сообщения. */
+export type BotKeyboard = BotButton[][];
+
+/**
+ * Обращение в поддержку. Бот кладёт его в само сообщение, пересланное в группу
+ * владельцев: по этому полю находится, кому вернуть ответ, когда владелец
+ * ответит на сообщение бота.
+ */
+export type SupportTicket = {
+  /** Кто обратился: id человека, написавшего боту. */
+  userId: string;
+  /** Раздел обращения: `error`, `idea` или `other`. */
+  category: string;
+  /** Уточнение внутри раздела, если человек выбрал готовый вариант. */
+  topic?: string | undefined;
+};
+
 export type Message = {
   id: string;
   conversationId: string;
   senderId: string;
   text: string;
-  kind: "user" | "system" | "poll";
+  kind: "user" | "system" | "poll" | "bot";
   systemEvent?: "call" | "user_joined" | "user_left" | undefined;
   call?: CallMessage | undefined;
   /** Опрос: заполнен только у сообщений вида poll. */
   poll?: Poll | undefined;
+  /** Кнопки под сообщением бота: клиент рисует их и отправляет `action` назад. */
+  keyboard?: BotKeyboard | undefined;
+  /** Пересланное в группу владельцев обращение: по нему бот находит адресата. */
+  supportTicket?: SupportTicket | undefined;
   createdAt: string;
   editedAt?: string | undefined;
   replyToId?: string | undefined;
@@ -432,6 +552,37 @@ export type ScheduledMessage = {
   failureReason?: string | undefined;
 };
 
+/**
+ * Активный сеанс — вход в аккаунт.
+ *
+ * Yargram — это сайт, поэтому сеанс описывают не «устройство», а пара
+ * «сайт + браузер»: человек видит, откуда именно он вошёл, и может закрыть
+ * именно этот вход, не трогая остальные.
+ *
+ * Токен доступа сам в базе не лежит — только его отпечаток (SHA-256). Утечка
+ * базы не даёт готового ключа, а найти сеанс по предъявленному токену всё же
+ * можно. Завершённый сеанс остаётся записью: иначе его токен при следующем
+ * запросе приняли бы за новый вход и «усыновили» заново.
+ */
+export type Session = {
+  id: string;
+  userId: string;
+  /** Отпечатки всех токенов, выданных этому сеансу. */
+  tokenHashes: string[];
+  /** Сайт, с которого вошли: origin, например `https://yargram.ru`. */
+  site: string;
+  /** Браузер и система — из User-Agent, например «Chrome, Windows». */
+  device: string;
+  createdAt: string;
+  lastSeenAt: string;
+  /** Вход был с незнакомого сайта: владельца надо предупредить окном. */
+  newDevice?: boolean;
+  /** Владелец подтвердил вход («это был я»). Пусто — окно ещё не показано. */
+  acknowledgedAt?: string | null;
+  /** Сеанс завершён: сам он или владелец с другого сеанса. */
+  terminatedAt?: string | null;
+};
+
 export type DatabaseState = {
   version: 1;
   users: User[];
@@ -444,6 +595,7 @@ export type DatabaseState = {
   drafts: ConversationDraft[];
   folders: ConversationFolder[];
   scheduledMessages: ScheduledMessage[];
+  sessions: Session[];
 };
 
 export function toAttachmentView(attachment: Attachment, subject?: string): AttachmentView {
@@ -451,7 +603,9 @@ export function toAttachmentView(attachment: Attachment, subject?: string): Atta
   return {
     ...safeAttachment,
     url: mediaUrlFor(attachment.id, subject ?? attachment.ownerId, {
-      kind: attachment.kind === "avatar" ? "avatar" : "attachment",
+      // Аватар и баннер подписываются как оформление профиля: их отдаём
+      // инлайном, а не как скачиваемый файл.
+      kind: attachment.kind === "avatar" || attachment.kind === "banner" ? "avatar" : "attachment",
     }),
   };
 }
@@ -471,7 +625,7 @@ export function lastSeenStatus(lastSeenAt: string, now = Date.now()): LastSeenSt
  * человеку его прежнее описание, а не пустую строку.
  */
 export const SCAM_BIO_WARNING =
-  "⚠️ Внимание: на этот аккаунт много жаловались в связи с мошенничеством или попытками выдать себя за официальный аккаунт. Будьте осторожны, особенно если у Вас попросят денег.";
+  "⚠️ Внимание: на этот аккаунт часто жаловались в связи с мошенничеством или попытками выдать себя за официальный аккаунт. Будьте осторожны, особенно если у Вас попросят денег.";
 
 /**
  * То же предупреждение для группы. Владелец помечает не человека, а саму
@@ -479,7 +633,22 @@ export const SCAM_BIO_WARNING =
  * иначе предупреждение читалось бы как отметка на создателе.
  */
 export const SCAM_GROUP_WARNING =
-  "⚠️ Внимание: на эту группу много жаловались в связи с мошенничеством или попытками выдать себя за официальную группу. Будьте осторожны, особенно если у Вас попросят денег.";
+  "⚠️ Внимание: на эту группу часто жаловались в связи с мошенничеством или попытками выдать себя за официальную группу. Будьте осторожны, особенно если у Вас попросят денег.";
+
+/**
+ * Отметка FAKE: аккаунт притворяется официальным. Текст короче и мягче, чем у
+ * SCAM — здесь речь не о мошенничестве, а о подделке под официальный аккаунт.
+ * Как и у SCAM, подмена живёт на чтении: снятие отметки возвращает описание.
+ */
+export const FAKE_BIO_WARNING =
+  "⚠️ Внимание: многие жаловались, что этот аккаунт выдаёт себя за официальный.";
+
+/**
+ * То же предупреждение для группы: владелец помечает группу, а не её
+ * создателя, поэтому речь идёт о самой группе. Надписи латиницей, как у SCAM.
+ */
+export const FAKE_GROUP_WARNING =
+  "⚠️ Внимание: многие жаловались, что эта группа выдаёт себя за официальную.";
 
 /**
  * Описание группы, которое видит клиент. Как и у аккаунта, подмена живёт на
@@ -487,7 +656,25 @@ export const SCAM_GROUP_WARNING =
  */
 export function groupDescriptionFor(conversation: Conversation): string {
   if (conversation.scam) return SCAM_GROUP_WARNING;
+  if (conversation.fake) return FAKE_GROUP_WARNING;
   return conversation.description ?? "";
+}
+
+/**
+ * Ссылка на оформление: переподписываем свою, чужую оставляем как есть.
+ *
+ * 🔥 Фон хранится готовой строкой, а не вложением, и подпись в ней протухает
+ * через сутки. Пока строку не переподписывать при чтении, фон исчезал бы сам:
+ * файл на месте, а ссылка больше не открывается. Аватар и баннер живут иначе —
+ * их ссылки собираются заново из вложения на каждый ответ.
+ */
+function refreshDecorativeUrl(value: string, userId: string): string {
+  const own = /^\/api\/uploads\/([A-Za-z0-9._~-]+)(?:\?[^\s]*)?$/.exec(value.trim());
+  const uploadId = own?.[1];
+  // Внешняя ссылка (человек вписал адрес с картинкой из интернета) — не наша,
+  // подписи у неё нет и переподписывать нечего.
+  if (uploadId === undefined) return value;
+  return mediaUrlFor(decodeURIComponent(uploadId), userId, { kind: "avatar" });
 }
 
 export function toPublicUser(user: User): PublicUser {
@@ -496,15 +683,22 @@ export function toPublicUser(user: User): PublicUser {
   const avatar = user.avatar
     ? { ...user.avatar, url: mediaUrlFor(user.avatar.id, user.id, { kind: "avatar" }) }
     : null;
+  const banner = user.banner
+    ? { ...user.banner, url: mediaUrlFor(user.banner.id, user.id, { kind: "avatar" }) }
+    : null;
   return {
     id: user.id,
     displayName: user.displayName,
     username: user.username ?? null,
-    // Помеченный SCAM о себе ничего не рассказывает: вместо описания всегда
-    // идёт предупреждение, даже если человек вписал что-то другое.
-    bio: user.scam ? SCAM_BIO_WARNING : user.bio,
+    // Помеченный SCAM или FAKE о себе ничего не рассказывает: вместо описания
+    // всегда идёт предупреждение, даже если человек вписал что-то другое.
+    // SCAM важнее — он про мошенничество, а не только про подделку.
+    bio: user.scam ? SCAM_BIO_WARNING : user.fake ? FAKE_BIO_WARNING : user.bio,
     avatar,
     avatarUrl: avatar?.url ?? null,
+    bannerColor: user.bannerColor ?? undefined,
+    banner,
+    bannerUrl: user.bannerUrl ? refreshDecorativeUrl(user.bannerUrl, user.id) : banner?.url ?? null,
     lastSeenAt: user.showLastSeen === false ? null : user.lastSeenAt,
     lastSeenStatus: user.showLastSeen === false ? lastSeenStatus(user.lastSeenAt) : null,
     online: false,
@@ -512,6 +706,7 @@ export function toPublicUser(user: User): PublicUser {
     isVerified: user.isVerified ?? false,
     badge: user.badge ?? null,
     scam: user.scam ?? false,
+    fake: user.fake ?? false,
     usernames: user.usernames ?? undefined,
     adminUserIds: user.adminUserIds ?? undefined,
     isOwner: user.isOwner ?? undefined,
@@ -519,6 +714,9 @@ export function toPublicUser(user: User): PublicUser {
     isFrozen: user.isFrozen ?? undefined,
     isDeleted: user.isDeleted ?? undefined,
     birthday: user.birthday ?? undefined,
+    friendIds: user.friendIds ?? undefined,
+    isApp: user.isApp ?? undefined,
+    isBot: user.isBot ?? undefined,
   };
 }
 
@@ -547,10 +745,14 @@ export function toPublicUserFor(user: User, viewerId?: string | null): PublicUse
   if (user.isFrozen) return frozenPlaceholderFor(user.id);
   const base = toPublicUser(user);
   if (!viewerId || !user.blockedUserIds?.includes(viewerId)) return base;
+  // Заблокировавший видит только имя — оформление профиля тоже прячем.
   return {
     ...base,
     avatar: null,
     avatarUrl: null,
+    bannerColor: undefined,
+    banner: null,
+    bannerUrl: null,
     lastSeenAt: null,
     lastSeenStatus: "long_ago",
     online: false,
@@ -566,12 +768,15 @@ export function removedUserPlaceholder(id: string): PublicUser {
     bio: "",
     avatar: null,
     avatarUrl: null,
+    banner: null,
+    bannerUrl: null,
     lastSeenAt: null,
     lastSeenStatus: null,
     online: false,
     createdAt: new Date(0).toISOString(),
     isFrozen: false,
     scam: false,
+    fake: false,
   };
 }
 
@@ -613,16 +818,32 @@ export function toCurrentUser(user: User): CurrentUser {
     email: user.email,
     showLastSeen: user.showLastSeen ?? true,
     notificationSoundEnabled: user.notificationSoundEnabled,
+    // Отсутствие поля — это аккаунт, созданный до появления подтверждения:
+    // считаем его подтверждённым.
+    emailVerified: user.emailVerified !== false,
     ...(user.themeColor === undefined ? {} : { themeColor: user.themeColor }),
-    ...(user.wallpaperUrl === undefined ? {} : { wallpaperUrl: user.wallpaperUrl }),
+    ...(user.wallpaperUrl === undefined
+      ? {}
+      : { wallpaperUrl: refreshDecorativeUrl(user.wallpaperUrl, user.id) }),
+    ...(user.wallpaperMimeType === undefined
+      ? {}
+      : { wallpaperMimeType: user.wallpaperMimeType }),
+    ...(user.bannerColor === undefined ? {} : { bannerColor: user.bannerColor }),
     ...(user.isVerified === undefined ? {} : { isVerified: user.isVerified }),
     ...(user.badge === undefined ? {} : { badge: user.badge }),
     ...(user.scam === undefined ? {} : { scam: user.scam }),
+    ...(user.fake === undefined ? {} : { fake: user.fake }),
     ...(user.usernames === undefined ? {} : { usernames: user.usernames }),
     ...(user.adminUserIds === undefined ? {} : { adminUserIds: user.adminUserIds }),
     ...(user.isOwner === undefined ? {} : { isOwner: user.isOwner }),
     ...(user.isBanned === undefined ? {} : { isBanned: user.isBanned }),
     ...(user.isFrozen === undefined ? {} : { isFrozen: user.isFrozen }),
     ...(user.birthday === undefined ? {} : { birthday: user.birthday }),
+    ...(user.isApp === undefined ? {} : { isApp: user.isApp }),
+    ...(user.isBot === undefined ? {} : { isBot: user.isBot }),
+    // `null` — осознанный выбор «никогда не завершать». Отдаём его всегда, а не
+    // только когда поле есть: иначе переключатель в настройках вернулся бы в
+    // «никогда» после перезахода, а клиент не отличил бы «не задано» от «никогда».
+    sessionAutoTerminateDays: user.sessionAutoTerminateDays ?? null,
   };
 }

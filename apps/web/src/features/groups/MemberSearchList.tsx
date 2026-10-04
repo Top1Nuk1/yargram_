@@ -3,6 +3,7 @@ import { Check, Search } from 'lucide-react';
 import { api } from '../../api/client';
 import { Avatar, InlineError, Spinner } from '../../components/ui';
 import { UserName } from '../../components/UserName';
+import { useTranslation } from '../../hooks/useLanguage';
 import { avatarProps } from '../../lib/user';
 import type { User } from '../../types';
 
@@ -32,10 +33,11 @@ export function MemberSearchList({
   selectedIds,
   onToggle,
   excludeIds = [],
-  placeholder = 'Найти человека по @username',
+  placeholder,
   listClassName = 'min-h-[160px]',
   autoFocus = false,
 }: MemberSearchListProps) {
+  const t = useTranslation();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<User[]>([]);
   const [state, setState] = useState<SearchState>('idle');
@@ -78,7 +80,7 @@ export function MemberSearchList({
           value={query}
           autoFocus={autoFocus}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder={placeholder}
+          placeholder={placeholder ?? t('groups.searchHint')}
           autoComplete="off"
           className="h-11 w-full rounded-xl border border-line bg-canvas pl-11 pr-4 text-sm text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
         />
@@ -87,7 +89,7 @@ export function MemberSearchList({
       <div className={`overflow-y-auto px-1 pt-2 ${listClassName}`}>
         {state === 'idle' && (
           <p className="px-4 py-8 text-center text-sm text-muted">
-            Введите хотя бы три символа username.
+            {t('groups.searchMinChars')}
           </p>
         )}
         {state === 'loading' && (
@@ -95,14 +97,14 @@ export function MemberSearchList({
             <Spinner className="h-6 w-6" />
           </div>
         )}
-        {state === 'error' && <InlineError message="Не удалось выполнить поиск." />}
+        {state === 'error' && <InlineError message={t('groups.searchFailed')} />}
         {state === 'success' && visible.length === 0 && (
           <p className="px-4 py-8 text-center text-sm text-muted">
-            {results.length > 0 ? 'Все найденные уже в группе.' : 'Никого не нашли.'}
+            {results.length > 0 ? t('groups.allAlreadyInGroup') : t('groups.nobodyMatched')}
           </p>
         )}
         {state === 'success' && visible.length > 0 && (
-          <ul className="space-y-1" aria-label="Найденные пользователи">
+          <ul className="space-y-1" aria-label={t('groups.foundUsers')}>
             {visible.map((user) => {
               const chosen = selectedIds.includes(user.id);
               return (

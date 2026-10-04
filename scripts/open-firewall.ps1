@@ -6,12 +6,24 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$localAddress = "26.53.76.128"
-if ($env:RADMIN_IP) {
-    $localAddress = $env:RADMIN_IP
+# Раньше правило открывало порт только для подсети Radmin VPN (26.0.0.0/8):
+# адрес был локальным и в интернет не смотрел. Теперь Yargram может работать
+# через публичное имя (туннель или VPS), и тогда серверу нужно принимать
+# соединения снаружи — иначе до него не дойдёт даже локальный cloudflared.
+#
+# Поэтому удалённая подсеть берётся из YARGRAM_ALLOWED_NETWORKS: по умолчанию
+# остаётся прежняя Radmin-подсеть, а для публичной работы укажите там `any`
+# или конкретную подсеть.
+$allowedNetworks = $env:YARGRAM_ALLOWED_NETWORKS
+if ([string]::IsNullOrWhiteSpace($allowedNetworks)) {
+    $allowedNetworks = "26.0.0.0/8"
 }
-$radminAddressRange = "26.0.0.0/8"
-$acceptedRadminRanges = @($radminAddressRange, "26.0.0.0/255.0.0.0")
+$acceptedRemoteRanges = @($allowedNetworks -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+$firewallDescription = if ($acceptedRemoteRanges -contains "any") {
+    "Yargram: доступ снаружи (публичный адрес)."
+} else {
+    "Yargram access for peers on $allowedNetworks."
+}
 
 $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object System.Security.Principal.WindowsPrincipal($currentIdentity)
@@ -30,15 +42,14 @@ function New-YargramFirewallRule {
     New-NetFirewallRule `
         -Name $Name `
         -DisplayName $DisplayName `
-        -Description "Temporary Yargram access for peers connected through Radmin VPN." `
+        -Description $firewallDescription `
         -Enabled True `
         -Direction Inbound `
         -Action Allow `
         -Profile Any `
         -Protocol TCP `
         -LocalPort $Port `
-        -LocalAddress $localAddress `
-        -RemoteAddress $radminAddressRange | Out-Null
+        -RemoteAddress $acceptedRemoteRanges | Out-Null
 }
 
 # Запасной путь на случай, когда cmdlet-ы Windows не сработали: netsh делает то
@@ -57,8 +68,7 @@ function Add-YargramFirewallRuleWithNetsh {
         "action=allow" `
         "protocol=TCP" `
         "localport=$Port" `
-        "localip=$localAddress" `
-        "remoteip=$radminAddressRange" `
+        "remoteip=$($acceptedRemoteRanges -join ',')" `
         "profile=any" `
         "enable=yes" | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -77,7 +87,7 @@ function Ensure-YargramFirewallRule {
         $existingRule = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
         if ($null -eq $existingRule) {
             New-YargramFirewallRule -Name $Name -DisplayName $DisplayName -Port $Port
-            Write-Host "Добавлено правило: TCP $Port на $localAddress только для Radmin VPN ($radminAddressRange)." -ForegroundColor Green
+            Write-Host "Добавлено правило: TCP $Port для $allowedNetworks." -ForegroundColor Green
             return
         }
 
@@ -89,41 +99,49 @@ function Ensure-YargramFirewallRule {
             $portFilters[0].Protocol -eq "TCP" -and
             "$($portFilters[0].LocalPort)" -eq "$Port" -and
             $addressFilters.Count -eq 1 -and
-            @($addressFilters[0].LocalAddress) -contains $localAddress -and
             @($addressFilters[0].RemoteAddress | Where-Object {
-                    $acceptedRadminRanges -contains $_
+                    $acceptedRemoteRanges -contains $_
                 }).Count -gt 0
 
         if (-not $isExpectedRule) {
-            # Адрес Radmin VPN периодически меняется, поэтому правило могло
-            # остаться от прежнего адреса. Пересоздаём его, а не отказываемся
-            # работать: имя правила принадлежит Yargram.
-            Write-Host "Правило '$Name' не подходит адресу $localAddress — пересоздаём." -ForegroundColor Yellow
+            # Подсеть доступа могла смениться (Radmin отдаёт адрес заново,
+            # либо проект переехал на публичное имя). Пересоздаём правило, а не
+            # отказываемся работать: имя правила принадлежит Yargram.
+            Write-Host "Правило '$Name' не подходит для $allowedNetworks — пересоздаём." -ForegroundColor Yellow
             Remove-NetFirewallRule -Name $Name
             New-YargramFirewallRule -Name $Name -DisplayName $DisplayName -Port $Port
-            Write-Host "Правило обновлено: TCP $Port на $localAddress только для Radmin VPN." -ForegroundColor Green
+            Write-Host "Правило обновлено: TCP $Port для $allowedNetworks." -ForegroundColor Green
             return
         }
 
         if ($existingRule.Enabled -ne "True") {
             Enable-NetFirewallRule -Name $Name | Out-Null
         }
-        Write-Host "[OK] Windows Firewall: TCP $Port только через Radmin VPN." -ForegroundColor Green
+        Write-Host "[OK] Windows Firewall: TCP $Port для $allowedNetworks." -ForegroundColor Green
     }
     catch {
         Write-Warning "Не удалось настроить правило '$Name' средствами Windows: $($_.Exception.Message)"
         Add-YargramFirewallRuleWithNetsh -Name $Name -Port $Port
-        Write-Host "Правило TCP $Port создано через netsh: $localAddress, Radmin VPN ($radminAddressRange)." -ForegroundColor Green
+        Write-Host "Правило TCP $Port создано через netsh: $allowedNetworks." -ForegroundColor Green
     }
 }
 
 # Keep the original internal name for compatibility with the already-created
 # rule. PowerShell rule lookup is case-insensitive, while visible text uses Yargram.
+$httpPort = 3000
+if (-not [string]::IsNullOrWhiteSpace($env:PORT)) {
+    $httpPort = [int]$env:PORT
+}
+$httpsPort = 3443
+if (-not [string]::IsNullOrWhiteSpace($env:HTTPS_PORT)) {
+    $httpsPort = [int]$env:HTTPS_PORT
+}
+
 Ensure-YargramFirewallRule `
-    -Name "YarGram-Temporary-TCP-3000" `
-    -DisplayName "Yargram temporary server (TCP 3000)" `
-    -Port 3000
+    -Name "YarGram-Temporary-TCP-$httpPort" `
+    -DisplayName "Yargram server (TCP $httpPort)" `
+    -Port $httpPort
 Ensure-YargramFirewallRule `
-    -Name "Yargram-Temporary-TCP-3443" `
-    -DisplayName "Yargram secure calls (TCP 3443)" `
-    -Port 3443
+    -Name "Yargram-Temporary-TCP-$httpsPort" `
+    -DisplayName "Yargram secure calls (TCP $httpsPort)" `
+    -Port $httpsPort

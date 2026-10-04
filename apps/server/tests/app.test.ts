@@ -1,5 +1,5 @@
 import { createServer, type Server as HttpServer } from "node:http";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
@@ -20,7 +20,16 @@ import { FolderService } from "../src/services/folder-service.js";
 import { GroupService } from "../src/services/group-service.js";
 import { ScheduledMessageService } from "../src/services/scheduled-message-service.js";
 import { ChatService, type MessageView } from "../src/services/chat-service.js";
-import { SCAM_BIO_WARNING, SCAM_GROUP_WARNING } from "../src/domain/models.js";
+import { FriendService } from "../src/services/friend-service.js";
+import { SessionService } from "../src/services/session-service.js";
+import { SupportBotService } from "../src/services/support-bot-service.js";
+import { uploadLimits } from "../src/services/upload-service.js";
+import {
+  FAKE_BIO_WARNING,
+  FAKE_GROUP_WARNING,
+  SCAM_BIO_WARNING,
+  SCAM_GROUP_WARNING,
+} from "../src/domain/models.js";
 import { JsonDatabase } from "../src/storage/json-database.js";
 
 const temporaryDirectories: string[] = [];
@@ -52,6 +61,7 @@ async function createHarness(seedState?: unknown) {
     jwtSecret: config.jwtSecret,
     jwtExpiresIn: config.jwtExpiresIn,
     bcryptRounds: config.bcryptRounds,
+    sessions: repositories.sessions,
   });
   const chatService = new ChatService(repositories);
   const events = new RealtimeEvents();
@@ -60,6 +70,9 @@ async function createHarness(seedState?: unknown) {
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);
   const scheduledMessageService = new ScheduledMessageService(repositories, chatService, events);
+  const friendService = new FriendService(repositories, events);
+  const sessionService = new SessionService(repositories.sessions, repositories.users, events);
+  const supportBotService = new SupportBotService(repositories, chatService, events);
   const app = createApp({
     config,
     repositories,
@@ -70,6 +83,9 @@ async function createHarness(seedState?: unknown) {
     draftService,
     folderService,
     scheduledMessageService,
+    friendService,
+    sessionService,
+    supportBotService,
     events,
     crypto,
   });
@@ -84,6 +100,9 @@ async function createHarness(seedState?: unknown) {
     draftService,
     folderService,
     scheduledMessageService,
+    friendService,
+    sessionService,
+    supportBotService,
     events,
   };
 }
@@ -161,6 +180,30 @@ describe("Yargram API", () => {
     ).toThrow(/different/);
   });
 
+  // 🔥 По умолчанию доверие прокси выключено намеренно: `X-Forwarded-For`
+  // подделывается обычным запросом, а по адресу клиента у нас работает
+  // ограничитель попыток входа. Включить его можно только явно.
+  it("доверие прокси выключено, пока не задано обратное", () => {
+    expect(loadConfig({ NODE_ENV: "test" }).trustProxy).toBe(false);
+    expect(loadConfig({ NODE_ENV: "test", TRUST_PROXY: "false" }).trustProxy).toBe(false);
+    expect(loadConfig({ NODE_ENV: "test", TRUST_PROXY: "" }).trustProxy).toBe(false);
+  });
+
+  it("понимает «да» и список подсетей в TRUST_PROXY", () => {
+    expect(loadConfig({ NODE_ENV: "test", TRUST_PROXY: "true" }).trustProxy).toBe(true);
+    expect(loadConfig({ NODE_ENV: "test", TRUST_PROXY: "yes" }).trustProxy).toBe(true);
+    // Список подсетей отдаём Express как есть, не пытаясь разобрать сами:
+    // понимает его именно Express.
+    expect(loadConfig({ NODE_ENV: "test", TRUST_PROXY: "loopback, uniquelocal" }).trustProxy)
+      .toBe("loopback, uniquelocal");
+  });
+
+  it("сохраняет PUBLIC_ORIGIN без хвостового слеша", () => {
+    const config = loadConfig({ NODE_ENV: "test", PUBLIC_ORIGIN: "https://yargram.example.com/" });
+    expect(config.publicOrigin).toBe("https://yargram.example.com");
+    expect(loadConfig({ NODE_ENV: "test" }).publicOrigin).toBeUndefined();
+  });
+
   it("registers, logs in and atomically updates a profile", async () => {
     const { app } = await createHarness();
     const health = await request(app).get("/api/health");
@@ -199,6 +242,16 @@ describe("Yargram API", () => {
       displayName: "Alice",
       bio: "",
     });
+
+    // Аккаунт без ника: юзернейм необязателен, аккаунт всё равно создаётся.
+    const anonymous = await request(app).post("/api/auth/register").send({
+      email: "no-username@example.com",
+      password: "correct horse battery staple",
+      displayName: "Без ника",
+    });
+    expect(anonymous.status).toBe(201);
+    expect(anonymous.body.user).toMatchObject({ displayName: "Без ника" });
+    expect(anonymous.body.user.username ?? "").toBe("");
 
     await register(app, "bob@example.com", "Bob");
     const updated = await request(app)
@@ -1048,6 +1101,69 @@ describe("Yargram API", () => {
       withoutToken(avatar.body.user.avatarUrl),
     );
 
+    // Баннер профиля: заливка и фото, видимые другим. Без этого полоса просто
+    // не доехала бы до публичного профиля — как было со всеми пропущенными
+    // полями при добавлении нового флага.
+    const bannerColor = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ bannerColor: "#7a5cff" });
+    expect(bannerColor.status).toBe(200);
+    expect(bannerColor.body.user.bannerColor).toBe("#7a5cff");
+    expect(bannerColor.body.user.bannerUrl).toBeNull();
+
+    const banner = await request(harness.app)
+      .post("/api/users/me/banner")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("banner", png, { filename: "banner.png", contentType: "image/png" });
+    expect(banner.status).toBe(201);
+    expect(banner.body.user.bannerUrl).toMatch(/^\/api\/uploads\/[0-9a-f-]+\?t=/);
+    const bannerProfile = await request(harness.app)
+      .get(`/api/users/${alice.user.id}`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(withoutToken(bannerProfile.body.user.bannerUrl)).toBe(
+      withoutToken(banner.body.user.bannerUrl),
+    );
+    expect(bannerProfile.body.user.bannerColor).toBe("#7a5cff");
+
+    // Снятие фото возвращает заливку, а пустая строка убирает и её.
+    const bannerRemoved = await request(harness.app)
+      .delete("/api/users/me/banner")
+      .set("Authorization", bearer(alice.accessToken));
+    expect(bannerRemoved.status).toBe(200);
+    expect(bannerRemoved.body.user.bannerUrl).toBeNull();
+    const bannerCleared = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ bannerColor: "" });
+    expect(bannerCleared.body.user.bannerColor).toBeUndefined();
+
+    // GIF разрешён именно баннеру: он анимированный, и живая полоса — то, чего
+    // от баннера ждут. Подпись GIF89a — то же, что проверяет detectImageMime.
+    const gif = Buffer.concat([
+      Buffer.from("GIF89a", "ascii"),
+      Buffer.alloc(26),
+    ]);
+    const animatedBanner = await request(harness.app)
+      .post("/api/users/me/banner")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("banner", gif, { filename: "banner.gif", contentType: "image/gif" });
+    expect(animatedBanner.status).toBe(201);
+    expect(animatedBanner.body.user.banner.mimeType).toBe("image/gif");
+    // Отдаётся инлайном и именно как GIF — иначе браузер не станет анимировать.
+    const servedGif = await request(harness.app).get(animatedBanner.body.user.bannerUrl);
+    expect(servedGif.status).toBe(200);
+    expect(servedGif.headers["content-type"]).toContain("image/gif");
+    expect(servedGif.headers["content-disposition"]).toContain("inline");
+
+    // У аватара GIF по-прежнему запрещён: в кружке 40 px анимация только рябит.
+    const gifAvatar = await request(harness.app)
+      .post("/api/users/me/avatar")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("avatar", gif, { filename: "avatar.gif", contentType: "image/gif" });
+    expect(gifAvatar.status).toBe(400);
+    expect(gifAvatar.body.error.code).toBe("UPLOAD_EXTENSION_INVALID");
+
     const fakeImage = await request(harness.app)
       .post("/api/uploads?kind=image")
       .set("Authorization", bearer(alice.accessToken))
@@ -1789,6 +1905,70 @@ describe("Yargram API", () => {
     expect(cleared.body.user).toMatchObject({ scam: false, bio: original });
   });
 
+  it("replaces the bio of a FAKE-marked account and restores it when cleared", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "fake-owner@example.com", "FakeOwner");
+    const bob = await register(harness.app, "fake-bob@example.com", "FakeBob");
+    const plain = await register(harness.app, "fake-plain@example.com", "FakePlain");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+    const bobAuth = { Authorization: bearer(bob.accessToken) };
+
+    const original = "Официальный аккаунт Yargram";
+    await request(harness.app).patch("/api/users/me").set(bobAuth).send({ bio: original }).expect(200);
+
+    // Обычный пользователь отметку FAKE выдать не может.
+    const forbidden = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/fake`)
+      .set({ Authorization: bearer(plain.accessToken) })
+      .send({ fake: true });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_OWNER");
+
+    const marked = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/fake`)
+      .set(ownerAuth)
+      .send({ fake: true });
+    expect(marked.status).toBe(200);
+    expect(marked.body.user.fake).toBe(true);
+    // Подмена описания живёт на чтении: в ответе — предупреждение о подделке.
+    expect(marked.body.user.bio).toBe(FAKE_BIO_WARNING);
+
+    // Собеседник видит предупреждение вместо описания.
+    const publicProfile = await request(harness.app)
+      .get(`/api/users/${bob.user.id}`)
+      .set(ownerAuth)
+      .expect(200);
+    expect(publicProfile.body.user).toMatchObject({ fake: true, bio: FAKE_BIO_WARNING });
+
+    // И сам помеченный тоже — у себя в профиле он видит то же предупреждение.
+    const me = await request(harness.app).get("/api/auth/me").set(bobAuth).expect(200);
+    expect(me.body.user).toMatchObject({ fake: true, bio: FAKE_BIO_WARNING });
+
+    // Описание не меняется, но остальные настройки профиля сохраняются.
+    const write = await request(harness.app)
+      .patch("/api/users/me")
+      .set(bobAuth)
+      .send({ bio: "новое описание", displayName: "Fake Bob Renamed" })
+      .expect(200);
+    expect(write.body.user).toMatchObject({
+      displayName: "Fake Bob Renamed",
+      fake: true,
+      bio: FAKE_BIO_WARNING,
+    });
+    // Прежнее описание живо в записи — его вернёт снятие отметки.
+    await expect(harness.repositories.users.findById(bob.user.id)).resolves.toMatchObject({
+      bio: original,
+    });
+
+    const cleared = await request(harness.app)
+      .post(`/api/admin/${bob.user.id}/fake`)
+      .set(ownerAuth)
+      .send({ fake: false });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.user).toMatchObject({ fake: false, bio: original });
+  });
+
   it("grants a group the checkmark, the Yargram badge and the SCAM mark", async () => {
     const harness = await createHarness();
     const owner = await register(harness.app, "group-owner@example.com", "GroupOwner");
@@ -1877,6 +2057,90 @@ describe("Yargram API", () => {
     });
   });
 
+  it("marks a group as FAKE and warns about impersonation", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "fake-group-owner@example.com", "FakeGroupOwner");
+    const alice = await register(harness.app, "fake-group-alice@example.com", "FakeGroupAlice");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set(aliceAuth)
+      .send({ title: "Не официальный Yargram", description: "Настоящее описание" });
+    expect(created.status).toBe(201);
+    const groupId = created.body.conversation.id as string;
+
+    const fake = await request(harness.app)
+      .post(`/api/admin/groups/${groupId}/marks`)
+      .set(ownerAuth)
+      .send({ fake: true });
+    expect(fake.status).toBe(200);
+    expect(fake.body.group).toMatchObject({ id: groupId, fake: true, scam: false });
+
+    // Участник видит и отметку, и предупреждение о подделке — о группе, а не
+    // об аккаунте: перепутать тексты значило бы обвинить создателя группы.
+    const warned = await request(harness.app).get("/api/conversations").set(aliceAuth).expect(200);
+    expect(warned.body.conversations[0]).toMatchObject({
+      fake: true,
+      description: FAKE_GROUP_WARNING,
+    });
+    expect(FAKE_GROUP_WARNING).toContain("эта группа");
+    expect(FAKE_GROUP_WARNING).not.toContain("аккаунт");
+
+    // 🔥 SCAM и FAKE могут стоять разом, и тогда в описании побеждает SCAM:
+    // он строже, а порядок веток в `groupDescriptionFor` это и задаёт.
+    await request(harness.app)
+      .post(`/api/admin/groups/${groupId}/marks`)
+      .set(ownerAuth)
+      .send({ scam: true });
+    const both = await request(harness.app).get("/api/conversations").set(aliceAuth).expect(200);
+    expect(both.body.conversations[0]).toMatchObject({
+      scam: true,
+      fake: true,
+      description: SCAM_GROUP_WARNING,
+    });
+
+    // Снятие SCAM возвращает описание FAKE, а не исходный текст.
+    await request(harness.app)
+      .post(`/api/admin/groups/${groupId}/marks`)
+      .set(ownerAuth)
+      .send({ scam: false });
+    const fakeOnly = await request(harness.app).get("/api/conversations").set(aliceAuth).expect(200);
+    expect(fakeOnly.body.conversations[0]).toMatchObject({
+      scam: false,
+      fake: true,
+      description: FAKE_GROUP_WARNING,
+    });
+
+    // Прежнее описание живо в записи — его вернёт снятие последней отметки.
+    await expect(harness.repositories.conversations.findById(groupId)).resolves.toMatchObject({
+      description: "Настоящее описание",
+      fake: true,
+    });
+
+    // Отметка живёт только у владельца Yargram: обычный участник её не ставит.
+    const forbidden = await request(harness.app)
+      .post(`/api/admin/groups/${groupId}/marks`)
+      .set(aliceAuth)
+      .send({ fake: false });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_OWNER");
+
+    const cleared = await request(harness.app)
+      .post(`/api/admin/groups/${groupId}/marks`)
+      .set(ownerAuth)
+      .send({ fake: false });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.group.fake).toBe(false);
+    const back = await request(harness.app).get("/api/conversations").set(aliceAuth).expect(200);
+    expect(back.body.conversations[0]).toMatchObject({
+      fake: false,
+      description: "Настоящее описание",
+    });
+  });
+
   it("finds groups for the owner panel by title, invite code and id", async () => {
     const harness = await createHarness();
     const owner = await register(harness.app, "search-owner@example.com", "SearchOwner");
@@ -1937,6 +2201,147 @@ describe("Yargram API", () => {
 
     // Постороннему список групп недоступен.
     const forbidden = await request(harness.app).get("/api/admin/groups").set(aliceAuth);
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_OWNER");
+  });
+
+  it("counts every account and every group for the owner summary", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "stats-owner@example.com", "StatsOwner");
+    const alice = await register(harness.app, "stats-alice@example.com", "StatsAlice");
+    const bob = await register(harness.app, "stats-bob@example.com", "StatsBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+
+    await request(harness.app)
+      .post("/api/groups")
+      .set(aliceAuth)
+      .send({ title: "Первая группа", memberIds: [bob.user.id] })
+      .expect(201);
+    await request(harness.app).post("/api/groups").set(aliceAuth).send({ title: "Вторая группа" }).expect(201);
+
+    // Личный диалог и «Избранное» — не группы, в счёт не идут.
+    await request(harness.app)
+      .post("/api/conversations/direct")
+      .set(aliceAuth)
+      .send({ userId: owner.user.id })
+      .expect(201);
+    await request(harness.app).post("/api/conversations/saved").set(aliceAuth).expect(201);
+
+    const stats = await request(harness.app).get("/api/admin/stats").set(ownerAuth).expect(200);
+    expect(stats.body.stats).toEqual({ totalUsers: 3, groups: 2 });
+
+    // Удаление мягкое: аккаунт уходит из выдачи, но из базы не исчезает, и
+    // в сводке он по-прежнему посчитан — почта и ник ведь остались занятыми.
+    await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth).expect(200);
+    const afterDelete = await request(harness.app).get("/api/admin/stats").set(ownerAuth).expect(200);
+    expect(afterDelete.body.stats).toEqual({ totalUsers: 3, groups: 2 });
+
+    // Обычному человеку сводка по всей установке не показывается.
+    const forbidden = await request(harness.app).get("/api/admin/stats").set(aliceAuth);
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_OWNER");
+  });
+
+  it("lists accounts for the owner with handles and dates", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "accounts-owner@example.com", "AccountsOwner");
+    const alice = await register(harness.app, "accounts-alice@example.com", "AliceLongNickname");
+    const bob = await register(harness.app, "accounts-bob@example.com", "AccountsBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    // Два дополнительных ника: владелец должен видеть их списком, а не только первый.
+    await harness.repositories.users.update(alice.user.id, { usernames: ["alice_two", "alice_three"] });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+    const aliceAuth = { Authorization: bearer(alice.accessToken) };
+
+    const all = await request(harness.app).get("/api/admin/accounts").set(ownerAuth).expect(200);
+    expect(all.body.accounts).toHaveLength(3);
+    // Свежие сверху: последним завели Bob, он и идёт первым.
+    expect(all.body.accounts.map((account: { displayName: string }) => account.displayName)).toEqual([
+      "AccountsBob",
+      "AliceLongNickname",
+      "AccountsOwner",
+    ]);
+    expect(all.body.accounts[1]).toMatchObject({
+      username: "alicelongnickname",
+      usernames: ["alice_two", "alice_three"],
+      isOwner: false,
+      isFrozen: false,
+      isDeleted: false,
+      deletedAt: null,
+    });
+    // Дату создания отдаём как есть — список показывает её рядом с именем.
+    expect(typeof all.body.accounts[0].createdAt).toBe("string");
+    expect(all.body.accounts[2]).toMatchObject({ isOwner: true });
+    // Время последнего входа — тоже строкой, и оно не пусто ни у кого: у старых
+    // записей хранилище подставляет дату создания, а не `null`.
+    for (const account of all.body.accounts) {
+      expect(typeof account.lastSeenAt).toBe("string");
+      expect(account.lastSeenAt.length).toBeGreaterThan(0);
+    }
+
+    // 🔥 Время входа видно владельцу **даже если аккаунт скрыл его от других**:
+    // админке нужен факт входа, а приватность касается посторонних. Иначе
+    // владелец не отличил бы брошенный аккаунт от живого.
+    await harness.repositories.users.update(alice.user.id, { showLastSeen: false });
+    const hiddenAlice = await harness.repositories.users.findById(alice.user.id);
+    // Сам факт хранится в записи, а `showLastSeen` управляет только тем, что
+    // видят собеседники в `toPublicUser`.
+    expect(typeof hiddenAlice?.lastSeenAt).toBe("string");
+    const withHidden = await request(harness.app).get("/api/admin/accounts").set(ownerAuth).expect(200);
+    const aliceRow = withHidden.body.accounts.find(
+      (account: { id: string }) => account.id === alice.user.id,
+    );
+    expect(aliceRow.lastSeenAt).toBe(hiddenAlice?.lastSeenAt);
+
+    // Удалённый аккаунт остаётся в списке настоящим ником: владелец как раз
+    // и ищет, кого удалил, по имени, а не по заглушке «Удалённый аккаунт».
+    await request(harness.app).delete(`/api/admin/${bob.user.id}`).set(ownerAuth).expect(200);
+    const afterDelete = await request(harness.app).get("/api/admin/accounts").set(ownerAuth).expect(200);
+    const deleted = afterDelete.body.accounts.find(
+      (account: { id: string }) => account.id === bob.user.id,
+    );
+    expect(deleted).toMatchObject({ displayName: "AccountsBob", isDeleted: true });
+    expect(typeof deleted.deletedAt).toBe("string");
+
+    // Фильтры разделяют живые, замороженные и удалённые аккаунты.
+    await harness.repositories.users.update(alice.user.id, { isFrozen: true });
+    const frozen = await request(harness.app)
+      .get("/api/admin/accounts")
+      .query({ filter: "frozen" })
+      .set(ownerAuth)
+      .expect(200);
+    expect(frozen.body.accounts.map((account: { id: string }) => account.id)).toEqual([alice.user.id]);
+    const deletedOnly = await request(harness.app)
+      .get("/api/admin/accounts")
+      .query({ filter: "deleted" })
+      .set(ownerAuth)
+      .expect(200);
+    expect(deletedOnly.body.accounts.map((account: { id: string }) => account.id)).toEqual([bob.user.id]);
+    const active = await request(harness.app)
+      .get("/api/admin/accounts")
+      .query({ filter: "active" })
+      .set(ownerAuth)
+      .expect(200);
+    expect(active.body.accounts.map((account: { id: string }) => account.id)).toEqual([owner.user.id]);
+
+    // Поиск идёт по нику, дополнительному нику и почте.
+    const byAlias = await request(harness.app)
+      .get("/api/admin/accounts")
+      .query({ q: "alice_three" })
+      .set(ownerAuth)
+      .expect(200);
+    expect(byAlias.body.accounts.map((account: { id: string }) => account.id)).toEqual([alice.user.id]);
+    const byEmail = await request(harness.app)
+      .get("/api/admin/accounts")
+      .query({ q: "accounts-owner@" })
+      .set(ownerAuth)
+      .expect(200);
+    expect(byEmail.body.accounts.map((account: { id: string }) => account.id)).toEqual([owner.user.id]);
+
+    // Список аккаунтов — только владельцу.
+    const forbidden = await request(harness.app).get("/api/admin/accounts").set(aliceAuth);
     expect(forbidden.status).toBe(403);
     expect(forbidden.body.error.code).toBe("NOT_OWNER");
   });
@@ -3336,6 +3741,649 @@ describe("Yargram API", () => {
   });
 });
 
+describe("friends", () => {
+  it("заводит дружбу по заявке и убирает обе стороны при удалении", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "friend-alice@example.com", "FriendAlice");
+    const bob = await register(harness.app, "friend-bob@example.com", "FriendBob");
+
+    // Заявка: у Алисы она исходящая, у Боба — входящая.
+    const requested = await request(harness.app)
+      .post(`/api/friends/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(requested.status).toBe(201);
+    expect(requested.body.state).toBe("outgoing");
+
+    const aliceList = await request(harness.app)
+      .get("/api/friends")
+      .set("Authorization", bearer(alice.accessToken));
+    expect(aliceList.body.friends).toHaveLength(0);
+    expect(aliceList.body.outgoing).toHaveLength(1);
+    expect(aliceList.body.outgoing[0].user.id).toBe(bob.user.id);
+
+    const bobList = await request(harness.app)
+      .get("/api/friends")
+      .set("Authorization", bearer(bob.accessToken));
+    expect(bobList.body.incoming).toHaveLength(1);
+    expect(bobList.body.incoming[0].user.id).toBe(alice.user.id);
+
+    // Чужой профиль показывает состояние связи — по нему рисуется кнопка.
+    const bobSeenByAlice = await request(harness.app)
+      .get(`/api/users/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(bobSeenByAlice.body.user.friendship).toBe("outgoing");
+
+    // Принятие: обе стороны видят друг друга в друзьях, заявки закрыты.
+    const accepted = await request(harness.app)
+      .post(`/api/friends/${alice.user.id}/accept`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(accepted.body.state).toBe("friends");
+
+    const aliceAfter = await request(harness.app)
+      .get("/api/friends")
+      .set("Authorization", bearer(alice.accessToken));
+    expect(aliceAfter.body.friends).toHaveLength(1);
+    expect(aliceAfter.body.friends[0].user.id).toBe(bob.user.id);
+    expect(aliceAfter.body.outgoing).toHaveLength(0);
+
+    const bobAfter = await request(harness.app)
+      .get("/api/friends")
+      .set("Authorization", bearer(bob.accessToken));
+    expect(bobAfter.body.friends).toHaveLength(1);
+    expect(bobAfter.body.incoming).toHaveLength(0);
+
+    // Удаление из друзей чистит обе записи, а не одну.
+    const removed = await request(harness.app)
+      .delete(`/api/friends/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(removed.body.state).toBe("none");
+    const bobCleared = await request(harness.app)
+      .get("/api/friends")
+      .set("Authorization", bearer(bob.accessToken));
+    expect(bobCleared.body.friends).toHaveLength(0);
+  });
+
+  it("встречная заявка сразу делает людей друзьями", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "mutual-alice@example.com", "MutualAlice");
+    const bob = await register(harness.app, "mutual-bob@example.com", "MutualBob");
+
+    await request(harness.app)
+      .post(`/api/friends/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    // Боб не принимает вручную, а тоже жмёт «добавить» — заявка взаимная.
+    const answer = await request(harness.app)
+      .post(`/api/friends/${alice.user.id}`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(answer.body.state).toBe("friends");
+
+    for (const user of [alice, bob]) {
+      const list = await request(harness.app)
+        .get("/api/friends")
+        .set("Authorization", bearer(user.accessToken));
+      expect(list.body.friends).toHaveLength(1);
+      expect(list.body.incoming).toHaveLength(0);
+      expect(list.body.outgoing).toHaveLength(0);
+    }
+  });
+
+  it("повторная заявка не создаёт дубль, и себя добавить нельзя", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "dup-alice@example.com", "DupAlice");
+    const bob = await register(harness.app, "dup-bob@example.com", "DupBob");
+
+    await request(harness.app)
+      .post(`/api/friends/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    const again = await request(harness.app)
+      .post(`/api/friends/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(again.body.state).toBe("outgoing");
+
+    const list = await request(harness.app)
+      .get("/api/friends")
+      .set("Authorization", bearer(alice.accessToken));
+    expect(list.body.outgoing).toHaveLength(1);
+
+    // Заявка самому себе — ошибка, а не запись в свой же список.
+    const self = await request(harness.app)
+      .post(`/api/friends/${alice.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(self.status).toBe(400);
+    expect(self.body.error.code).toBe("FRIEND_SELF");
+  });
+
+  it("заблокированному заявка не уходит", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "block-alice@example.com", "BlockAlice");
+    const bob = await register(harness.app, "block-bob@example.com", "BlockBob");
+
+    // Боб заблокировал Алису: заявка от неё не должна пройти.
+    await request(harness.app)
+      .put(`/api/users/${alice.user.id}/block`)
+      .set("Authorization", bearer(bob.accessToken));
+
+    const attempt = await request(harness.app)
+      .post(`/api/friends/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(attempt.status).toBe(403);
+    expect(attempt.body.error.code).toBe("FRIEND_UNAVAILABLE");
+    // Автору заявки не сообщаем, что его заблокировали — только «нельзя».
+    expect(attempt.body.error.message).not.toContain("block");
+  });
+
+  it("отклонение заявки снимает её у обоих", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "decl-alice@example.com", "DeclAlice");
+    const bob = await register(harness.app, "decl-bob@example.com", "DeclBob");
+
+    await request(harness.app)
+      .post(`/api/friends/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    // Отклоняет получатель — тот, кому заявка пришла. В адресе стоит автор
+    // заявки, а не собственный id: иначе получатель отклонил бы сам себя.
+    const declined = await request(harness.app)
+      .post(`/api/friends/${alice.user.id}/decline`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(declined.body.state).toBe("none");
+
+    for (const user of [alice, bob]) {
+      const list = await request(harness.app)
+        .get("/api/friends")
+        .set("Authorization", bearer(user.accessToken));
+      expect(list.body.friends).toHaveLength(0);
+      expect(list.body.incoming).toHaveLength(0);
+      expect(list.body.outgoing).toHaveLength(0);
+    }
+  });
+
+  it("удаление аккаунта вычищает его из чужих друзей", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "owner@example.com", "Owner");
+    const alice = await register(harness.app, "gone-alice@example.com", "GoneAlice");
+    const bob = await register(harness.app, "gone-bob@example.com", "GoneBob");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+
+    await request(harness.app)
+      .post(`/api/friends/${bob.user.id}`)
+      .set("Authorization", bearer(alice.accessToken));
+    await request(harness.app)
+      .post(`/api/friends/${alice.user.id}/accept`)
+      .set("Authorization", bearer(bob.accessToken));
+
+    const friendsBefore = await request(harness.app)
+      .get("/api/friends")
+      .set("Authorization", bearer(bob.accessToken));
+    expect(friendsBefore.body.friends).toHaveLength(1);
+
+    await request(harness.app)
+      .delete(`/api/admin/${alice.user.id}`)
+      .set("Authorization", bearer(owner.accessToken));
+
+    // Удалённый аккаунт больше не висит в друзьях у Боба.
+    const friendsAfter = await request(harness.app)
+      .get("/api/friends")
+      .set("Authorization", bearer(bob.accessToken));
+    expect(friendsAfter.body.friends).toHaveLength(0);
+  });
+});
+
+describe("знак приложения", () => {
+  it("приложение ставит себе значок Yargram само", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "app-owner@example.com", "AppOwner");
+    const app = await register(harness.app, "app@example.com", "YargramApp");
+    // Владельцем себя назначить через API нельзя — только в базе, как и в жизни.
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+
+    // Обычный аккаунт значок себе выдать не может.
+    const denied = await request(harness.app)
+      .post("/api/app/badge")
+      .set("Authorization", bearer(app.accessToken))
+      .send({ badge: "yargram" });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe("NOT_APP");
+
+    // Владелец помечает аккаунт приложением.
+    const marked = await request(harness.app)
+      .post(`/api/admin/${app.user.id}/app`)
+      .set("Authorization", bearer(owner.accessToken))
+      .send({ isApp: true });
+    expect(marked.status).toBe(200);
+    expect(marked.body.user.isApp).toBe(true);
+
+    const granted = await request(harness.app)
+      .post("/api/app/badge")
+      .set("Authorization", bearer(app.accessToken))
+      .send({ badge: "yargram" });
+    expect(granted.status).toBe(200);
+    expect(granted.body.user.badge).toBe("yargram");
+
+    // Значок виден в публичном профиле приложения.
+    const publicProfile = await request(harness.app)
+      .get(`/api/users/${app.user.id}`)
+      .set("Authorization", bearer(owner.accessToken));
+    expect(publicProfile.body.user.badge).toBe("yargram");
+
+    // Снять значок приложение тоже может само.
+    const cleared = await request(harness.app)
+      .post("/api/app/badge")
+      .set("Authorization", bearer(app.accessToken))
+      .send({ badge: null });
+    expect(cleared.body.user.badge).toBeNull();
+  });
+
+  it("значок себе выдаёт только приложение, и снятие пометки снимает значок", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "badge-owner@example.com", "BadgeOwner");
+    const person = await register(harness.app, "badge-person@example.com", "BadgePerson");
+    const app = await register(harness.app, "badge-app@example.com", "BadgeApp");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+
+    await request(harness.app)
+      .post(`/api/admin/${app.user.id}/app`)
+      .set("Authorization", bearer(owner.accessToken))
+      .send({ isApp: true });
+    await request(harness.app)
+      .post("/api/app/badge")
+      .set("Authorization", bearer(app.accessToken))
+      .send({ badge: "yargram" });
+
+    // Пометку «приложение» может снять только владелец, а не сам человек.
+    const notOwner = await request(harness.app)
+      .post(`/api/admin/${person.user.id}/app`)
+      .set("Authorization", bearer(app.accessToken))
+      .send({ isApp: true });
+    expect(notOwner.status).toBe(403);
+    expect(notOwner.body.error.code).toBe("NOT_OWNER");
+
+    // Снятие пометки заодно снимает значок: приложение перестало быть приложением.
+    const unmarked = await request(harness.app)
+      .post(`/api/admin/${app.user.id}/app`)
+      .set("Authorization", bearer(owner.accessToken))
+      .send({ isApp: false });
+    expect(unmarked.body.user.isApp).toBe(false);
+    expect(unmarked.body.user.badge).toBeNull();
+  });
+});
+
+describe("точный поиск аккаунта для админки", () => {
+  it("находит владельца по своему же нику — обычный поиск его исключает", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "self-owner@example.com", "SelfOwner");
+    const other = await register(harness.app, "self-other@example.com", "SelfOther");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const auth = { Authorization: bearer(owner.accessToken) };
+
+    // Обычный поиск себя не отдаёт: он исключает ищущего.
+    const search = await request(harness.app)
+      .get("/api/users")
+      .query({ q: "selfowner" })
+      .set(auth);
+    expect(search.body.users).toHaveLength(0);
+
+    // Точный поиск — отдаёт, иначе владелец не смог бы выдать себе значок.
+    const found = await request(harness.app)
+      .post("/api/admin/lookup")
+      .set(auth)
+      .send({ handle: "@SelfOwner" });
+    expect(found.status).toBe(200);
+    expect(found.body.user).toMatchObject({ id: owner.user.id, username: "selfowner" });
+
+    // Дополнительный ник тоже находится.
+    await harness.repositories.users.update(other.user.id, { usernames: ["ДопНік"] });
+    const byAlias = await request(harness.app)
+      .post("/api/admin/lookup")
+      .set(auth)
+      .send({ handle: "допнік" });
+    expect(byAlias.body.user).toMatchObject({ id: other.user.id });
+
+    // Нет такого — честный null, а не ошибка.
+    const missing = await request(harness.app)
+      .post("/api/admin/lookup")
+      .set(auth)
+      .send({ handle: "неттакогоника" });
+    expect(missing.status).toBe(200);
+    expect(missing.body.user).toBeNull();
+  });
+
+  it("не пускает обычного человека", async () => {
+    const harness = await createHarness();
+    const someone = await register(harness.app, "not-owner@example.com", "NotOwner");
+    const response = await request(harness.app)
+      .post("/api/admin/lookup")
+      .set("Authorization", bearer(someone.accessToken))
+      .send({ handle: "someone" });
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe("NOT_OWNER");
+  });
+});
+
+describe("лимит размера загрузки", () => {
+  it("сообщает про конкретный лимит баннера, а не общее «Request body is too large»", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "size-alice@example.com", "SizeAlice");
+
+    // Тело заведомо больше лимита баннера + запас на multipart-обвязку.
+    const oversized = Buffer.alloc(uploadLimits.banner + 2 * 1024 * 1024, 0x41);
+    const response = await request(harness.app)
+      .post("/api/users/me/banner")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("banner", oversized, { filename: "big.gif", contentType: "image/gif" });
+
+    expect(response.status).toBe(413);
+    // Раньше общая ветка 413 в обработчике ошибок съедала понятный текст
+    // загрузчика и подменяла его на «Request body is too large».
+    expect(response.body.error.code).toBe("UPLOAD_TOO_LARGE");
+    expect(response.body.error.message).not.toBe("Request body is too large");
+  });
+
+  it("у фона свой предел, а у фото в переписке — прежние 20 МиБ", async () => {
+    // Фон поднимали до 50 МиБ. Просто поднять `image` значило бы молча
+    // поднять и предел обычного фото: интерфейс обещает 20 МиБ, поэтому у
+    // фона отдельный вид загрузки, а этот предел остался на месте.
+    expect(uploadLimits.wallpaper).toBe(50 * 1024 * 1024);
+    expect(uploadLimits.image).toBe(20 * 1024 * 1024);
+    expect(uploadLimits.banner).toBe(50 * 1024 * 1024);
+
+    const harness = await createHarness();
+    const alice = await register(harness.app, "size-wall@example.com", "SizeWall");
+
+    // GIF пущен и фону: его тоже ставят анимированным.
+    const gif = Buffer.concat([Buffer.from("GIF89a", "ascii"), Buffer.alloc(26)]);
+    const wallpaper = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", gif, { filename: "wall.gif", contentType: "image/gif" });
+    expect(wallpaper.status).toBe(201);
+    expect(wallpaper.body.attachment.kind).toBe("wallpaper");
+    expect(wallpaper.body.attachment.mimeType).toBe("image/gif");
+
+    // Тело заведомо больше 20 МиБ: фоном прошло бы, обычным фото — нет.
+    const overImageLimit = Buffer.concat([
+      Buffer.from("GIF89a", "ascii"),
+      Buffer.alloc(uploadLimits.image + 1024, 0x41),
+    ]);
+    const asPhoto = await request(harness.app)
+      .post("/api/uploads?kind=image")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", overImageLimit, { filename: "big.gif", contentType: "image/gif" });
+    expect(asPhoto.status).toBe(413);
+
+    const asWallpaper = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", overImageLimit, { filename: "big.gif", contentType: "image/gif" });
+    expect(asWallpaper.status).toBe(201);
+    expect(asWallpaper.body.attachment.kind).toBe("wallpaper");
+  });
+
+  it("сохраняет загруженный фон, а не отвечает 400 на относительный путь", async () => {
+    // Загрузка отдаёт ссылку вида `/api/uploads/<id>?t=<подпись>` — без
+    // протокола. Пока схема профиля требовала «обязательно URL», файл уходил,
+    // а сохранение падало 400 «Request validation failed»: всё выглядело так,
+    // будто сервер не принимает сам файл.
+    const harness = await createHarness();
+    const alice = await register(harness.app, "wall-save@example.com", "WallSave");
+
+    const gif = Buffer.concat([Buffer.from("GIF89a", "ascii"), Buffer.alloc(26)]);
+    const uploaded = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", gif, { filename: "wall.gif", contentType: "image/gif" });
+    expect(uploaded.status).toBe(201);
+
+    const url = uploaded.body.attachment.url as string;
+    expect(url.startsWith("/api/uploads/")).toBe(true);
+
+    const saved = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ wallpaperUrl: url });
+    expect(saved.status).toBe(200);
+    // Ссылку на оформление сервер пересобирает при чтении (подпись в ?t=
+    // живёт ограниченное время), поэтому сравниваем путь до файла, а не
+    // строку целиком: токен в ответе заведомо свежий.
+    expect(saved.body.user.wallpaperUrl.split("?")[0]).toBe(url.split("?")[0]);
+
+    // Пустая строка по-прежнему означает «вернуть стандартный фон».
+    const cleared = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ wallpaperUrl: "" });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.user.wallpaperUrl ?? "").toBe("");
+
+    // Посторонний мусор ссылкой не считается: схему мы расширили, а не сняли.
+    const junk = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ wallpaperUrl: "javascript:alert(1)" });
+    expect(junk.status).toBe(400);
+    expect(junk.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("принимает встроенные обои приложения и снимает фон вместе с типом", async () => {
+    // Встроенные обои — не загрузка, а файл рядом с интерфейсом:
+    // `/wallpapers/Yargram-wallpaper-blue.png`. Такой путь обязан проходить
+    // схему, иначе кнопка «Обои» в настройках отвечала бы ошибкой.
+    const harness = await createHarness();
+    const alice = await register(harness.app, "wall-builtin@example.com", "WallBuiltin");
+
+    const applied = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ wallpaperUrl: "/wallpapers/Yargram-wallpaper-blue.png", wallpaperMimeType: "image/png" });
+    expect(applied.status).toBe(200);
+    expect(applied.body.user.wallpaperUrl).toBe("/wallpapers/Yargram-wallpaper-blue.png");
+    expect(applied.body.user.wallpaperMimeType).toBe("image/png");
+
+    // Снятие: пустая ссылка и пустой тип — чат возвращается к стандартному
+    // заполнению, а «это было видео» не остаётся в профиле.
+    const cleared = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ wallpaperUrl: "", wallpaperMimeType: "" });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.user.wallpaperUrl ?? "").toBe("");
+    expect(cleared.body.user.wallpaperMimeType ?? "").toBe("");
+
+    // Чужой сайт под видом пути — по-прежнему не наш файл.
+    const foreign = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ wallpaperUrl: "//evil.example.com/pic.png" });
+    expect(foreign.status).toBe(400);
+    expect(foreign.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("переподписывает ссылку на фон при каждом чтении профиля", async () => {
+    // Фон хранится строкой, и подпись в ней живёт сутки. Без переподписи фон
+    // пропадал бы сам через день: файл цел, а ссылка уже не открывается.
+    const harness = await createHarness();
+    const alice = await register(harness.app, "wall-resign@example.com", "WallResign");
+
+    const gif = Buffer.concat([Buffer.from("GIF89a", "ascii"), Buffer.alloc(26)]);
+    const uploaded = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", gif, { filename: "wall.gif", contentType: "image/gif" });
+    const stored = uploaded.body.attachment.url as string;
+
+    const saved = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ wallpaperUrl: stored });
+    // Тот же файл (путь совпадает), подпись уже свежая.
+    expect(saved.body.user.wallpaperUrl?.split("?")[0]).toBe(stored.split("?")[0]);
+
+    const readProfile = async () => {
+      const response = await request(harness.app)
+        .get("/api/auth/me")
+        .set("Authorization", bearer(alice.accessToken));
+      expect(response.status).toBe(200);
+      return response.body.user as { wallpaperUrl?: string };
+    };
+
+    // Подпись «протухла»: подсовываем ту же ссылку с заведомо мёртвой
+    // подписью и убеждаемся, что профиль всё равно отдаёт рабочую.
+    const expired = `${stored.split("?")[0]}?t=expired-signature`;
+    await harness.repositories.users.update(alice.user.id, { wallpaperUrl: expired });
+
+    const reloaded = await readProfile();
+    expect(reloaded.wallpaperUrl).not.toBe(expired);
+    expect(reloaded.wallpaperUrl?.startsWith("/api/uploads/")).toBe(true);
+    // И новая ссылка действительно открывается, а не просто выглядит свежей.
+    const served = await request(harness.app).get(reloaded.wallpaperUrl!);
+    expect(served.status).toBe(200);
+
+    // Внешнюю ссылку не трогаем: подписи у неё нет.
+    await harness.repositories.users.update(alice.user.id, {
+      wallpaperUrl: "https://example.com/wall.jpg",
+    });
+    expect((await readProfile()).wallpaperUrl).toBe("https://example.com/wall.jpg");
+  });
+});
+
+describe("живое оформление: видео в фоне и баннере", () => {
+  // mp4 начинается с бокса `ftyp`: четыре байта длины, затем сам `ftyp` и бренд.
+  const mp4 = () =>
+    Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x18]),
+      Buffer.from("ftypisom", "ascii"),
+      Buffer.alloc(16),
+    ]);
+  // webm — заголовок EBML.
+  const webm = () => Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(16)]);
+
+  it("принимает mp4 и webm и в фон, и в баннер", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "video-ok@example.com", "VideoOk");
+
+    const wallpaper = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", mp4(), { filename: "wall.mp4", contentType: "video/mp4" });
+    expect(wallpaper.status).toBe(201);
+    expect(wallpaper.body.attachment.kind).toBe("wallpaper");
+    expect(wallpaper.body.attachment.mimeType).toBe("video/mp4");
+
+    const webmWall = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", webm(), { filename: "wall.webm", contentType: "video/webm" });
+    expect(webmWall.status).toBe(201);
+    expect(webmWall.body.attachment.mimeType).toBe("video/webm");
+
+    const banner = await request(harness.app)
+      .post("/api/users/me/banner")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("banner", mp4(), { filename: "banner.mp4", contentType: "video/mp4" });
+    expect(banner.status).toBe(201);
+    expect(banner.body.user.banner.mimeType).toBe("video/mp4");
+  });
+
+  it("не верит расширению: переименованная картинка видео не становится", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "video-fake@example.com", "VideoFake");
+
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const renamed = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", png, { filename: "wall.mp4", contentType: "video/mp4" });
+    expect(renamed.status).toBe(400);
+    expect(renamed.body.error.code).toBe("UPLOAD_SIGNATURE_INVALID");
+
+    // Внутри mp4, а расширение webm — тоже несовпадение, и тоже не проходит.
+    const swapped = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", mp4(), { filename: "wall.webm", contentType: "video/webm" });
+    expect(swapped.status).toBe(400);
+    expect(swapped.body.error.code).toBe("UPLOAD_SIGNATURE_INVALID");
+  });
+
+  it("MOV не обещаем: браузеры играют его не везде", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "video-mov@example.com", "VideoMov");
+
+    const mov = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x14]),
+      Buffer.from("ftypqt  ", "ascii"),
+      Buffer.alloc(8),
+    ]);
+    const response = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", mov, { filename: "wall.mp4", contentType: "video/mp4" });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("UPLOAD_SIGNATURE_INVALID");
+  });
+
+  it("фото в переписке видео не принимает — живое только оформление", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "video-photo@example.com", "VideoPhoto");
+
+    const response = await request(harness.app)
+      .post("/api/uploads?kind=image")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", mp4(), { filename: "clip.mp4", contentType: "video/mp4" });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("UPLOAD_EXTENSION_INVALID");
+  });
+
+  it("видео-фон отдаётся инлайном, с типом видео и поддержкой перемотки", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "video-serve@example.com", "VideoServe");
+
+    const uploaded = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", mp4(), { filename: "wall.mp4", contentType: "video/mp4" });
+    expect(uploaded.status).toBe(201);
+
+    const saved = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ wallpaperUrl: uploaded.body.attachment.url, wallpaperMimeType: "video/mp4" });
+    expect(saved.status).toBe(200);
+    expect(saved.body.user.wallpaperMimeType).toBe("video/mp4");
+
+    // Профиль помнит, что это видео: без этого клиент нарисовал бы <img>.
+    const me = await request(harness.app)
+      .get("/api/auth/me")
+      .set("Authorization", bearer(alice.accessToken));
+    expect(me.body.user.wallpaperMimeType).toBe("video/mp4");
+
+    const url = saved.body.user.wallpaperUrl as string;
+    const served = await request(harness.app).get(url);
+    expect(served.status).toBe(200);
+    expect(served.headers["content-type"]).toContain("video/mp4");
+    // «Скачать файл» вместо показа сломало бы фон: браузер обязан играть его сам.
+    expect(served.headers["content-disposition"]).toContain("inline");
+    // Без диапазонов плеер не сможет даже начать с середины.
+    expect(served.headers["accept-ranges"]).toBe("bytes");
+
+    const ranged = await request(harness.app).get(url).set("Range", "bytes=0-3");
+    expect(ranged.status).toBe(206);
+    expect(ranged.headers["content-range"]).toMatch(/^bytes 0-3\//);
+  });
+
+  it("обычная картинка-фон остаётся картинкой", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "video-still@example.com", "VideoStill");
+
+    const gif = Buffer.concat([Buffer.from("GIF89a", "ascii"), Buffer.alloc(26)]);
+    const uploaded = await request(harness.app)
+      .post("/api/uploads?kind=wallpaper")
+      .set("Authorization", bearer(alice.accessToken))
+      .attach("file", gif, { filename: "wall.gif", contentType: "image/gif" });
+    expect(uploaded.status).toBe(201);
+    expect(uploaded.body.attachment.mimeType).toBe("image/gif");
+  });
+});
+
 function listen(server: HttpServer): Promise<void> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -3374,3 +4422,142 @@ function waitForSocketEvent<T>(socket: ClientSocket, eventName: string): Promise
     });
   });
 }
+
+/**
+ * 🔥 Два сайта из одного сервера: лендинг по `/`, приложение по `/app`.
+ *
+ * Проверяем именно разводку по путям, потому что обе страницы — одностраничные
+ * приложения: каждая отдаёт свой `index.html` на любой внутренний путь. Если
+ * перепутать порядок маршрутов, лендинг перекроет приложение, и заметить это
+ * можно только глазами в браузере — здесь это ловит тест.
+ */
+describe("два сайта: лендинг и приложение", () => {
+  async function createStaticHarness(options: { landing: boolean; web: boolean }) {
+    const directory = await mkdtemp(join(tmpdir(), "yargram-static-"));
+    temporaryDirectories.push(directory);
+
+    const landingDirectory = join(directory, "landing");
+    const webDirectory = join(directory, "web");
+
+    if (options.landing) {
+      await mkdir(landingDirectory, { recursive: true });
+      await writeFile(
+        join(landingDirectory, "index.html"),
+        "<!doctype html><title>Лендинг Yargram</title><p>Описание возможностей</p>",
+        "utf8",
+      );
+    }
+    if (options.web) {
+      await mkdir(join(webDirectory, "assets"), { recursive: true });
+      await writeFile(
+        join(webDirectory, "index.html"),
+        "<!doctype html><title>Yargram</title><div id=\"root\"></div>",
+        "utf8",
+      );
+      await writeFile(join(webDirectory, "assets", "app.js"), "console.log('yargram');", "utf8");
+    }
+
+    const config = {
+      ...loadConfig({
+        NODE_ENV: "production",
+        JWT_SECRET: "test-secret-that-is-long-enough",
+        DB_ENCRYPTION_KEY: "test-encryption-key-at-least-16",
+        BCRYPT_ROUNDS: "4",
+        DATA_DIR: directory,
+      }),
+      landingDistPath: landingDirectory,
+      webDistPath: webDirectory,
+    };
+
+    const database = new JsonDatabase(config.dataFile);
+    await database.initialize();
+    const crypto = new AtRestCrypto("test-encryption-key-at-least-16");
+    const repositories = withEncryption(createJsonRepositories(database), crypto);
+    const authService = new AuthService(repositories.users, {
+      jwtSecret: config.jwtSecret,
+      jwtExpiresIn: config.jwtExpiresIn,
+      bcryptRounds: config.bcryptRounds,
+      sessions: repositories.sessions,
+    });
+    const chatService = new ChatService(repositories);
+    const events = new RealtimeEvents();
+    const app = createApp({
+      config,
+      repositories,
+      authService,
+      chatService,
+      groupService: new GroupService(repositories, events, chatService),
+      adminService: new AdminService(repositories, events),
+      draftService: new DraftService(repositories, chatService, events),
+      folderService: new FolderService(repositories, chatService, events),
+      scheduledMessageService: new ScheduledMessageService(repositories, chatService, events),
+      friendService: new FriendService(repositories, events),
+      sessionService: new SessionService(repositories.sessions, repositories.users, events),
+      supportBotService: new SupportBotService(repositories, chatService, events),
+      events,
+      crypto,
+    });
+    return app;
+  }
+
+  it("корень отдаёт лендинг, а /app — приложение", async () => {
+    const app = await createStaticHarness({ landing: true, web: true });
+
+    const root = await request(app).get("/").set("Accept", "text/html");
+    expect(root.status).toBe(200);
+    expect(root.text).toContain("Лендинг Yargram");
+
+    const appRoute = await request(app).get("/app").set("Accept", "text/html");
+    expect(appRoute.status).toBe(200);
+    expect(appRoute.text).toContain('id="root"');
+  });
+
+  it("внутренние пути приложения уходят в приложение, а не в лендинг", async () => {
+    const app = await createStaticHarness({ landing: true, web: true });
+
+    // Клиентская маршрутизация: любой путь под /app должен отдать тот же
+    // index.html, иначе перезагрузка страницы в чате показала бы лендинг.
+    for (const path of ["/app/settings", "/app/chat/123"]) {
+      const response = await request(app).get(path).set("Accept", "text/html");
+      expect(response.status, path).toBe(200);
+      expect(response.text, path).toContain('id="root"');
+    }
+  });
+
+  it("статика приложения доступна по своему пути", async () => {
+    const app = await createStaticHarness({ landing: true, web: true });
+
+    const asset = await request(app).get("/app/assets/app.js");
+    expect(asset.status).toBe(200);
+    expect(asset.text).toContain("yargram");
+  });
+
+  it("без лендинга корень по-прежнему отдаёт приложение", async () => {
+    // Так выглядит обновление без пересборки лендинга: сайт не должен
+    // «пропасть» — приложение обязано остаться на месте.
+    const app = await createStaticHarness({ landing: false, web: true });
+
+    const root = await request(app).get("/").set("Accept", "text/html");
+    expect(root.status).toBe(200);
+    expect(root.text).toContain('id="root"');
+  });
+
+  it("API не перехватывается статикой ни на одном из сайтов", async () => {
+    const app = await createStaticHarness({ landing: true, web: true });
+
+    // Неизвестный маршрут API обязан отвечать 404 от API, а не HTML-страницей:
+    // иначе клиент получил бы `index.html` вместо ошибки и упал на разборе JSON.
+    for (const path of ["/api/unknown", "/app/api/unknown"]) {
+      const response = await request(app).get(path).set("Accept", "application/json");
+      expect(response.status, path).toBe(404);
+      expect(response.body, path).toMatchObject({ error: { code: "NOT_FOUND" } });
+    }
+  });
+
+  it("не-HTML запрос к корню не отдаёт страницу", async () => {
+    const app = await createStaticHarness({ landing: true, web: true });
+
+    const response = await request(app).get("/favicon-missing.ico").set("Accept", "image/png");
+    expect(response.status).toBe(404);
+  });
+});

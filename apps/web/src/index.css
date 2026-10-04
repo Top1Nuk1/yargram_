@@ -20,7 +20,9 @@
   --success: 58 165 108;
   --danger: 218 73 73;
   --warning: 226 154 45;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
+  /* Шрифт задаёт тема: `--app-font` ставится на <html> вместе с палитрой.
+     Значение в скобках — запасное, на случай если тема ещё не применилась. */
+  font-family: var(--app-font, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -57,6 +59,18 @@
   box-sizing: border-box;
   scrollbar-width: thin;
   scrollbar-color: rgb(var(--line)) transparent;
+}
+
+/*
+ * 🔥 У `<fieldset>` браузерное умолчание — `min-inline-size: min-content`.
+ * Поле не может стать уже своего содержимого, поэтому любая широкая лента
+ * внутри формы (галерея плиток, горизонтальная прокрутка) распирает всю форму
+ * до ширины ленты: карточка вылезает за экран, а `overflow-x-hidden` срезает
+ * её слева и справа. Сброс возвращает обычное поведение блока — поле
+ * подчиняется родителю, а лента прокручивается внутри себя.
+ */
+fieldset {
+  min-inline-size: 0;
 }
 
 html,
@@ -129,20 +143,47 @@ button:not(:disabled) {
 }
 .messenger-shell button:active:not(:disabled) { transform: scale(0.97); }
 .chat-sidebar > header {
-  background: linear-gradient(125deg, rgb(var(--brand) / 0.045), rgb(var(--accent) / 0.07)), rgb(var(--surface));
+  background:
+    linear-gradient(125deg, rgb(var(--brand) / 0.045), rgb(var(--accent) / 0.07)),
+    rgb(var(--surface));
 }
 .chat-sidebar li button[aria-current='true'] {
-  background-image: linear-gradient(115deg, rgb(var(--brand)), rgb(var(--accent)));
+  background-image: linear-gradient(115deg, var(--theme-palette, rgb(var(--brand)), rgb(var(--accent))));
+  background-size: 300% 300%;
+  animation: theme-flow var(--theme-flow, 0s) ease-in-out infinite;
 }
 .message-bubble { animation: message-arrive 240ms ease-out both; }
 .chat-panel > header, .settings-panel { animation: panel-arrive 220ms ease-out both; }
 .composer-shell input:focus, .composer-shell textarea:focus {
   box-shadow: 0 0 0 3px rgb(var(--brand) / 0.1);
 }
+/* Обои переписки: мягкие пятна цветов палитры. Их число не важно — пятна
+   берут цвета по кругу, поэтому тема с двумя и с пятью цветами выглядит
+   одинаково собранно. Перелив — та же переменная скорости, что у чата. */
 .chat-wallpaper {
+  background-color: rgb(var(--chat-bg));
   background-image:
-    radial-gradient(ellipse at 10% 15%, rgb(var(--brand) / 0.1), transparent 55%),
-    radial-gradient(ellipse at 90% 90%, rgb(var(--accent) / 0.12), transparent 60%);
+    radial-gradient(ellipse at 10% 15%, rgb(var(--brand) / 0.16), transparent 55%),
+    radial-gradient(ellipse at 90% 90%, rgb(var(--accent) / 0.18), transparent 60%);
+  background-size: 200% 200%;
+  animation: theme-flow var(--theme-flow, 0s) ease-in-out infinite;
+}
+
+/*
+ * Перелив: полотно градиента вдвое больше контейнера и медленно ездит по
+ * кругу, поэтому цвета плавно перетекают друг в друга. При `--theme-flow: 0s`
+ * анимация мгновенно замирает — выключенный перелив не требует другого класса.
+ */
+@keyframes theme-flow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-wallpaper,
+  .chat-sidebar li button[aria-current='true'] {
+    animation: none;
+  }
 }
 @media (hover: hover) {
   .chat-sidebar li button:hover { transform: translateX(2px); }

@@ -13,10 +13,13 @@ import { withEncryption } from "../src/repositories/encrypted-repositories.js";
 import { createJsonRepositories } from "../src/repositories/json-repositories.js";
 import { RealtimeEvents } from "../src/realtime/events.js";
 import { attachSocketServer, releaseSocketServer } from "../src/realtime/socket-server.js";
-import { AuthService } from "../src/services/auth-service.js";
+import { AuthService, type AuthResult, type EmailCodeChallenge } from "../src/services/auth-service.js";
 import { AdminService } from "../src/services/admin-service.js";
 import { DraftService } from "../src/services/draft-service.js";
 import { FolderService } from "../src/services/folder-service.js";
+import { FriendService } from "../src/services/friend-service.js";
+import { SessionService } from "../src/services/session-service.js";
+import { SupportBotService } from "../src/services/support-bot-service.js";
 import { GroupService } from "../src/services/group-service.js";
 import { ScheduledMessageService } from "../src/services/scheduled-message-service.js";
 import { ChatService } from "../src/services/chat-service.js";
@@ -24,6 +27,16 @@ import { databaseSchema, JsonDatabase } from "../src/storage/json-database.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+/**
+ * Подтверждение почты в тестах выключено, поэтому регистрация и вход всегда
+ * возвращают токен. Приведение нужно только ради типов: если вдруг вернулся
+ * вызов кода, тест должен упасть, а не молча продолжить с пустым токеном.
+ */
+function tokenResult(result: AuthResult | EmailCodeChallenge): AuthResult {
+  if ("status" in result) throw new Error("Expected an access token, got an email code challenge");
+  return result;
+}
+
 async function harness() {
   const directory = await mkdtemp(join(tmpdir(), "yargram-presence-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
@@ -32,7 +45,7 @@ async function harness() {
   await database.initialize();
   const crypto = new AtRestCrypto("test-encryption-key-at-least-16");
   const repositories = withEncryption(createJsonRepositories(database), crypto);
-  const authService = new AuthService(repositories.users, { jwtSecret: config.jwtSecret, jwtExpiresIn: config.jwtExpiresIn, bcryptRounds: 4 });
+  const authService = new AuthService(repositories.users, { jwtSecret: config.jwtSecret, jwtExpiresIn: config.jwtExpiresIn, bcryptRounds: 4, sessions: repositories.sessions });
   const chatService = new ChatService(repositories);
   const events = new RealtimeEvents();
   const adminService = new AdminService(repositories, events);
@@ -40,6 +53,9 @@ async function harness() {
   const draftService = new DraftService(repositories, chatService, events);
   const folderService = new FolderService(repositories, chatService, events);
   const scheduledMessageService = new ScheduledMessageService(repositories, chatService, events);
+  const friendService = new FriendService(repositories, events);
+  const sessionService = new SessionService(repositories.sessions, repositories.users, events);
+  const supportBotService = new SupportBotService(repositories, chatService, events);
   const app = createApp({
     config,
     repositories,
@@ -50,11 +66,14 @@ async function harness() {
     draftService,
     folderService,
     scheduledMessageService,
+    friendService,
+    sessionService,
+    supportBotService,
     events,
     crypto,
   });
-  const alice = await authService.register({ email: "alice@example.test", password: "password123", displayName: "Alice", username: "alice" });
-  const bob = await authService.register({ email: "bob@example.test", password: "password123", displayName: "Bob", username: "bob" });
+  const alice = tokenResult(await authService.register({ email: "alice@example.test", password: "password123", displayName: "Alice", username: "alice" }));
+  const bob = tokenResult(await authService.register({ email: "bob@example.test", password: "password123", displayName: "Bob", username: "bob" }));
   return { config, app, repositories, authService, chatService, draftService, folderService, scheduledMessageService, events, alice, bob };
 }
 const hidden = { lastSeenAt: null, online: false, lastSeenStatus: "recently" };

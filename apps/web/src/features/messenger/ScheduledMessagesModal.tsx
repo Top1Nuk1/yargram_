@@ -1,6 +1,7 @@
 import { Clock, Trash2, X } from 'lucide-react';
 import { Button } from '../../components/ui';
 import { conversationTitle } from '../../lib/conversation';
+import { useTranslation } from '../../hooks/useLanguage';
 import type { Conversation, ScheduledMessage } from '../../types';
 
 interface ScheduledMessagesModalProps {
@@ -11,12 +12,12 @@ interface ScheduledMessagesModalProps {
   onCancel(scheduledId: string): void;
 }
 
-const statusLabels: Record<ScheduledMessage['status'], string> = {
-  pending: 'Ожидает отправки',
-  sending: 'Отправляется…',
-  sent: 'Отправлено',
-  failed: 'Не удалось отправить',
-  cancelled: 'Отменено',
+const statusKeys: Record<ScheduledMessage['status'], string> = {
+  pending: 'modals.scheduledPending',
+  sending: 'modals.scheduledSending',
+  sent: 'modals.scheduledSent',
+  failed: 'modals.scheduledFailed',
+  cancelled: 'modals.scheduledCancelled',
 };
 
 function formatSendTime(iso: string): string {
@@ -37,6 +38,7 @@ export function ScheduledMessagesModal({
   onClose,
   onCancel,
 }: ScheduledMessagesModalProps) {
+  const t = useTranslation();
   const pending = items.filter((item) => item.status === 'pending' || item.status === 'sending');
   const finished = items
     .filter((item) => item.status === 'failed' || item.status === 'sent' || item.status === 'cancelled')
@@ -44,7 +46,7 @@ export function ScheduledMessagesModal({
     .reverse();
   const titleFor = (conversationId: string): string => {
     const conversation = conversations.find((item) => item.id === conversationId);
-    return conversation ? conversationTitle(conversation, currentUserId) : 'Диалог';
+    return conversation ? conversationTitle(conversation, currentUserId, t) : t('modals.dialog');
   };
 
   return (
@@ -52,7 +54,7 @@ export function ScheduledMessagesModal({
       className="fixed inset-0 z-[90] grid place-items-center bg-black/40 p-4"
       role="dialog"
       aria-modal="true"
-      aria-label="Запланированные сообщения"
+      aria-label={t('modals.scheduledTitle')}
       onClick={onClose}
     >
       <div
@@ -61,11 +63,11 @@ export function ScheduledMessagesModal({
       >
         <div className="flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-base font-bold">
-            <Clock className="h-4 w-4 text-brand" /> Запланированные
+            <Clock className="h-4 w-4 text-brand" /> {t('modals.scheduledShort')}
           </h2>
           <button
             type="button"
-            aria-label="Закрыть"
+            aria-label={t('modals.close')}
             className="grid h-8 w-8 place-items-center rounded-xl hover:bg-line/60"
             onClick={onClose}
           >
@@ -73,7 +75,7 @@ export function ScheduledMessagesModal({
           </button>
         </div>
         {items.length === 0 ? (
-          <p className="mt-6 text-center text-sm text-muted">Пока нет запланированных сообщений.</p>
+          <p className="mt-6 text-center text-sm text-muted">{t('modals.scheduledEmpty')}</p>
         ) : (
           <>
             {pending.length > 0 && (
@@ -83,10 +85,10 @@ export function ScheduledMessagesModal({
                     <p className="text-xs font-semibold text-muted">
                       {titleFor(item.conversationId)} · {formatSendTime(item.sendAt)}
                     </p>
-                    <p className="mt-1 truncate text-sm">{item.text || '📎 Файл'}</p>
+                    <p className="mt-1 truncate text-sm">{item.text || t('modals.file')}</p>
                     <div className="mt-2 flex items-center justify-between">
                       <span className="text-[11px] font-semibold text-brand">
-                        {statusLabels[item.status]}
+                        {t(statusKeys[item.status])}
                       </span>
                       <Button
                         type="button"
@@ -94,7 +96,7 @@ export function ScheduledMessagesModal({
                         className="h-8 px-2 text-xs text-danger"
                         onClick={() => onCancel(item.id)}
                       >
-                        <Trash2 className="h-3.5 w-3.5" /> Отменить
+                        <Trash2 className="h-3.5 w-3.5" /> {t('modals.cancelScheduled')}
                       </Button>
                     </div>
                   </li>
@@ -106,13 +108,13 @@ export function ScheduledMessagesModal({
                 {finished.map((item) => (
                   <li key={item.id} className="flex items-center justify-between gap-2 px-1 text-xs text-muted">
                     <span className="min-w-0 flex-1 truncate">
-                      {titleFor(item.conversationId)} · {item.text || '📎 Файл'}
+                      {titleFor(item.conversationId)} · {item.text || t('modals.file')}
                     </span>
                     <span
                       className={`shrink-0 font-semibold ${item.status === 'failed' ? 'text-danger' : ''}`}
                       title={item.failureReason}
                     >
-                      {statusLabels[item.status]}
+                      {t(statusKeys[item.status])}
                     </span>
                   </li>
                 ))}

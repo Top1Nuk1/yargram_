@@ -2,6 +2,7 @@ import type {
   Attachment,
   Poll,
   AttachmentView,
+  BotKeyboard,
   CallMessage,
   CallRecord,
   Conversation,
@@ -13,14 +14,23 @@ import type {
   ReactionEmoji,
   ReportReason,
   ScheduledMessage,
+  Session,
+  SupportTicket,
   User,
   FavoriteNote,
   UserReport,
+  EmailCodePurpose,
 } from "../domain/models.js";
 
-export type CreateUserInput = Pick<User, "email" | "passwordHash" | "displayName" | "username">;
+export type CreateUserInput = Pick<User, "email" | "passwordHash" | "displayName" | "username"> & {
+  /** Почта подтверждена кодом из письма. Когда подтверждение включено, новый
+   *  аккаунт создаётся неподтверждённым и ждёт код. */
+  emailVerified?: boolean;
+};
 export type UpdateUserInput = {
   displayName?: string | undefined;
+  /** Смена пароля при сбросе по коду из письма. Кладём уже хеш, не пароль. */
+  passwordHash?: string | undefined;
   username?: string | undefined;
   bio?: string | undefined;
   avatar?: AttachmentView | null | undefined;
@@ -28,10 +38,19 @@ export type UpdateUserInput = {
   showLastSeen?: boolean | undefined;
   themeColor?: string | undefined;
   wallpaperUrl?: string | undefined;
+  /** Тип загруженного фона: `image/*` или `video/*` (для `<video>` вместо картинки). */
+  wallpaperMimeType?: string | undefined;
+  /** `null` убирает заливку баннера (как `avatar: null` убирает аватар). */
+  bannerColor?: string | null | undefined;
+  banner?: AttachmentView | null | undefined;
+  /** Прямая ссылка на баннер (без загрузки файла). `null` убирает. */
+  bannerUrl?: string | null | undefined;
   isVerified?: boolean;
   badge?: "yargram" | null;
   /** Отметка SCAM: владелец пометил аккаунт как мошеннический. */
   scam?: boolean;
+  /** Отметка FAKE: аккаунт выдаёт себя за официальный. */
+  fake?: boolean;
   usernames?: string[];
   adminUserIds?: string[];
   isOwner?: boolean;
@@ -41,6 +60,24 @@ export type UpdateUserInput = {
   isDeleted?: boolean;
   deletedAt?: string | undefined;
   birthday?: string | null | undefined;
+  /** Подтверждение почты кодом из письма. */
+  emailVerified?: boolean | undefined;
+  /** Хеш действующего кода. `null` стирает код — он больше не принимается. */
+  emailCodeHash?: string | null | undefined;
+  emailCodePurpose?: EmailCodePurpose | null | undefined;
+  emailCodeExpiresAt?: string | null | undefined;
+  emailCodeAttempts?: number | undefined;
+  /** Дружба. Входящие заявки пишет автор заявки — это его единственная запись
+   *  в чужой профиль, поэтому удаление аккаунта чистит списки у всех. */
+  friendIds?: string[];
+  outgoingFriendRequestIds?: string[];
+  incomingFriendRequestIds?: string[];
+  /** Признак приложения Yargram: ему разрешён собственный знак. */
+  isApp?: boolean;
+  /** Служебный аккаунт бота: вход в него закрыт, рядом с именем — плашка. */
+  isBot?: boolean;
+  /** Через сколько дней бездействия сеанс завершается сам; `null` — никогда. */
+  sessionAutoTerminateDays?: number | null | undefined;
 };
 
 export class RepositoryConflictError extends Error {
@@ -60,7 +97,36 @@ export interface UserRepository {
   setBlocked(userId: string, blockedUserId: string, blocked: boolean): Promise<User>;
   setFavorite(userId: string, messageId: string, favorite: boolean): Promise<User>;
   list(options: { query?: string; limit: number; excludeUserId?: string }): Promise<User[]>;
+  /**
+   * Точный поиск по адресу: основной ник или любой дополнительный, без учёта
+   * регистра. Нужен админ-панели: обычный `list` — это поиск по подстроке,
+   * который вдобавок исключает самого ищущего и потому не годится, чтобы
+   * владелец нашёл в нём свой же аккаунт.
+   */
+  findByHandle(handle: string): Promise<User | null>;
   findManyByIds(ids: string[]): Promise<User[]>;
+  /**
+   * Все аккаунты для списка владельца — свежие сверху. Удалённые и
+   * замороженные **входят**: владельцу нужно видеть их отдельными фильтрами,
+   * а `list` для этого не годится — он про поиск людей по подстроке, исключает
+   * самого ищущего и отдаёт лишь первые `limit` совпадений.
+   */
+  listAll(): Promise<User[]>;
+  /**
+   * Сколько всего аккаунтов заведено в Yargram. Считаем **все** записи, вместе
+   * с удалёнными и замороженными: удаление мягкое (почта и ник остаются
+   * занятыми), и человек, которого владелец «удалил», из базы никуда не делся.
+   * Отдельный счётчик нужен потому, что `list` — это поиск по подстроке с
+   * жёстким пределом выдачи, по нему общее число не узнать.
+   */
+  count(): Promise<number>;
+  /**
+   * Незавершённые регистрации, которые уже не завершатся: почта не подтверждена,
+   * а срок кода вышел (или кода нет вовсе). Их стирают начисто — см.
+   * `isFailedRegistration`. Отдельный запрос нужен, чтобы уборка не читала всех
+   * пользователей ради нескольких брошенных записей.
+   */
+  listFailedRegistrations(now: string): Promise<User[]>;
   /** Стирает аккаунт полностью — владелец удаляет пользователя. */
   delete(id: string): Promise<User | null>;
 }
@@ -72,6 +138,8 @@ export type CreateGroupInput = {
   avatarUrl?: string | null | undefined;
   memberIds: string[];
   inviteCode?: string | undefined;
+  /** Служебная группа поддержки: её не видно в поиске и приглашениях. */
+  isSupportInbox?: boolean | undefined;
 };
 
 export type UpdateConversationInput = {
@@ -90,10 +158,11 @@ export type UpdateConversationInput = {
   memberTags?: Record<string, string> | undefined;
   leftIds?: string[] | undefined;
   history?: GroupEvent[] | undefined;
-  /** Знаки владельца Yargram: галочка, значок и отметка SCAM у группы. */
+  /** Знаки владельца Yargram: галочка, значок и отметки SCAM/FAKE у группы. */
   isVerified?: boolean | undefined;
   badge?: "yargram" | null | undefined;
   scam?: boolean | undefined;
+  fake?: boolean | undefined;
 };
 
 export interface ConversationRepository {
@@ -104,12 +173,24 @@ export interface ConversationRepository {
   }>;
   /** Группа: владелец всегда первый участник, права по умолчанию разрешают всё. */
   createGroup(input: CreateGroupInput): Promise<Conversation>;
+  /**
+   * Служебная группа поддержки, куда бот пересылает обращения. Отдельный
+   * запрос, потому что искать её как обычную группу нельзя: она помечена
+   * `isSupportInbox` и в поиске по названию её быть не должно.
+   */
+  findSupportInbox(): Promise<Conversation | null>;
   findByInviteCode(code: string): Promise<Conversation | null>;
   /**
    * Группы для админ-панели: поиск по названию, коду из ссылки-приглашения или
    * по id. Пустой запрос отдаёт первые попавшиеся группы.
    */
   searchGroups(query: string, limit: number): Promise<Conversation[]>;
+  /**
+   * Сколько всего групп (без личных диалогов и «Избранного»). `searchGroups`
+   * для этого не годится: он отдаёт только первые `limit` совпадений, а по
+   * пустому запросу это не весь список, а его начало.
+   */
+  countGroups(): Promise<number>;
   update(id: string, input: UpdateConversationInput): Promise<Conversation>;
   findById(id: string): Promise<Conversation | null>;
   listForUser(userId: string): Promise<Conversation[]>;
@@ -131,6 +212,10 @@ export type CreateMessageInput = Pick<Message, "conversationId" | "senderId" | "
   systemEvent?: Message["systemEvent"];
   call?: CallMessage;
   poll?: Poll;
+  /** Кнопки под сообщением бота. */
+  keyboard?: BotKeyboard;
+  /** Обращение в поддержку, пересланное в группу владельцев. */
+  supportTicket?: SupportTicket;
 };
 
 export interface MessageRepository {
@@ -247,6 +332,41 @@ export interface ScheduledMessageRepository {
   markFailed(id: string, reason: string): Promise<ScheduledMessage>;
 }
 
+export type CreateSessionInput = {
+  userId: string;
+  tokenHashes: string[];
+  site: string;
+  device: string;
+  /** Вход с незнакомого сайта: владельца надо предупредить. */
+  newDevice?: boolean;
+};
+
+export type UpdateSessionInput = {
+  tokenHashes?: string[];
+  site?: string | undefined;
+  device?: string | undefined;
+  lastSeenAt?: string | undefined;
+  acknowledgedAt?: string | null | undefined;
+  terminatedAt?: string | null | undefined;
+};
+
+export interface SessionRepository {
+  create(input: CreateSessionInput): Promise<Session>;
+  findById(id: string): Promise<Session | null>;
+  /**
+   * По отпечатку токена. Завершённые сеансы тоже находятся: их токен мёртв,
+   * а запись нужна, чтобы токен при следующем запросе не «усыновили» заново
+   * как новый вход.
+   */
+  findByTokenHash(hash: string): Promise<Session | null>;
+  /** Все сеансы человека, включая завершённые, — свежие сверху. */
+  listForUser(userId: string): Promise<Session[]>;
+  update(id: string, input: UpdateSessionInput): Promise<Session>;
+  delete(id: string): Promise<Session | null>;
+  /** Все сеансы человека разом: аккаунт удалён, входов быть не должно. */
+  deleteForUser(userId: string): Promise<void>;
+}
+
 export type Repositories = {
   users: UserRepository;
   conversations: ConversationRepository;
@@ -258,4 +378,5 @@ export type Repositories = {
   drafts: DraftRepository;
   folders: FolderRepository;
   scheduledMessages: ScheduledMessageRepository;
+  sessions: SessionRepository;
 };

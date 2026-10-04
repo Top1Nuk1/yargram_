@@ -9,6 +9,7 @@ import type {
   FavoriteNote,
   Message,
   ScheduledMessage,
+  Session,
   User,
   UserReport,
 } from "../domain/models.js";
@@ -27,7 +28,8 @@ type Table =
   | "calls"
   | "drafts"
   | "folders"
-  | "scheduled_messages";
+  | "scheduled_messages"
+  | "sessions";
 type Queryable = Pick<PoolClient, "query">;
 const now = () => new Date().toISOString();
 
@@ -102,6 +104,20 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
           )[0] ?? null
         );
       },
+      async findByHandle(handle) {
+        const wanted = handle.trim().replace(/^@/, "").toLowerCase();
+        if (!wanted) return null;
+        return (
+          (
+            await select<User>(
+              pool,
+              "users",
+              "username_key = $1 OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(payload->'usernames', '[]'::jsonb)) AS alias WHERE lower(alias) = $1)",
+              [wanted],
+            )
+          )[0] ?? null
+        );
+      },
       async update(id, input) {
         try {
           return await mutate<User>("users", id, "User", (user) => {
@@ -113,10 +129,18 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
             else if (input.avatar !== undefined) user.avatar = input.avatar;
             if (input.themeColor !== undefined) user.themeColor = input.themeColor;
             if (input.wallpaperUrl !== undefined) user.wallpaperUrl = input.wallpaperUrl;
+            if (input.wallpaperMimeType !== undefined) user.wallpaperMimeType = input.wallpaperMimeType;
+            if (input.bannerColor === null) delete user.bannerColor;
+            else if (input.bannerColor !== undefined) user.bannerColor = input.bannerColor;
+            if (input.banner === null) delete user.banner;
+            else if (input.banner !== undefined) user.banner = input.banner;
+            if (input.bannerUrl === null) delete user.bannerUrl;
+            else if (input.bannerUrl !== undefined) user.bannerUrl = input.bannerUrl;
             if (input.notificationSoundEnabled !== undefined) user.notificationSoundEnabled = input.notificationSoundEnabled;
             if (input.isVerified !== undefined) user.isVerified = input.isVerified;
             if (input.badge !== undefined) user.badge = input.badge;
             if (input.scam !== undefined) user.scam = input.scam;
+            if (input.fake !== undefined) user.fake = input.fake;
             if (input.usernames !== undefined) user.usernames = input.usernames;
             if (input.adminUserIds !== undefined) user.adminUserIds = input.adminUserIds;
             if (input.isOwner !== undefined) user.isOwner = input.isOwner;
@@ -124,9 +148,36 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
             if (input.isFrozen !== undefined) user.isFrozen = input.isFrozen;
             if (input.isDeleted !== undefined) user.isDeleted = input.isDeleted;
             if (input.deletedAt !== undefined) user.deletedAt = input.deletedAt;
+            if (input.friendIds !== undefined) user.friendIds = input.friendIds;
+            if (input.outgoingFriendRequestIds !== undefined) user.outgoingFriendRequestIds = input.outgoingFriendRequestIds;
+            if (input.incomingFriendRequestIds !== undefined) user.incomingFriendRequestIds = input.incomingFriendRequestIds;
+            if (input.isApp !== undefined) user.isApp = input.isApp;
+            if (input.isBot !== undefined) user.isBot = input.isBot;
             if (input.birthday !== undefined) {
               if (input.birthday === null) delete user.birthday;
               else user.birthday = input.birthday;
+            }
+            if (input.emailVerified !== undefined) user.emailVerified = input.emailVerified;
+            if (input.passwordHash !== undefined) user.passwordHash = input.passwordHash;
+            // Код подтверждения: `null` стирает поле, чтобы в записи не осталось
+            // даже просроченного кода.
+            if (input.emailCodeHash !== undefined) {
+              if (input.emailCodeHash === null) delete user.emailCodeHash;
+              else user.emailCodeHash = input.emailCodeHash;
+            }
+            if (input.emailCodePurpose !== undefined) {
+              if (input.emailCodePurpose === null) delete user.emailCodePurpose;
+              else user.emailCodePurpose = input.emailCodePurpose;
+            }
+            if (input.emailCodeExpiresAt !== undefined) {
+              if (input.emailCodeExpiresAt === null) delete user.emailCodeExpiresAt;
+              else user.emailCodeExpiresAt = input.emailCodeExpiresAt;
+            }
+            if (input.emailCodeAttempts !== undefined) user.emailCodeAttempts = input.emailCodeAttempts;
+            // Автозавершение сеансов: `null` — никогда, число — срок бездействия.
+            if (input.sessionAutoTerminateDays !== undefined) {
+              if (input.sessionAutoTerminateDays === null) delete user.sessionAutoTerminateDays;
+              else user.sessionAutoTerminateDays = input.sessionAutoTerminateDays;
             }
           });
         } catch (error) { return conflict(error); }
@@ -146,8 +197,7 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
           return save(client, "users", user);
         });
       },
-      async list(options) {
-        const query = options.query?.trim().replace(/^@/, "").toLowerCase();
+      async list(options) {        const query = options.query?.trim().replace(/^@/, "").toLowerCase();
         const users = await select<User>(
           pool,
           "users",
@@ -157,6 +207,28 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         return users.sort((a, b) => (a.username ?? a.displayName).localeCompare(b.username ?? b.displayName, "ru")).slice(0, options.limit);
       },
       findManyByIds: (ids) => select<User>(pool, "users", "id = ANY($1::text[])", [ids]),
+      // Колонки created_at в таблице нет — сортируем по дате из payload.
+      listAll: () => select<User>(pool, "users", "TRUE", [], "ORDER BY payload->>'createdAt' DESC, sequence DESC"),
+      // Копия правила `isFailedRegistration` на SQL (см. `domain/models.ts`):
+      // почта не подтверждена, код истёк или его нет, а явные решения владельца
+      // (заморозка, удаление) уважаем. Сравнение строк, а не времени: даты у нас
+      // ISO в UTC, и лексикографический порядок совпадает с хронологическим.
+      listFailedRegistrations: (now) =>
+        select<User>(
+          pool,
+          "users",
+          "payload->>'emailVerified' = 'false'"
+            + " AND payload->>'isDeleted' IS DISTINCT FROM 'true'"
+            + " AND payload->>'isFrozen' IS DISTINCT FROM 'true'"
+            + " AND (payload->>'emailCodeExpiresAt' IS NULL OR payload->>'emailCodeExpiresAt' <= $1)",
+          [now],
+        ),
+      // Счётчик берём у самой базы: тянуть все записи в память ради числа
+      // незачем, а предел выдачи `list` для этого всё равно не годится.
+      async count() {
+        const result = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM users");
+        return Number(result.rows[0]?.count ?? 0);
+      },
       async delete(id) {
         const result = await pool.query<{ payload: User }>("DELETE FROM users WHERE id = $1 RETURNING payload", [id]);
         return result.rows[0]?.payload ?? null;
@@ -198,11 +270,19 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
           ownerId: input.ownerId, adminIds: [], adminDefaults: defaultAdminPermissions(),
           inviteCode: input.inviteCode ?? "", permissions: {}, restrictions: {}, mutedMembers: {}, leftIds: [],
           history: [{ id: randomUUID(), at: timestamp, actorId: input.ownerId, kind: "created", detail: input.title }],
+          ...(input.isSupportInbox ? { isSupportInbox: true } : {}),
         };
         return database.transaction(async (client) => {
           await insert(client, "conversations", conversation);
           return conversation;
         });
+      },
+      /** Служебная группа поддержки: помечена `isSupportInbox`, ищется напрямую. */
+      async findSupportInbox() {
+        return (
+          (await select<Conversation>(pool, "conversations", "payload->>'isSupportInbox' = 'true'"))[0] ??
+          null
+        );
       },
       findByInviteCode: async (code) => {
         if (!code) return null;
@@ -213,10 +293,19 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         const groups = await select<Conversation>(
           pool,
           "conversations",
-          "payload->>'type' = 'group' AND ($1::text IS NULL OR id = $1 OR lower(COALESCE(payload->>'inviteCode', '')) = $1 OR strpos(lower(COALESCE(payload->>'title', '')), $1) > 0)",
+          // Служебная группа поддержки в поиске не показывается: она не для людей.
+          "payload->>'type' = 'group' AND payload->>'isSupportInbox' IS DISTINCT FROM 'true' AND ($1::text IS NULL OR id = $1 OR lower(COALESCE(payload->>'inviteCode', '')) = $1 OR strpos(lower(COALESCE(payload->>'title', '')), $1) > 0)",
           [wanted],
         );
         return groups.slice(0, limit);
+      },
+      // Личные диалоги и «Избранное» в счёт не идут: считаем именно группы.
+      // Служебная группа поддержки тоже: владелец видит статистику по людским.
+      async countGroups() {
+        const result = await pool.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM conversations WHERE payload->>'type' = 'group' AND payload->>'isSupportInbox' IS DISTINCT FROM 'true'",
+        );
+        return Number(result.rows[0]?.count ?? 0);
       },
       update: (id, input) => mutate<Conversation>("conversations", id, "Conversation", (conversation) => {
         if (input.title !== undefined) conversation.title = input.title;
@@ -237,6 +326,7 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         if (input.isVerified !== undefined) conversation.isVerified = input.isVerified;
         if (input.badge !== undefined) conversation.badge = input.badge;
         if (input.scam !== undefined) conversation.scam = input.scam;
+        if (input.fake !== undefined) conversation.fake = input.fake;
         conversation.updatedAt = now();
       }),
       findById: (id) => find<Conversation>(pool, "conversations", id),
@@ -621,6 +711,49 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
           scheduled.failureReason = reason.slice(0, 300);
           return save(client, "scheduled_messages", scheduled);
         }),
+    },
+    sessions: {
+      async create(input) {
+        const timestamp = now();
+        const session: Session = {
+          id: randomUUID(),
+          userId: input.userId,
+          tokenHashes: [...new Set(input.tokenHashes)],
+          site: input.site,
+          device: input.device,
+          createdAt: timestamp,
+          lastSeenAt: timestamp,
+          ...(input.newDevice === undefined ? {} : { newDevice: input.newDevice }),
+        };
+        return insert(pool, "sessions", session);
+      },
+      findById: (id) => find<Session>(pool, "sessions", id),
+      async findByTokenHash(hash) {
+        return (
+          (await select<Session>(pool, "sessions", "token_hashes @> to_jsonb($1::text)", [hash]))[0] ??
+          null
+        );
+      },
+      listForUser: (userId) =>
+        select<Session>(pool, "sessions", "user_id = $1", [userId], "ORDER BY last_seen_at DESC, sequence"),
+      update: (id, input) =>
+        mutate<Session>("sessions", id, "Session", (session) => {
+          if (input.tokenHashes !== undefined) session.tokenHashes = [...new Set(input.tokenHashes)];
+          if (input.site !== undefined) session.site = input.site;
+          if (input.device !== undefined) session.device = input.device;
+          if (input.lastSeenAt !== undefined) session.lastSeenAt = input.lastSeenAt;
+          if (input.acknowledgedAt !== undefined) session.acknowledgedAt = input.acknowledgedAt;
+          if (input.terminatedAt !== undefined) session.terminatedAt = input.terminatedAt;
+        }),
+      async delete(id) {
+        const session = await find<Session>(pool, "sessions", id);
+        if (!session) return null;
+        await pool.query("DELETE FROM sessions WHERE id = $1", [id]);
+        return session;
+      },
+      async deleteForUser(userId) {
+        await pool.query("DELETE FROM sessions WHERE user_id = $1", [userId]);
+      },
     },
   };
 }

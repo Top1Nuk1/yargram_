@@ -1,8 +1,15 @@
 import type {
+  AdminAccount,
+  AdminAccountsFilter,
+  AdminAccountsMark,
+  AdminAccountsScope,
   AdminGroup,
+  AdminStats,
   Attachment,
   AttachmentKind,
   AuthResult,
+  EmailCodeChallenge,
+  EmailCodePurpose,
   ChatFolder,
   Conversation,
   ConversationDraft,
@@ -21,6 +28,9 @@ import type {
   FavoriteNote,
   User,
   MediaSummary,
+  FriendshipState,
+  FriendsOverview,
+  SessionOverview,
 } from '../types';
 
 interface RequestOptions extends Omit<RequestInit, 'body'> {
@@ -188,11 +198,34 @@ function uploadForm<T>(
   });
 }
 
-async function authenticate(path: string, input: LoginInput | RegisterInput): Promise<AuthResult> {
-  const result = await request<RawAuthResult>(path, { method: 'POST', body: input });
+function toAuthResult(result: RawAuthResult): AuthResult {
   const accessToken = result.accessToken ?? result.token;
   if (!accessToken) throw new ApiError('Сервер не вернул токен доступа.', 500, result);
   return { accessToken, user: result.user };
+}
+
+/**
+ * Вход и регистрация отвечают либо токеном, либо требованием кода из письма —
+ * это зависит от настройки `EMAIL_CONFIRMATION` на сервере, поэтому клиент
+ * обязан уметь и то, и другое.
+ */
+async function authenticate(
+  path: string,
+  input: LoginInput | RegisterInput,
+): Promise<AuthResult | EmailCodeChallenge> {
+  const result = await request<RawAuthResult & Partial<EmailCodeChallenge>>(path, {
+    method: 'POST',
+    body: input,
+  });
+  if (result.status === 'code_sent') {
+    return {
+      status: 'code_sent',
+      email: result.email ?? '',
+      purpose: result.purpose ?? 'login',
+      expiresInSeconds: result.expiresInSeconds ?? 600,
+    };
+  }
+  return toAuthResult(result);
 }
 
 const EMPTY_MEDIA_SUMMARY: MediaSummary = {
@@ -213,6 +246,29 @@ export const api = {
 
   login(input: LoginInput) {
     return authenticate('/api/auth/login', input);
+  },
+
+  /** Код из письма принят — сервер выдаёт токен. */
+  confirmCode(input: { email: string; code: string; purpose: EmailCodePurpose }) {
+    return request<RawAuthResult>('/api/auth/confirm-code', { method: 'POST', body: input }).then(toAuthResult);
+  },
+
+  /** Повторная отправка: прежний код сгорает, действует свежий. */
+  resendCode(input: { email: string; purpose: EmailCodePurpose }) {
+    return request<EmailCodeChallenge>('/api/auth/resend-code', { method: 'POST', body: input });
+  },
+
+  requestPasswordReset(email: string) {
+    return request<EmailCodeChallenge>('/api/auth/reset-password/request', {
+      method: 'POST',
+      body: { email },
+    });
+  },
+
+  resetPassword(input: { email: string; code: string; password: string }) {
+    return request<RawAuthResult>('/api/auth/reset-password/confirm', { method: 'POST', body: input }).then(
+      toAuthResult,
+    );
   },
 
   me(token: string, signal?: AbortSignal) {
@@ -273,6 +329,19 @@ export const api = {
     }).then((result) => ('user' in result ? result.user : result));
   },
 
+  updateBanner(token: string, file: File, options?: UploadOptions) {
+    return uploadForm<User | { user: User }>('/api/users/me/banner', token, 'banner', file, options).then(
+      (result) => ('user' in result ? result.user : result),
+    );
+  },
+
+  deleteBanner(token: string) {
+    return request<User | { user: User }>('/api/users/me/banner', {
+      method: 'DELETE',
+      token,
+    }).then((result) => ('user' in result ? result.user : result));
+  },
+
   conversations(token: string, signal?: AbortSignal) {
     return request<RawCollection<Conversation>>('/api/conversations', { token, signal }).then(
       (result): PaginatedItems<Conversation> => ({ items: result.conversations ?? result.items ?? [] }),
@@ -291,6 +360,27 @@ export const api = {
       token,
       body: { userId },
     }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  // ---- Поддержка ----
+  //
+  // Кнопки бота уходят кодом действия, а не сообщением: в истории не остаётся
+  // служебных «нажатий», а сам человек видит только осмысленную переписку.
+
+  /** Открыть переписку с ботом поддержки: сервер создаёт её и показывает меню. */
+  openSupport(token: string) {
+    return request<RawConversationResult>('/api/support', { token }).then(
+      (result) => result.conversation ?? (result as Conversation),
+    );
+  },
+
+  /** Нажатие кнопки бота. */
+  sendSupportAction(token: string, conversationId: string, action: string) {
+    return request<{ ok: boolean }>('/api/support/actions', {
+      method: 'POST',
+      token,
+      body: { conversationId, action },
+    });
   },
 
   // ---- Группы ----
@@ -673,6 +763,101 @@ export const api = {
     });
   },
 
+  /** Друзья, входящие и исходящие заявки — одним запросом для экрана «Друзья». */
+  friends(token: string, signal?: AbortSignal) {
+    return request<FriendsOverview>('/api/friends', { token, signal });
+  },
+
+  /** Заявка в друзья. Взаимная заявка сразу делает людей друзьями. */
+  addFriend(token: string, userId: string) {
+    return request<{ state: FriendshipState }>(`/api/friends/${encodeURIComponent(userId)}`, {
+      method: 'POST',
+      token,
+    }).then((result) => result.state);
+  },
+
+  acceptFriend(token: string, userId: string) {
+    return request<{ state: FriendshipState }>(`/api/friends/${encodeURIComponent(userId)}/accept`, {
+      method: 'POST',
+      token,
+    }).then((result) => result.state);
+  },
+
+  declineFriend(token: string, userId: string) {
+    return request<{ state: FriendshipState }>(`/api/friends/${encodeURIComponent(userId)}/decline`, {
+      method: 'POST',
+      token,
+    }).then((result) => result.state);
+  },
+
+  /** Удаление из друзей. Заодно снимаются неотвеченные заявки в обе стороны. */
+  removeFriend(token: string, userId: string) {
+    return request<{ state: FriendshipState }>(`/api/friends/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      token,
+    }).then((result) => result.state);
+  },
+
+  /** Активные сеансы: откуда и чем человек заходил в аккаунт. */
+  sessions(token: string, signal?: AbortSignal) {
+    return request<SessionOverview>('/api/sessions', { token, signal });
+  },
+
+  /** Вход с нового сайта подтверждён: «это был я». */
+  acknowledgeSession(token: string, sessionId: string) {
+    return request<SessionOverview>(`/api/sessions/${encodeURIComponent(sessionId)}/acknowledge`, {
+      method: 'POST',
+      token,
+    });
+  },
+
+  /** Завершить один сеанс. Свой — всегда, чужой — через сутки после входа. */
+  terminateSession(token: string, sessionId: string) {
+    return request<SessionOverview>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      token,
+    });
+  },
+
+  /** Завершить все сеансы, кроме текущего. */
+  terminateOtherSessions(token: string) {
+    return request<SessionOverview>('/api/sessions', { method: 'DELETE', token });
+  },
+
+  /**
+   * Знак «Yargram» на своём аккаунте приложения. Сервер пропускает только
+   * аккаунт, помеченный приложением владельцем; остальным отвечает отказом.
+   */
+  setAppBadge(token: string, badge: 'yargram' | null) {
+    return request<User | { user: User }>('/api/app/badge', {
+      method: 'POST',
+      token,
+      body: { badge },
+    }).then((result) => ('user' in result ? result.user : result));
+  },
+
+  /** Владелец помечает аккаунт приложением или снимает пометку. */
+  /**
+   * Точный поиск аккаунта для админ-панели по основному или доп. нику.
+   * В отличие от `users()`, не исключает самого ищущего, поэтому владелец
+   * может найти здесь свой же аккаунт.
+   */
+  adminLookup(token: string, handle: string, signal?: AbortSignal) {
+    return request<{ user: User | null }>('/api/admin/lookup', {
+      method: 'POST',
+      token,
+      body: { handle },
+      signal,
+    }).then((result) => result.user);
+  },
+
+  adminSetApp(token: string, userId: string, isApp: boolean) {    return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/app`, {
+      method: 'POST',
+      token,
+      body: { isApp },
+    }).then((result) => ('user' in result ? result.user : result));
+  },
+
   adminGrant(token: string, userId: string, input: { targetUserId?: string; targetUsername?: string; isVerified?: boolean; badge?: 'yargram' | null; usernames?: string[]; adminUserIds?: string[] }) {
     return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/grant`, {
       method: 'POST', token, body: input,
@@ -694,6 +879,45 @@ export const api = {
     return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/scam`, {
       method: 'POST', token, body: { scam },
     }).then((result) => ('user' in result ? result.user : result));
+  },
+
+  /**
+   * Отметка FAKE — тоже только владелец. Механика та же, что у SCAM, но рамка
+   * рядом с именем говорит о подделке под официальный аккаунт.
+   */
+  adminSetFake(token: string, userId: string, fake: boolean) {
+    return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/fake`, {
+      method: 'POST', token, body: { fake },
+    }).then((result) => ('user' in result ? result.user : result));
+  },
+
+  /**
+   * Сводка по всей установке — только владелец: сколько всего аккаунтов и
+   * групп. По спискам этого не узнать: поиск по людям ограничен подстрокой и
+   * пределом выдачи, а в беседах каждая группа считается отдельной записью.
+   */
+  adminStats(token: string) {
+    return request<{ stats: AdminStats }>('/api/admin/stats', { token }).then(
+      (result) => result.stats,
+    );
+  },
+
+  /**
+   * Список аккаунтов для админ-панели — только владелец. Отдельно от
+   * `users()`: там поиск по людям, который исключает самого ищущего и не
+   * отдаёт удалённых, а владельцу нужны и они.
+   */
+  adminAccounts(
+    token: string,
+    query: string,
+    filter: AdminAccountsFilter,
+    marks: AdminAccountsMark[] = [],
+    scope: AdminAccountsScope = 'any',
+  ) {
+    const params = new URLSearchParams({ q: query, filter, marks: marks.join(','), scope });
+    return request<{ accounts: AdminAccount[] }>(`/api/admin/accounts?${params}`, { token }).then(
+      (result): AdminAccount[] => result.accounts ?? [],
+    );
   },
 
   /**

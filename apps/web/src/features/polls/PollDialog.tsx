@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Dialog, Switch } from '../../components/Dialog';
 import { Button, IconButton } from '../../components/ui';
+import { useTranslation, type TranslateFn } from '../../hooks/useLanguage';
 import type { PollSettings } from '../../types';
 import { EmojiPicker } from '../messenger/MessageExtras';
 
@@ -33,55 +34,13 @@ const settingRows: Array<{
   icon: typeof Users;
   tone: string;
 }> = [
-  {
-    key: 'showNames',
-    label: 'Имена участников',
-    hint: 'Рядом с ответами отображаются имена всех голосовавших.',
-    icon: Users,
-    tone: 'bg-brand',
-  },
-  {
-    key: 'multiple',
-    label: 'Несколько ответов',
-    hint: 'Участники могут выбрать более одного варианта ответа.',
-    icon: ListChecks,
-    tone: 'bg-[#f59e0b]',
-  },
-  {
-    key: 'addOptions',
-    label: 'Добавление вариантов',
-    hint: 'Участники могут предлагать новые варианты.',
-    icon: Plus,
-    tone: 'bg-brand',
-  },
-  {
-    key: 'changeVote',
-    label: 'Изменение ответа',
-    hint: 'Участники могут изменить выбранный ответ.',
-    icon: Pencil,
-    tone: 'bg-[#8b5cf6]',
-  },
-  {
-    key: 'shuffle',
-    label: 'Случайный порядок',
-    hint: 'Ответы отображаются у всех участников в случайном порядке.',
-    icon: Shuffle,
-    tone: 'bg-[#f59e0b]',
-  },
-  {
-    key: 'quiz',
-    label: 'Правильный ответ',
-    hint: 'Отметьте один или несколько правильных вариантов.',
-    icon: CheckCircle2,
-    tone: 'bg-success',
-  },
-  {
-    key: 'deadline',
-    label: 'Ограничение срока',
-    hint: 'Опрос автоматически завершится в заданное время.',
-    icon: Clock,
-    tone: 'bg-danger',
-  },
+  { key: 'showNames', label: 'polls.showNames', hint: 'polls.showNamesHint', icon: Users, tone: 'bg-brand' },
+  { key: 'multiple', label: 'polls.multiple', hint: 'polls.multipleHint', icon: ListChecks, tone: 'bg-[#f59e0b]' },
+  { key: 'addOptions', label: 'polls.addOptions', hint: 'polls.addOptionsHint', icon: Plus, tone: 'bg-brand' },
+  { key: 'changeVote', label: 'polls.changeVote', hint: 'polls.changeVoteHint', icon: Pencil, tone: 'bg-[#8b5cf6]' },
+  { key: 'shuffle', label: 'polls.shuffle', hint: 'polls.shuffleHint', icon: Shuffle, tone: 'bg-[#f59e0b]' },
+  { key: 'quiz', label: 'polls.quiz', hint: 'polls.quizHint', icon: CheckCircle2, tone: 'bg-success' },
+  { key: 'deadline', label: 'polls.deadline', hint: 'polls.deadlineHint', icon: Clock, tone: 'bg-danger' },
 ];
 
 export function defaultPollDraft(): PollDraft {
@@ -114,6 +73,7 @@ export function PollDialog({
   onClose: () => void;
   onSubmit: (draft: PollDraft) => void;
 }) {
+  const t = useTranslation();
   const [draft, setDraft] = useState<PollDraft>(defaultPollDraft);
   const [emojiOpen, setEmojiOpen] = useState(false);
 
@@ -138,12 +98,12 @@ export function PollDialog({
   return (
     <Dialog
       wide
-      title="Новый опрос"
+      title={t('polls.newPoll')}
       onClose={onClose}
       footer={
         <>
           <Button type="button" variant="ghost" className="min-h-10" onClick={onClose}>
-            Отмена
+            {t('common.cancel')}
           </Button>
           <Button
             type="button"
@@ -159,23 +119,23 @@ export function PollDialog({
               })
             }
           >
-            Создать
+            {t('polls.create')}
           </Button>
         </>
       }
     >
-      <p className="px-1 pb-2 text-sm font-semibold text-brand">Вопрос</p>
+      <p className="px-1 pb-2 text-sm font-semibold text-brand">{t('polls.question')}</p>
       <div className="relative">
         <input
           value={draft.question}
           maxLength={255}
           onChange={(event) => setDraft((current) => ({ ...current, question: event.target.value }))}
-          placeholder="Текст вопроса"
-          aria-label="Текст вопроса"
+          placeholder={t('polls.questionText')}
+          aria-label={t('polls.questionText')}
           className="h-11 w-full rounded-xl border border-line bg-canvas px-3.5 pr-11 text-[15px] text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
         />
         <IconButton
-          label="Вставить значок"
+          label={t('polls.insertEmoji')}
           type="button"
           className="absolute right-1 top-1 h-9 w-9"
           onClick={() => setEmojiOpen((open) => !open)}
@@ -200,12 +160,12 @@ export function PollDialog({
         onChange={(event) =>
           setDraft((current) => ({ ...current, description: event.target.value }))
         }
-        placeholder="Описание (необязательно)"
-        aria-label="Описание"
+        placeholder={t('polls.descriptionPlaceholder')}
+        aria-label={t('polls.descriptionLabel')}
         className="mt-2 h-11 w-full rounded-xl border border-line bg-canvas px-3.5 text-[15px] text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
       />
 
-      <p className="px-1 pb-2 pt-5 text-sm font-semibold text-brand">Варианты ответа</p>
+      <p className="px-1 pb-2 pt-5 text-sm font-semibold text-brand">{t('polls.answerOptions')}</p>
       <div className="space-y-2">
         {draft.options.map((option, index) => (
           <div key={index} className="flex items-center gap-2">
@@ -214,7 +174,7 @@ export function PollDialog({
                 type="button"
                 role="checkbox"
                 aria-checked={draft.settings.correctOptionIds.includes(String(index))}
-                aria-label={`Правильный ответ: вариант ${index + 1}`}
+                aria-label={t('polls.correctAnswerNumber', { number: index + 1 })}
                 onClick={() => toggleCorrect(index)}
                 className={`grid h-8 w-8 shrink-0 place-items-center rounded-full border transition ${
                   draft.settings.correctOptionIds.includes(String(index))
@@ -236,13 +196,13 @@ export function PollDialog({
                   ),
                 }))
               }
-              placeholder={index === 0 ? 'Добавить ответ…' : `Вариант ${index + 1}`}
-              aria-label={index === 0 ? 'Добавить ответ' : `Вариант ${index + 1}`}
+              placeholder={index === 0 ? t('polls.addAnswer') : t('polls.optionNumber', { number: index + 1 })}
+              aria-label={index === 0 ? t('polls.addAnswer') : t('polls.optionNumber', { number: index + 1 })}
               className="h-11 min-w-0 flex-1 rounded-xl border border-line bg-canvas px-3.5 text-[15px] text-ink outline-none transition placeholder:text-muted/70 focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
             />
             {draft.options.length > 2 && (
               <IconButton
-                label={`Удалить вариант ${index + 1}`}
+                label={t('polls.deleteOption', { number: index + 1 })}
                 type="button"
                 className="h-9 w-9 shrink-0"
                 onClick={() =>
@@ -266,14 +226,14 @@ export function PollDialog({
           }
           className="mt-2 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-semibold text-brand transition hover:bg-brand-soft/40"
         >
-          <Plus className="h-4 w-4" /> Добавить ответ…
+          <Plus className="h-4 w-4" /> {t('polls.addAnswer')}
         </button>
       )}
       <p className="mt-1 rounded-xl bg-canvas px-3.5 py-2 text-xs text-muted">
-        Можно добавить ещё {Math.max(0, OPTIONS_MAX - draft.options.length)} вариантов ответа.
+        {t('polls.optionsLeft', { count: Math.max(0, OPTIONS_MAX - draft.options.length) })}
       </p>
 
-      <p className="px-1 pb-2 pt-5 text-sm font-semibold text-brand">Настройки</p>
+      <p className="px-1 pb-2 pt-5 text-sm font-semibold text-brand">{t('polls.settings')}</p>
       <section className="overflow-hidden rounded-xl bg-canvas">
         {settingRows.map((row) => {
           const Icon = row.icon;
@@ -286,11 +246,11 @@ export function PollDialog({
                   <Icon className="h-4 w-4" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-ink">{row.label}</span>
-                  <span className="mt-0.5 block text-xs leading-5 text-muted">{row.hint}</span>
+                  <span className="block text-sm font-semibold text-ink">{t(row.label)}</span>
+                  <span className="mt-0.5 block text-xs leading-5 text-muted">{t(row.hint)}</span>
                 </span>
                 <Switch
-                  label={row.label}
+                  label={t(row.label)}
                   checked={checked}
                   disabled={busy}
                   onChange={(next) => {
@@ -326,22 +286,21 @@ export function PollDialog({
  * «Навсегда» = null, «Другое» раскрывает дату и время.
  */
 type Preset =
-  | { kind: 'preset'; hours: number; label: string }
+  | { kind: 'preset'; hours: number }
   | { kind: 'forever' }
   | { kind: 'custom' };
 
-const DEADLINE_PRESETS: Array<{ id: string; label: string; preset: Preset }> = [
-  { id: '1h', label: '1 час', preset: { kind: 'preset', hours: 1, label: '1 час' } },
-  { id: '3h', label: '3 часа', preset: { kind: 'preset', hours: 3, label: '3 часа' } },
-  { id: '8h', label: '8 часов', preset: { kind: 'preset', hours: 8, label: '8 часов' } },
-  { id: '1d', label: '1 день', preset: { kind: 'preset', hours: 24, label: '1 день' } },
-  { id: '3d', label: '3 дня', preset: { kind: 'preset', hours: 24 * 3, label: '3 дня' } },
-  { id: 'forever', label: 'Навсегда', preset: { kind: 'forever' } },
-  { id: 'custom', label: 'Другое', preset: { kind: 'custom' } },
+const DEADLINE_PRESETS: Array<{ id: string; labelKey: string; preset: Preset }> = [
+  { id: '1h', labelKey: 'polls.duration1h', preset: { kind: 'preset', hours: 1 } },
+  { id: '3h', labelKey: 'polls.duration3h', preset: { kind: 'preset', hours: 3 } },
+  { id: '8h', labelKey: 'polls.duration8h', preset: { kind: 'preset', hours: 8 } },
+  { id: '1d', labelKey: 'polls.duration1d', preset: { kind: 'preset', hours: 24 } },
+  { id: '3d', labelKey: 'polls.duration3d', preset: { kind: 'preset', hours: 24 * 3 } },
+  { id: 'forever', labelKey: 'polls.durationForever', preset: { kind: 'forever' } },
+  { id: 'custom', labelKey: 'polls.durationOther', preset: { kind: 'custom' } },
 ];
 
-/**
- * Разбираем ISO-строку на (preset | forever | custom) и опциональную дату/время.
+/** Разбираем ISO-строку на (preset | forever | custom) и опциональную дату/время.
  * Каждый час мы пересчитываем пресет заново — иначе кнопка перестаёт подсвечиваться.
  */
 function matchPreset(deadline: string | null, now: number = Date.now()): {
@@ -432,6 +391,7 @@ function DeadlinePickerBody({
   onChange: (next: string | null) => void;
   onForce: () => void;
 }) {
+  const t = useTranslation();
   const [customMode, setCustomMode] = useState(matched.preset.kind === 'custom');
   const showCustom = customMode || matched.preset.kind === 'custom';
   const activeId = showCustom
@@ -484,22 +444,22 @@ function DeadlinePickerBody({
                   : 'border-line bg-canvas text-ink hover:border-brand/40 hover:bg-brand-soft/40'
               }`}
             >
-              {item.label}
+              {t(item.labelKey)}
             </button>
           );
         })}
       </div>
       {!showCustom && matched.preset.kind === 'preset' && (
         <p className="text-xs leading-5 text-muted">
-          Опрос автоматически завершится через {humanizeHours(matched.preset.hours)}.
+          {t('polls.closesIn', { duration: humanizeHours(matched.preset.hours, t) })}
         </p>
       )}
       {showCustom && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-canvas px-3 py-2">
-          <span className="text-sm font-semibold text-brand">Завершение опроса</span>
+          <span className="text-sm font-semibold text-brand">{t('polls.pollEnd')}</span>
           <input
             type="date"
-            aria-label="Дата завершения"
+            aria-label={t('polls.endDate')}
             value={matched.customDate ?? toDateInput(new Date(deadline))}
             onChange={(event) => {
               const next = composeIso(
@@ -511,10 +471,10 @@ function DeadlinePickerBody({
             disabled={disabled}
             className="h-9 rounded-lg border border-line bg-surface px-2 text-sm text-ink outline-none focus:border-brand/60"
           />
-          <span className="text-sm text-muted">в</span>
+          <span className="text-sm text-muted">{t('polls.at')}</span>
           <input
             type="time"
-            aria-label="Время завершения"
+            aria-label={t('polls.endTime')}
             value={matched.customTime ?? toTimeInput(new Date(deadline))}
             onChange={(event) => {
               const next = composeIso(
@@ -540,13 +500,13 @@ function composeIso(date: string, time: string): string {
   return at.toISOString();
 }
 
-function humanizeHours(hours: number): string {
-  if (hours < 24) return `${hours} ${plural(hours, 'час', 'часа', 'часов')}`;
+function humanizeHours(hours: number, t: TranslateFn): string {
+  if (hours < 24) return t(plural(hours, 'polls.hours1', 'polls.hours2', 'polls.hours5'), { count: hours });
   const days = Math.round(hours / 24);
-  return `${days} ${plural(days, 'день', 'дня', 'дней')}`;
+  return t(plural(days, 'polls.days1', 'polls.days2', 'polls.days5'), { count: days });
 }
 
-/** Склоняем русские существительные по числам. */
+/** Склоняем существительные по числам. */
 function plural(value: number, one: string, few: string, many: string): string {
   const mod10 = value % 10;
   const mod100 = value % 100;

@@ -64,7 +64,7 @@ describe('conversation helpers', () => {
       });
       const peer = getConversationPeer(offline, 'alice');
       expect(isUserOnline(peer)).toBe(false);
-      expect(formatLastSeen(peer, new Date('2026-09-21T19:00:00'))).toBe('Был(а) в 18:00');
+      expect(formatLastSeen(peer, undefined, new Date('2026-09-21T19:00:00'))).toBe('Был(а) в 18:00');
     });
 
     it('leaves other conversations members untouched', () => {

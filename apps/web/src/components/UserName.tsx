@@ -1,6 +1,7 @@
 import { Snowflake } from 'lucide-react';
 import type { User } from '../types';
 import { isFrozenAccount } from '../lib/user';
+import { useTranslation } from '../hooks/useLanguage';
 
 interface UserNameProps {
   name: string;
@@ -8,7 +9,7 @@ interface UserNameProps {
    * Носитель значков: аккаунт или группа. Поля одни и те же, поэтому сюда
    * подходит и `User`, и `Conversation` с её знаками группы.
    */
-  user?: Partial<Pick<User, 'displayName' | 'isFrozen' | 'isVerified' | 'badge' | 'scam'>> | null;
+  user?: Partial<Pick<User, 'displayName' | 'isFrozen' | 'isVerified' | 'badge' | 'scam' | 'fake' | 'isBot'>> | null;
   /** Что помечено — аккаунт или группа: от этого зависят подписи значков. */
   subject?: 'account' | 'group';
   /** "sm" fits chat bubbles and list rows, "md" fits profile headers. */
@@ -39,11 +40,12 @@ const YARGRAM_GLYPH_PATH =
 const YARGRAM_GLYPH_SHADE_PATH = 'm18.2 18.5 5.8 6.3 5.8-6.3L24 32.7l-5.8-14.2Z';
 
 function YargramBadge({ className }: { className: string }) {
+  const t = useTranslation();
   return (
     // Подсказка висит на обёртке: атрибут title у <svg> в TSX запрещён, а <title>
     // внутри <svg> попал бы в textContent имени и сломал сравнение строк.
-    <span title="Подтверждён представителями Yargram" className="inline-flex shrink-0">
-      <svg className={className} viewBox="0 0 48 48" fill="none" role="img" aria-label="Значок Yargram">
+    <span title={t('badge.yargramTooltip')} className="inline-flex shrink-0">
+      <svg className={className} viewBox="0 0 48 48" fill="none" role="img" aria-label={t('badge.yargramAria')}>
         <path d={YARGRAM_STAR_PATH} fill="currentColor" />
         <g transform="translate(24 24) scale(1.02) translate(-24 -24)">
           <path d={YARGRAM_GLYPH_PATH} fill="#FFFFFF" />
@@ -55,9 +57,10 @@ function YargramBadge({ className }: { className: string }) {
 }
 
 function VerifiedBadge({ className, title }: { className: string; title: string }) {
+  const t = useTranslation();
   return (
     <span title={title} className="inline-flex shrink-0">
-      <svg className={className} viewBox="0 0 48 48" fill="none" role="img" aria-label="Подтверждено">
+      <svg className={className} viewBox="0 0 48 48" fill="none" role="img" aria-label={t('badge.verifiedAria')}>
         <path d={VERIFIED_ROSETTE_PATH} fill="currentColor" />
         <path
           d="M16.4 24.7 21.3 29.7 32 18.6"
@@ -77,18 +80,53 @@ function VerifiedBadge({ className, title }: { className: string; title: string 
  * Подсказка короткая и в один ряд с остальными значками: «Мошенник».
  */
 function ScamBadge({ className, subject }: { className: string; subject: 'account' | 'group' }) {
+  const t = useTranslation();
   return (
     <span
       role="img"
-      aria-label={
-        subject === 'group'
-          ? 'Отметка SCAM: группа помечена как мошенническая'
-          : 'Отметка SCAM: аккаунт помечен как мошеннический'
-      }
-      title="Мошенник"
+      aria-label={subject === 'group' ? t('badge.scamGroupAria') : t('badge.scamAccountAria')}
+      title={t('badge.scamTitle')}
       className={`inline-flex shrink-0 items-center justify-center rounded-[0.3rem] border-[1.5px] border-danger/70 font-black uppercase leading-none tracking-[0.02em] text-danger ${className}`}
     >
       SCAM
+    </span>
+  );
+}
+
+/**
+ * Отметка FAKE: та же рамка, что и SCAM, но про подделку под официальный
+ * аккаунт. Цвет — предупреждающий (янтарный), чтобы две отметки различались
+ * с первого взгляда. Надпись тоже латиницей: это метка, а не слово интерфейса.
+ */
+function FakeBadge({ subject, className }: { subject: 'account' | 'group'; className: string }) {
+  const t = useTranslation();
+  return (
+    <span
+      role="img"
+      aria-label={subject === 'group' ? t('badge.fakeGroupAria') : t('badge.fakeAccountAria')}
+      title={t('badge.fakeTitle')}
+      className={`inline-flex shrink-0 items-center justify-center rounded-[0.3rem] border-[1.5px] border-warning/70 font-black uppercase leading-none tracking-[0.02em] text-warning ${className}`}
+    >
+      FAKE
+    </span>
+  );
+}
+
+/**
+ * Метка «бот» сразу после имени. Сделана ровно как SCAM и FAKE — рамкой, а не
+ * заливкой: это узнаваемая метка рядом с ником, а не слово в предложении.
+ * Цвет — фирменный, чтобы отличалась от красного SCAM и янтарного FAKE.
+ */
+function BotBadge({ className }: { className: string }) {
+  const t = useTranslation();
+  return (
+    <span
+      role="img"
+      aria-label={t('badge.botAria')}
+      title={t('badge.botAria')}
+      className={`inline-flex shrink-0 items-center justify-center rounded-[0.3rem] border-[1.5px] border-brand/70 font-black uppercase leading-none tracking-[0.02em] text-brand ${className}`}
+    >
+      {t('badge.bot')}
     </span>
   );
 }
@@ -100,14 +138,16 @@ function ScamBadge({ className, subject }: { className: string; subject: 'accoun
  * саму группу, а не её создателя.
  */
 export function UserName({ name, user, subject = 'account', size = 'md', className = '' }: UserNameProps) {
+  const t = useTranslation();
   // У звезды и розетки меньше «тела», чем у залитого круга, поэтому коробка
   // чуть больше: 14 px в переписке и списках, 17 px в шапках профилей.
   const badgeSize = size === 'sm' ? 'h-3.5 w-3.5' : 'h-[17px] w-[17px]';
   // Значки сидят чуть выше строки, как в Telegram; галочка приподнята заметнее.
   const badgeLift = size === 'sm' ? '-translate-y-[0.5px]' : '-translate-y-px';
   const checkLift = size === 'sm' ? '-translate-y-[1px]' : '-translate-y-[1.5px]';
-  // Рамка SCAM — не квадрат, поэтому её размер задаётся текстом и отступами.
-  const scamBox = size === 'sm' ? 'px-1 py-[1px] text-[9px]' : 'px-1.5 py-[2px] text-[10px]';
+  // Рамки SCAM и FAKE — не квадраты, поэтому их размер задаётся текстом и
+  // отступами: обе метки живут в одной строке с именем.
+  const markBox = size === 'sm' ? 'px-1 py-[1px] text-[9px]' : 'px-1.5 py-[2px] text-[10px]';
   return (
     <span className={`inline-flex min-w-0 items-center gap-1 ${className}`}>
       {/* Замороженный аккаунт помечается снежинкой: у собеседников это
@@ -115,8 +155,8 @@ export function UserName({ name, user, subject = 'account', size = 'md', classNa
       {isFrozenAccount(user) && (
         <span
           role="img"
-          aria-label="Аккаунт заморожен"
-          title="Аккаунт заморожен"
+          aria-label={t('badge.frozenAria')}
+          title={t('badge.frozenAria')}
           className={`inline-flex shrink-0 items-center justify-center text-brand ${badgeSize} ${badgeLift}`}
         >
           <Snowflake className="h-full w-full" aria-hidden="true" />
@@ -126,10 +166,12 @@ export function UserName({ name, user, subject = 'account', size = 'md', classNa
         <YargramBadge className={`shrink-0 text-brand ${badgeSize} ${badgeLift}`} />
       )}
       <span className="truncate">{name}</span>
-      {user?.scam && <ScamBadge subject={subject} className={`${scamBox} ${badgeLift}`} />}
+      {user?.isBot && <BotBadge className={`${markBox} ${badgeLift}`} />}
+      {user?.scam && <ScamBadge subject={subject} className={`${markBox} ${badgeLift}`} />}
+      {user?.fake && <FakeBadge subject={subject} className={`${markBox} ${badgeLift}`} />}
       {user?.isVerified && (
         <VerifiedBadge
-          title={subject === 'group' ? 'Подтверждённая группа' : 'Подтверждённый аккаунт'}
+          title={subject === 'group' ? t('badge.verifiedGroup') : t('badge.verifiedAccount')}
           className={`shrink-0 text-brand ${badgeSize} ${checkLift}`}
         />
       )}

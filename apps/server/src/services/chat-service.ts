@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   Attachment,
   AttachmentView,
+  BotKeyboard,
   CallRecord,
   Conversation,
   Message,
@@ -9,6 +10,7 @@ import type {
   PollSettings,
   PublicUser,
   ReactionEmoji,
+  SupportTicket,
   User,
   UserReport,
 } from "../domain/models.js";
@@ -344,6 +346,36 @@ export class ChatService {
     await this.repositories.drafts.delete(currentUserId, conversationId);
     return {
       message: await this.toMessageView(message, currentUserId),
+      memberIds: conversation.memberIds,
+    };
+  }
+
+  /**
+   * Сообщение от бота: свой вид `bot`, своя клавиатура и, если это пересылка
+   * обращения, привязка к тому, кому вернуть ответ владельца. Обычной отправкой
+   * этого не сделать: там вид всегда `user`, а кнопок не бывает вовсе.
+   */
+  async sendBotMessage(input: {
+    conversationId: string;
+    senderId: string;
+    text: string;
+    keyboard?: BotKeyboard | undefined;
+    supportTicket?: SupportTicket | undefined;
+  }): Promise<{ message: MessageView; memberIds: string[] }> {
+    const conversation = await this.repositories.conversations.findById(input.conversationId);
+    if (!conversation) {
+      throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+    }
+    const message = await this.repositories.messages.create({
+      conversationId: input.conversationId,
+      senderId: input.senderId,
+      text: input.text,
+      kind: "bot",
+      ...(input.keyboard === undefined ? {} : { keyboard: input.keyboard }),
+      ...(input.supportTicket === undefined ? {} : { supportTicket: input.supportTicket }),
+    });
+    return {
+      message: await this.toMessageView(message),
       memberIds: conversation.memberIds,
     };
   }
@@ -696,7 +728,11 @@ export class ChatService {
     if (currentUserId === otherUserId) {
       throw new AppError(400, "SELF_BLOCK", "You cannot block yourself");
     }
-    await this.getUser(otherUserId);
+    const target = await this.getUser(otherUserId);
+    // Служебного бота не блокируют: это не человек, а адрес поддержки.
+    if (target.isBot) {
+      throw new AppError(400, "BOT_NOT_BLOCKABLE", "Служебный аккаунт нельзя заблокировать");
+    }
     await this.repositories.users.setBlocked(currentUserId, otherUserId, blocked);
     return { userId: otherUserId, blocked };
   }
@@ -716,7 +752,11 @@ export class ChatService {
     if (currentUserId === reportedUserId) {
       throw new AppError(400, "SELF_REPORT", "You cannot report yourself");
     }
-    await this.getUser(reportedUserId);
+    const reported = await this.getUser(reportedUserId);
+    // На служебного бота жаловаться не за что: он не человек и не пишет первым.
+    if (reported.isBot) {
+      throw new AppError(400, "BOT_NOT_REPORTABLE", "На служебный аккаунт нельзя пожаловаться");
+    }
     return this.repositories.reports.create({
       reporterId: currentUserId,
       reportedUserId,
@@ -915,7 +955,10 @@ export class ChatService {
   }
 
   async canAccessAttachment(userId: string, attachment: Attachment): Promise<boolean> {
-    if (attachment.ownerId === userId || attachment.kind === "avatar") return true;
+    // Аватар и баннер — часть публичного профиля, их видит любой вошедший.
+    if (attachment.ownerId === userId || attachment.kind === "avatar" || attachment.kind === "banner") {
+      return true;
+    }
     const messages = await this.repositories.messages.findByAttachmentId(attachment.id);
     for (const message of messages) {
       const conversation = await this.repositories.conversations.findById(message.conversationId);
@@ -945,8 +988,9 @@ export class ChatService {
     if (attachments.some((attachment) => attachment.ownerId !== userId)) {
       throw new AppError(403, "ATTACHMENT_FORBIDDEN", "Only your own uploads may be attached");
     }
-    if (attachments.some((attachment) => attachment.kind === "avatar")) {
-      throw new AppError(400, "ATTACHMENT_KIND_INVALID", "An avatar cannot be sent as a message file");
+    // Аватар и баннер — оформление профиля, а не файлы переписки.
+    if (attachments.some((attachment) => attachment.kind === "avatar" || attachment.kind === "banner")) {
+      throw new AppError(400, "ATTACHMENT_KIND_INVALID", "Profile images cannot be sent as message files");
     }
   }
 
@@ -1141,14 +1185,15 @@ export class ChatService {
         ? {
             // Название, аватар и описание группы: у личного диалога их нет.
             title: conversation.title ?? "",
-            // У помеченной SCAM группы вместо описания идёт предупреждение —
-            // подмена на чтении, поэтому прежний текст не теряется.
+            // У помеченной SCAM или FAKE группы вместо описания идёт
+            // предупреждение — подмена на чтении, прежний текст не теряется.
             description: groupDescriptionFor(conversation),
             avatarUrl: conversation.avatarUrl ?? null,
-            // Знаки владельца Yargram: галочка, значок и отметка SCAM группы.
+            // Знаки владельца Yargram: галочка, значок и отметки SCAM/FAKE группы.
             isVerified: conversation.isVerified ?? false,
             badge: conversation.badge ?? null,
             scam: conversation.scam ?? false,
+            fake: conversation.fake ?? false,
             // Пустая строка — «владельца нет»: поле обязательное в записи группы.
             ownerId: conversation.ownerId ?? "",
             adminIds: conversation.adminIds ?? [],
