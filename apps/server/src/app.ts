@@ -97,6 +97,7 @@ export function createApp(dependencies: {
 
   app.use(
     helmet({
+      frameguard: false,
       crossOriginResourcePolicy: { policy: "cross-origin" },
       hsts: dependencies.config.forceHttps
         ? { maxAge: 15552000, includeSubDomains: true }
