@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
@@ -317,8 +318,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Server
     dataDirectory: resolve(parsed.DATA_DIR),
     dataFile: resolve(parsed.DATA_DIR, "yargram.json"),
     uploadDirectory: resolve(parsed.DATA_DIR, "uploads"),
-    webDistPath: resolve(serverRoot, "..", "web", "dist"),
-    landingDistPath: resolve(serverRoot, "..", "landing", "dist"),
+    webDistPath: existsSync(resolve(serverRoot, "..", "web", "client_out"))
+      ? resolve(serverRoot, "..", "web", "client_out")
+      : resolve(serverRoot, "..", "web", "dist"),
+    landingDistPath: existsSync(resolve(serverRoot, "..", "landing", "landing_out"))
+      ? resolve(serverRoot, "..", "landing", "landing_out")
+      : resolve(serverRoot, "..", "landing", "dist"),
     mail: {
       driver: parsed.MAIL_DRIVER,
       ...(parsed.MAIL_HOST ? { host: parsed.MAIL_HOST } : {}),

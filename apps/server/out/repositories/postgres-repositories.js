@@ -1,0 +1,888 @@
+import { randomUUID } from "node:crypto";
+import { defaultAdminPermissions } from "../domain/models.js";
+import { AppError } from "../lib/errors.js";
+import { RepositoryConflictError } from "./types.js";
+const now = () => new Date().toISOString();
+function normalizeMessage(message) {
+    const reactionsByUser = new Map((message.reactions ?? []).map((reaction) => [reaction.userId, reaction]));
+    return {
+        ...message,
+        kind: message.kind ?? "user",
+        stickerIds: [...new Set(message.stickerIds ?? [])],
+        attachmentIds: [...new Set(message.attachmentIds ?? [])],
+        reactions: [...reactionsByUser.values()],
+        readBy: [...new Set([message.senderId, ...(message.readBy ?? [])])],
+    };
+}
+async function select(db, table, where = "TRUE", values = [], suffix = "ORDER BY sequence") {
+    const result = await db.query(`SELECT payload FROM ${table} WHERE ${where} ${suffix}`, values);
+    // Legacy rows written before the sticker feature predate `stickerIds` and other
+    // defaulted fields. The JSON driver fills them via Zod; PostgreSQL must do the same.
+    return result.rows.map((row) => (table === "messages" ? normalizeMessage(row.payload) : row.payload));
+}
+async function find(db, table, id, lock = false) {
+    return (await select(db, table, "id = $1", [id], lock ? "FOR UPDATE" : ""))[0] ?? null;
+}
+async function insert(db, table, entity) {
+    await db.query(`INSERT INTO ${table} (payload) VALUES ($1::jsonb)`, [JSON.stringify(entity)]);
+    return entity;
+}
+async function save(db, table, entity) {
+    await db.query(`UPDATE ${table} SET payload = $2::jsonb WHERE id = $1`, [entity.id, JSON.stringify(entity)]);
+    return entity;
+}
+async function orderedIds(db, table, ids) {
+    const entities = await select(db, table, "id = ANY($1::text[])", [ids]);
+    const map = new Map(entities.map((entity) => [entity.id, entity]));
+    return ids.flatMap((id) => { const entity = map.get(id); return entity ? [entity] : []; });
+}
+function conflict(error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "23505" && "constraint" in error) {
+        if (error.constraint === "users_email_unique")
+            throw new RepositoryConflictError("email");
+        if (error.constraint === "users_username_unique")
+            throw new RepositoryConflictError("username");
+    }
+    throw error;
+}
+function setMember(ids, id, included) {
+    const result = new Set(ids);
+    if (included)
+        result.add(id);
+    else
+        result.delete(id);
+    return [...result];
+}
+function latestPin(conversation) {
+    const id = conversation.pinnedMessageIds.at(-1);
+    if (id)
+        conversation.pinnedMessageId = id;
+    else
+        delete conversation.pinnedMessageId;
+}
+export function createPostgresRepositories(database) {
+    const pool = database.pool;
+    const mutate = (table, id, label, update) => database.transaction(async (client) => {
+        const entity = await find(client, table, id, true);
+        if (!entity)
+            throw new Error(`${label} was not found`);
+        update(entity);
+        return save(client, table, entity);
+    });
+    return {
+        users: {
+            async create(input) {
+                const timestamp = now();
+                const user = { id: randomUUID(), ...input, bio: "", lastSeenAt: timestamp,
+                    blockedUserIds: [], favoriteMessageIds: [], notificationSoundEnabled: true, showLastSeen: true,
+                    callPrivacy: "everyone", callPrivacyAllowedUserIds: [], callPrivacyDeniedUserIds: [], createdAt: timestamp };
+                try {
+                    return await insert(pool, "users", user);
+                }
+                catch (error) {
+                    return conflict(error);
+                }
+            },
+            findById: (id) => find(pool, "users", id),
+            async findByEmail(email) { return (await select(pool, "users", "email_key = lower($1)", [email]))[0] ?? null; },
+            async findByUsername(username) {
+                // Основной ник сравниваем по сгенерированной колонке lower(username),
+                // дополнительные — по lower(alias): регистр в никах сохраняем, ищем без него.
+                return ((await select(pool, "users", "username_key = lower($1) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(payload->'usernames', '[]'::jsonb)) AS alias WHERE lower(alias) = lower($1))", [username]))[0] ?? null);
+            },
+            async findByHandle(handle) {
+                const wanted = handle.trim().replace(/^@/, "").toLowerCase();
+                if (!wanted)
+                    return null;
+                return ((await select(pool, "users", "username_key = $1 OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(payload->'usernames', '[]'::jsonb)) AS alias WHERE lower(alias) = $1)", [wanted]))[0] ?? null);
+            },
+            async update(id, input) {
+                try {
+                    return await mutate("users", id, "User", (user) => {
+                        if (input.displayName !== undefined)
+                            user.displayName = input.displayName;
+                        if (input.username !== undefined)
+                            user.username = input.username;
+                        if (input.bio !== undefined)
+                            user.bio = input.bio;
+                        if (input.showLastSeen !== undefined)
+                            user.showLastSeen = input.showLastSeen;
+                        if (input.callPrivacy !== undefined)
+                            user.callPrivacy = input.callPrivacy;
+                        if (input.callPrivacyAllowedUserIds !== undefined)
+                            user.callPrivacyAllowedUserIds = input.callPrivacyAllowedUserIds;
+                        if (input.callPrivacyDeniedUserIds !== undefined)
+                            user.callPrivacyDeniedUserIds = input.callPrivacyDeniedUserIds;
+                        if (input.avatar === null)
+                            delete user.avatar;
+                        else if (input.avatar !== undefined)
+                            user.avatar = input.avatar;
+                        if (input.avatarUrl === null)
+                            delete user.avatarUrl;
+                        else if (input.avatarUrl !== undefined)
+                            user.avatarUrl = input.avatarUrl;
+                        if (input.themeColor !== undefined)
+                            user.themeColor = input.themeColor;
+                        if (input.wallpaperUrl !== undefined)
+                            user.wallpaperUrl = input.wallpaperUrl;
+                        if (input.wallpaperMimeType !== undefined)
+                            user.wallpaperMimeType = input.wallpaperMimeType;
+                        if (input.bannerColor === null)
+                            delete user.bannerColor;
+                        else if (input.bannerColor !== undefined)
+                            user.bannerColor = input.bannerColor;
+                        if (input.banner === null)
+                            delete user.banner;
+                        else if (input.banner !== undefined)
+                            user.banner = input.banner;
+                        if (input.bannerUrl === null)
+                            delete user.bannerUrl;
+                        else if (input.bannerUrl !== undefined)
+                            user.bannerUrl = input.bannerUrl;
+                        if (input.notificationSoundEnabled !== undefined)
+                            user.notificationSoundEnabled = input.notificationSoundEnabled;
+                        if (input.isVerified !== undefined)
+                            user.isVerified = input.isVerified;
+                        if (input.badge !== undefined)
+                            user.badge = input.badge;
+                        if (input.scam !== undefined)
+                            user.scam = input.scam;
+                        if (input.fake !== undefined)
+                            user.fake = input.fake;
+                        if (input.usernames !== undefined)
+                            user.usernames = input.usernames;
+                        if (input.adminUserIds !== undefined)
+                            user.adminUserIds = input.adminUserIds;
+                        if (input.isOwner !== undefined)
+                            user.isOwner = input.isOwner;
+                        if (input.isBanned !== undefined)
+                            user.isBanned = input.isBanned;
+                        if (input.isFrozen !== undefined)
+                            user.isFrozen = input.isFrozen;
+                        if (input.isDeleted !== undefined)
+                            user.isDeleted = input.isDeleted;
+                        if (input.deletedAt !== undefined)
+                            user.deletedAt = input.deletedAt;
+                        if (input.friendIds !== undefined)
+                            user.friendIds = input.friendIds;
+                        if (input.outgoingFriendRequestIds !== undefined)
+                            user.outgoingFriendRequestIds = input.outgoingFriendRequestIds;
+                        if (input.incomingFriendRequestIds !== undefined)
+                            user.incomingFriendRequestIds = input.incomingFriendRequestIds;
+                        if (input.isApp !== undefined)
+                            user.isApp = input.isApp;
+                        if (input.isBot !== undefined)
+                            user.isBot = input.isBot;
+                        if (input.language !== undefined)
+                            user.language = input.language;
+                        if (input.birthday !== undefined) {
+                            if (input.birthday === null)
+                                delete user.birthday;
+                            else
+                                user.birthday = input.birthday;
+                        }
+                        if (input.emailVerified !== undefined)
+                            user.emailVerified = input.emailVerified;
+                        if (input.passwordHash !== undefined)
+                            user.passwordHash = input.passwordHash;
+                        // Код подтверждения: `null` стирает поле, чтобы в записи не осталось
+                        // даже просроченного кода.
+                        if (input.emailCodeHash !== undefined) {
+                            if (input.emailCodeHash === null)
+                                delete user.emailCodeHash;
+                            else
+                                user.emailCodeHash = input.emailCodeHash;
+                        }
+                        if (input.emailCodePurpose !== undefined) {
+                            if (input.emailCodePurpose === null)
+                                delete user.emailCodePurpose;
+                            else
+                                user.emailCodePurpose = input.emailCodePurpose;
+                        }
+                        if (input.emailCodeExpiresAt !== undefined) {
+                            if (input.emailCodeExpiresAt === null)
+                                delete user.emailCodeExpiresAt;
+                            else
+                                user.emailCodeExpiresAt = input.emailCodeExpiresAt;
+                        }
+                        if (input.emailCodeAttempts !== undefined)
+                            user.emailCodeAttempts = input.emailCodeAttempts;
+                        // Автозавершение сеансов: `null` — никогда, число — срок бездействия.
+                        if (input.sessionAutoTerminateDays !== undefined) {
+                            if (input.sessionAutoTerminateDays === null)
+                                delete user.sessionAutoTerminateDays;
+                            else
+                                user.sessionAutoTerminateDays = input.sessionAutoTerminateDays;
+                        }
+                    });
+                }
+                catch (error) {
+                    return conflict(error);
+                }
+            },
+            updateLastSeen: (id, timestamp) => mutate("users", id, "User", (user) => { user.lastSeenAt = timestamp; }),
+            setBlocked: (id, blockedId, blocked) => mutate("users", id, "User", (user) => {
+                user.blockedUserIds = setMember(user.blockedUserIds, blockedId, blocked);
+            }),
+            async setFavorite(id, messageId, favorite) {
+                return database.transaction(async (client) => {
+                    // Use the same message-before-user lock order as deletion. As in the JSON
+                    // repository, callers may supply missing IDs; service validation owns that check.
+                    await find(client, "messages", messageId, true);
+                    const user = await find(client, "users", id, true);
+                    if (!user)
+                        throw new Error("User was not found");
+                    user.favoriteMessageIds = setMember(user.favoriteMessageIds, messageId, favorite);
+                    return save(client, "users", user);
+                });
+            },
+            async list(options) {
+                const query = options.query?.trim().replace(/^@/, "").toLowerCase();
+                const users = await select(pool, "users", "($1::text IS NULL OR id <> $1) AND ($2::text IS NULL OR strpos(username_key, $2) > 0 OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(payload->'usernames', '[]'::jsonb)) AS alias WHERE strpos(lower(alias), $2) > 0))", [options.excludeUserId ?? null, query || null]);
+                return users.sort((a, b) => (a.username ?? a.displayName).localeCompare(b.username ?? b.displayName, "ru")).slice(0, options.limit);
+            },
+            findManyByIds: (ids) => select(pool, "users", "id = ANY($1::text[])", [ids]),
+            // Колонки created_at в таблице нет — сортируем по дате из payload.
+            listAll: () => select(pool, "users", "TRUE", [], "ORDER BY payload->>'createdAt' DESC, sequence DESC"),
+            // Копия правила `isFailedRegistration` на SQL (см. `domain/models.ts`):
+            // почта не подтверждена, код истёк или его нет, а явные решения владельца
+            // (заморозка, удаление) уважаем. Сравнение строк, а не времени: даты у нас
+            // ISO в UTC, и лексикографический порядок совпадает с хронологическим.
+            listFailedRegistrations: (now) => select(pool, "users", "payload->>'emailVerified' = 'false'"
+                + " AND payload->>'isDeleted' IS DISTINCT FROM 'true'"
+                + " AND payload->>'isFrozen' IS DISTINCT FROM 'true'"
+                + " AND (payload->>'emailCodeExpiresAt' IS NULL OR payload->>'emailCodeExpiresAt' <= $1)", [now]),
+            // Счётчик берём у самой базы: тянуть все записи в память ради числа
+            // незачем, а предел выдачи `list` для этого всё равно не годится.
+            async count() {
+                const result = await pool.query("SELECT count(*)::text AS count FROM users");
+                return Number(result.rows[0]?.count ?? 0);
+            },
+            async delete(id) {
+                const result = await pool.query("DELETE FROM users WHERE id = $1 RETURNING payload", [id]);
+                return result.rows[0]?.payload ?? null;
+            },
+        },
+        conversations: {
+            async findOrCreateSaved(userId) {
+                const timestamp = now();
+                const conversation = { id: randomUUID(), type: "saved", memberIds: [userId], directKey: `saved:${userId}`,
+                    createdAt: timestamp, updatedAt: timestamp, pinnedMessageIds: [], archivedBy: [], mutedUntilBy: {} };
+                return database.transaction(async (client) => {
+                    // 🔥 Условие в `ON CONFLICT` повторяет условие частичного индекса:
+                    // без него Postgres не выведет индекс по цели конфликта и запрос упадёт.
+                    const inserted = await client.query("INSERT INTO conversations (payload) VALUES ($1::jsonb) ON CONFLICT (direct_key) WHERE direct_key <> '' DO NOTHING RETURNING id", [JSON.stringify(conversation)]);
+                    if (inserted.rowCount)
+                        return { conversation, created: true };
+                    const existing = (await select(client, "conversations", "direct_key = $1", [conversation.directKey]))[0];
+                    if (!existing)
+                        throw new Error("Saved conversation was not found");
+                    return { conversation: existing, created: false };
+                });
+            },
+            async findOrCreateDirect(first, second) {
+                const memberIds = [first, second].sort();
+                const timestamp = now();
+                const conversation = { id: randomUUID(), type: "direct", memberIds, directKey: memberIds.join(":"),
+                    createdAt: timestamp, updatedAt: timestamp, pinnedMessageIds: [], archivedBy: [], mutedUntilBy: {} };
+                return database.transaction(async (client) => {
+                    const inserted = await client.query("INSERT INTO conversations (payload) VALUES ($1::jsonb) ON CONFLICT (direct_key) WHERE direct_key <> '' DO NOTHING RETURNING id", [JSON.stringify(conversation)]);
+                    if (inserted.rowCount)
+                        return { conversation, created: true };
+                    const existing = (await select(client, "conversations", "direct_key = $1", [conversation.directKey]))[0];
+                    if (!existing)
+                        throw new Error("Conversation was not found");
+                    return { conversation: existing, created: false };
+                });
+            },
+            async createGroup(input) {
+                const timestamp = now();
+                const memberIds = [input.ownerId, ...input.memberIds.filter((id) => id !== input.ownerId)];
+                const conversation = {
+                    id: randomUUID(), type: "group", memberIds, directKey: "",
+                    createdAt: timestamp, updatedAt: timestamp, pinnedMessageIds: [], archivedBy: [], mutedUntilBy: {},
+                    title: input.title, description: input.description ?? "", avatarUrl: input.avatarUrl ?? null,
+                    ownerId: input.ownerId, adminIds: [], adminDefaults: defaultAdminPermissions(),
+                    inviteCode: input.inviteCode ?? "", permissions: {}, restrictions: {}, mutedMembers: {}, leftIds: [],
+                    history: [{ id: randomUUID(), at: timestamp, actorId: input.ownerId, kind: "created", detail: input.title }],
+                    ...(input.isSupportInbox ? { isSupportInbox: true } : {}),
+                };
+                return database.transaction(async (client) => {
+                    await insert(client, "conversations", conversation);
+                    return conversation;
+                });
+            },
+            /** Служебная группа поддержки: помечена `isSupportInbox`, ищется напрямую. */
+            async findSupportInbox() {
+                return ((await select(pool, "conversations", "payload->>'isSupportInbox' = 'true'"))[0] ??
+                    null);
+            },
+            findByInviteCode: async (code) => {
+                if (!code)
+                    return null;
+                return (await select(pool, "conversations", "payload->>'inviteCode' = $1", [code]))[0] ?? null;
+            },
+            async searchGroups(query, limit) {
+                const wanted = query.trim().toLowerCase() || null;
+                const groups = await select(pool, "conversations", 
+                // Служебная группа поддержки в поиске не показывается: она не для людей.
+                "payload->>'type' = 'group' AND payload->>'isSupportInbox' IS DISTINCT FROM 'true' AND ($1::text IS NULL OR id = $1 OR lower(COALESCE(payload->>'inviteCode', '')) = $1 OR strpos(lower(COALESCE(payload->>'title', '')), $1) > 0)", [wanted]);
+                return groups.slice(0, limit);
+            },
+            // Личные диалоги и «Избранное» в счёт не идут: считаем именно группы.
+            // Служебная группа поддержки тоже: владелец видит статистику по людским.
+            async countGroups() {
+                const result = await pool.query("SELECT count(*)::text AS count FROM conversations WHERE payload->>'type' = 'group' AND payload->>'isSupportInbox' IS DISTINCT FROM 'true'");
+                return Number(result.rows[0]?.count ?? 0);
+            },
+            update: (id, input) => mutate("conversations", id, "Conversation", (conversation) => {
+                if (input.title !== undefined)
+                    conversation.title = input.title;
+                if (input.description !== undefined)
+                    conversation.description = input.description;
+                if (input.avatarUrl !== undefined)
+                    conversation.avatarUrl = input.avatarUrl;
+                if (input.memberIds !== undefined)
+                    conversation.memberIds = input.memberIds;
+                if (input.ownerId !== undefined)
+                    conversation.ownerId = input.ownerId;
+                if (input.adminIds !== undefined)
+                    conversation.adminIds = input.adminIds;
+                if (input.adminPermissions !== undefined)
+                    conversation.adminPermissions = input.adminPermissions;
+                if (input.adminDefaults !== undefined)
+                    conversation.adminDefaults = input.adminDefaults;
+                if (input.inviteCode !== undefined)
+                    conversation.inviteCode = input.inviteCode;
+                if (input.permissions !== undefined)
+                    conversation.permissions = input.permissions;
+                if (input.restrictions !== undefined)
+                    conversation.restrictions = input.restrictions;
+                if (input.mutedMembers !== undefined)
+                    conversation.mutedMembers = input.mutedMembers;
+                if (input.memberTags !== undefined)
+                    conversation.memberTags = input.memberTags;
+                if (input.leftIds !== undefined)
+                    conversation.leftIds = input.leftIds;
+                if (input.history !== undefined)
+                    conversation.history = input.history;
+                if (input.isVerified !== undefined)
+                    conversation.isVerified = input.isVerified;
+                if (input.badge !== undefined)
+                    conversation.badge = input.badge;
+                if (input.scam !== undefined)
+                    conversation.scam = input.scam;
+                if (input.fake !== undefined)
+                    conversation.fake = input.fake;
+                conversation.updatedAt = now();
+            }),
+            findById: (id) => find(pool, "conversations", id),
+            // Вышедший участник остаётся в memberIds, но не видит группу в своём списке.
+            listForUser: (id) => select(pool, "conversations", "member_ids ? $1 AND NOT COALESCE(payload->'leftIds' ? $1, false)", [id], "ORDER BY updated_at DESC, sequence"),
+            setPinnedMessage: (id, messageId) => mutate("conversations", id, "Conversation", (conversation) => {
+                conversation.pinnedMessageIds = messageId === null ? [] : [...conversation.pinnedMessageIds.filter((item) => item !== messageId), messageId];
+                latestPin(conversation);
+            }),
+            setMessagePinned: (id, messageId, pinned) => mutate("conversations", id, "Conversation", (conversation) => {
+                conversation.pinnedMessageIds = conversation.pinnedMessageIds.filter((item) => item !== messageId);
+                if (pinned)
+                    conversation.pinnedMessageIds.push(messageId);
+                latestPin(conversation);
+            }),
+            updateUserSettings: (id, userId, input) => mutate("conversations", id, "Conversation", (conversation) => {
+                if (input.archived !== undefined)
+                    conversation.archivedBy = setMember(conversation.archivedBy, userId, input.archived);
+                if (input.mutedUntil === null)
+                    delete conversation.mutedUntilBy[userId];
+                else if (input.mutedUntil !== undefined)
+                    conversation.mutedUntilBy[userId] = input.mutedUntil;
+            }),
+        },
+        messages: {
+            async countUnread(conversationIds, userId) {
+                const counts = {};
+                for (const id of conversationIds)
+                    counts[id] = 0;
+                if (conversationIds.length === 0)
+                    return counts;
+                // Сообщение прочитано, когда read_by содержит id пользователя.
+                const { rows } = await pool.query(`SELECT conversation_id, count(*)::text AS unread FROM messages
+           WHERE conversation_id = ANY($1::text[])
+             AND payload->>'senderId' <> $2
+             AND NOT (payload->'readBy' @> to_jsonb($2::text))
+           GROUP BY conversation_id`, [conversationIds, userId]);
+                for (const row of rows)
+                    counts[row.conversation_id] = Number(row.unread);
+                return counts;
+            },
+            async updatePoll(id, poll) {
+                return database.transaction(async (client) => {
+                    const message = await find(client, "messages", id, true);
+                    if (!message)
+                        throw new AppError(404, "MESSAGE_NOT_FOUND", "Message was not found");
+                    message.poll = poll;
+                    await save(client, "messages", message);
+                    return message;
+                });
+            },
+            async create(input) {
+                return database.transaction(async (client) => {
+                    const conversation = await find(client, "conversations", input.conversationId, true);
+                    const message = { id: randomUUID(), ...input, kind: input.kind ?? "user", createdAt: now(),
+                        attachmentIds: [...new Set(input.attachmentIds ?? [])], stickerIds: [...new Set(input.stickerIds ?? [])],
+                        reactions: [], readBy: [input.senderId] };
+                    await insert(client, "messages", message);
+                    if (conversation) {
+                        conversation.lastMessageId = message.id;
+                        conversation.updatedAt = message.createdAt;
+                        await save(client, "conversations", conversation);
+                    }
+                    return message;
+                });
+            },
+            async listForConversation(id, options) {
+                const query = options.query?.trim().toLocaleLowerCase("ru-RU");
+                // The normal history path limits rows in PostgreSQL. Search uses bounded pages
+                // to preserve the JSON adapter's exact Russian case-folding semantics.
+                const messages = [];
+                let offset = 0;
+                const pageSize = query ? Math.max(100, options.limit) : options.limit;
+                if (options.limit <= 0)
+                    return [];
+                while (messages.length < options.limit) {
+                    const page = await select(pool, "messages", "conversation_id = $1 AND ($2::text IS NULL OR created_at < $2)", [id, options.before ?? null, pageSize, offset], "ORDER BY created_at DESC, sequence LIMIT $3 OFFSET $4");
+                    messages.push(...page.filter((message) => !query || message.text.toLocaleLowerCase("ru-RU").includes(query)));
+                    if (page.length < pageSize || !query)
+                        break;
+                    offset += page.length;
+                }
+                return messages.slice(0, options.limit).reverse();
+            },
+            listByIds: (ids) => orderedIds(pool, "messages", ids),
+            findById: (id) => find(pool, "messages", id),
+            findByAttachmentId: (id) => select(pool, "messages", "attachment_ids ? $1", [id]),
+            updateText: (id, text) => mutate("messages", id, "Message", (message) => { message.text = text; message.editedAt = now(); }),
+            setReaction: (id, userId, emoji) => mutate("messages", id, "Message", (message) => {
+                message.reactions = message.reactions.filter((reaction) => reaction.userId !== userId);
+                if (emoji !== null)
+                    message.reactions.push({ userId, emoji, createdAt: now() });
+            }),
+            async deleteFromConversation(conversationId, id) {
+                return database.transaction(async (client) => {
+                    const conversation = await find(client, "conversations", conversationId, true);
+                    const message = await find(client, "messages", id, true);
+                    if (!message || message.conversationId !== conversationId)
+                        throw new Error("Message was not found");
+                    await client.query("DELETE FROM messages WHERE id = $1", [id]);
+                    const users = await select(client, "users", "favorite_ids ? $1", [id], "ORDER BY id FOR UPDATE");
+                    for (const user of users) {
+                        user.favoriteMessageIds = user.favoriteMessageIds.filter((item) => item !== id);
+                        await save(client, "users", user);
+                    }
+                    if (conversation) {
+                        conversation.pinnedMessageIds = conversation.pinnedMessageIds.filter((item) => item !== id);
+                        latestPin(conversation);
+                        const latest = (await select(client, "messages", "conversation_id = $1", [conversationId], "ORDER BY created_at DESC, sequence DESC LIMIT 1"))[0];
+                        if (latest) {
+                            conversation.lastMessageId = latest.id;
+                            conversation.updatedAt = latest.createdAt;
+                        }
+                        else {
+                            delete conversation.lastMessageId;
+                            conversation.updatedAt = conversation.createdAt;
+                        }
+                        await save(client, "conversations", conversation);
+                    }
+                    return message;
+                });
+            },
+            async markRead(conversationId, userId) {
+                return database.transaction(async (client) => {
+                    const messages = await select(client, "messages", "conversation_id = $1 AND NOT (payload->'readBy' ? $2)", [conversationId, userId], "ORDER BY sequence FOR UPDATE");
+                    for (const message of messages) {
+                        message.readBy.push(userId);
+                        await save(client, "messages", message);
+                    }
+                    return { messages, messageIds: messages.map((message) => message.id) };
+                });
+            },
+        },
+        attachments: {
+            create: (input) => insert(pool, "attachments", { id: randomUUID(), ...input, createdAt: now() }),
+            findById: (id) => find(pool, "attachments", id),
+            findManyByIds: (ids) => orderedIds(pool, "attachments", ids),
+            listByOwner: (ownerId) => select(pool, "attachments", "owner_id = $1", [ownerId]),
+            async delete(id) {
+                const result = await pool.query("DELETE FROM attachments WHERE id = $1 RETURNING payload", [id]);
+                return result.rows[0]?.payload ?? null;
+            },
+        },
+        reports: {
+            create: (input) => insert(pool, "reports", { id: randomUUID(), ...input, createdAt: now() }),
+            list: () => select(pool, "reports", "TRUE", [], "ORDER BY created_at DESC, sequence"),
+        },
+        favoriteNotes: {
+            create: (input) => insert(pool, "favorite_notes", { id: randomUUID(), ...input, createdAt: now() }),
+            list: (id) => select(pool, "favorite_notes", "user_id = $1", [id]),
+            async update(id, userId, content) {
+                return database.transaction(async (client) => {
+                    const note = await find(client, "favorite_notes", id, true);
+                    if (!note || note.userId !== userId)
+                        throw new AppError(404, "NOT_FOUND", "Note not found");
+                    note.content = content;
+                    note.updatedAt = now();
+                    return save(client, "favorite_notes", note);
+                });
+            },
+            async delete(id, userId) {
+                const result = await pool.query("DELETE FROM favorite_notes WHERE id = $1 AND user_id = $2 RETURNING id", [id, userId]);
+                if (!result.rowCount)
+                    throw new AppError(404, "NOT_FOUND", "Note not found");
+            },
+        },
+        calls: {
+            async create(input) {
+                return database.transaction(async (client) => {
+                    const call = { ...input, startedAt: now() };
+                    const result = await client.query("INSERT INTO calls (payload) VALUES ($1::jsonb) ON CONFLICT (id) DO NOTHING RETURNING id", [JSON.stringify(call)]);
+                    if (result.rowCount)
+                        return call;
+                    const existing = await find(client, "calls", input.id);
+                    if (!existing)
+                        throw new Error("Call was not found");
+                    return existing;
+                });
+            },
+            findById: (id) => find(pool, "calls", id),
+            update: (id, input) => mutate("calls", id, "Call", (call) => { Object.assign(call, input); }),
+            listForConversation: (id) => select(pool, "calls", "conversation_id = $1", [id], "ORDER BY started_at DESC, sequence"),
+        },
+        drafts: {
+            listForUser: (userId) => select(pool, "drafts", "user_id = $1", [userId]),
+            find: async (userId, conversationId) => (await select(pool, "drafts", "user_id = $1 AND conversation_id = $2", [userId, conversationId]))[0] ?? null,
+            async save(input) {
+                return database.transaction(async (client) => {
+                    const existing = (await select(client, "drafts", "user_id = $1 AND conversation_id = $2", [input.userId, input.conversationId], "FOR UPDATE"))[0];
+                    const updatedAt = now();
+                    if (existing) {
+                        const updated = {
+                            ...existing,
+                            text: input.text,
+                            attachmentIds: [...input.attachmentIds],
+                            updatedAt,
+                        };
+                        if (input.replyToId === undefined)
+                            delete updated.replyToId;
+                        else
+                            updated.replyToId = input.replyToId;
+                        return save(client, "drafts", updated);
+                    }
+                    return insert(client, "drafts", {
+                        id: randomUUID(),
+                        userId: input.userId,
+                        conversationId: input.conversationId,
+                        text: input.text,
+                        attachmentIds: [...input.attachmentIds],
+                        ...(input.replyToId === undefined ? {} : { replyToId: input.replyToId }),
+                        updatedAt,
+                    });
+                });
+            },
+            async delete(userId, conversationId) {
+                await pool.query("DELETE FROM drafts WHERE user_id = $1 AND conversation_id = $2", [
+                    userId,
+                    conversationId,
+                ]);
+            },
+        },
+        folders: {
+            listForUser: (userId) => select(pool, "folders", "user_id = $1", [userId], "ORDER BY (payload->>'position')::int, sequence"),
+            findById: (id) => find(pool, "folders", id),
+            async create(input) {
+                return database.transaction(async (client) => {
+                    const existing = await select(client, "folders", "user_id = $1", [
+                        input.userId,
+                    ]);
+                    const position = existing.reduce((next, folder) => Math.max(next, folder.position + 1), 0);
+                    const timestamp = now();
+                    return insert(client, "folders", {
+                        id: randomUUID(),
+                        userId: input.userId,
+                        name: input.name,
+                        position,
+                        conversationIds: [...new Set(input.conversationIds ?? [])],
+                        createdAt: timestamp,
+                        updatedAt: timestamp,
+                    });
+                });
+            },
+            update: (id, userId, input) => database.transaction(async (client) => {
+                const folder = await find(client, "folders", id, true);
+                if (!folder || folder.userId !== userId) {
+                    throw new AppError(404, "FOLDER_NOT_FOUND", "Folder not found");
+                }
+                if (input.name !== undefined)
+                    folder.name = input.name;
+                if (input.position !== undefined)
+                    folder.position = input.position;
+                if (input.conversationIds !== undefined) {
+                    folder.conversationIds = [...new Set(input.conversationIds)];
+                }
+                folder.updatedAt = now();
+                return save(client, "folders", folder);
+            }),
+            async delete(id, userId) {
+                const result = await pool.query("DELETE FROM folders WHERE id = $1 AND user_id = $2 RETURNING id", [id, userId]);
+                if (!result.rowCount)
+                    throw new AppError(404, "FOLDER_NOT_FOUND", "Folder not found");
+            },
+        },
+        scheduledMessages: {
+            listForUser: (userId) => select(pool, "scheduled_messages", "user_id = $1", [userId], "ORDER BY send_at, sequence"),
+            findById: (id) => find(pool, "scheduled_messages", id),
+            create: (input) => insert(pool, "scheduled_messages", {
+                id: randomUUID(),
+                userId: input.userId,
+                conversationId: input.conversationId,
+                text: input.text,
+                attachmentIds: [...input.attachmentIds],
+                ...(input.replyToId === undefined ? {} : { replyToId: input.replyToId }),
+                sendAt: input.sendAt,
+                status: "pending",
+                createdAt: now(),
+            }),
+            update: (id, userId, input) => database.transaction(async (client) => {
+                const scheduled = await find(client, "scheduled_messages", id, true);
+                if (!scheduled || scheduled.userId !== userId) {
+                    throw new AppError(404, "SCHEDULED_NOT_FOUND", "Scheduled message was not found");
+                }
+                if (scheduled.status !== "pending") {
+                    throw new AppError(409, "SCHEDULED_NOT_PENDING", "Only a pending message can be changed");
+                }
+                if (input.text !== undefined)
+                    scheduled.text = input.text;
+                if (input.attachmentIds !== undefined)
+                    scheduled.attachmentIds = [...input.attachmentIds];
+                if (input.replyToId === null)
+                    delete scheduled.replyToId;
+                else if (input.replyToId !== undefined)
+                    scheduled.replyToId = input.replyToId;
+                if (input.sendAt !== undefined)
+                    scheduled.sendAt = input.sendAt;
+                return save(client, "scheduled_messages", scheduled);
+            }),
+            cancel: (id, userId) => database.transaction(async (client) => {
+                const scheduled = await find(client, "scheduled_messages", id, true);
+                if (!scheduled || scheduled.userId !== userId) {
+                    throw new AppError(404, "SCHEDULED_NOT_FOUND", "Scheduled message was not found");
+                }
+                if (scheduled.status !== "pending") {
+                    throw new AppError(409, "SCHEDULED_NOT_PENDING", "Only a pending message can be cancelled");
+                }
+                scheduled.status = "cancelled";
+                return save(client, "scheduled_messages", scheduled);
+            }),
+            claimDue: (id) => database.transaction(async (client) => {
+                const scheduled = await find(client, "scheduled_messages", id, true);
+                if (!scheduled || scheduled.status !== "pending")
+                    return null;
+                scheduled.status = "sending";
+                return save(client, "scheduled_messages", scheduled);
+            }),
+            listDue: (nowIso, limit) => select(pool, "scheduled_messages", "status = 'pending' AND send_at <= $1", [nowIso, limit], "ORDER BY send_at, sequence LIMIT $2"),
+            markSent: (id, messageId, sentAt) => database.transaction(async (client) => {
+                const scheduled = await find(client, "scheduled_messages", id, true);
+                if (!scheduled)
+                    throw new Error("Scheduled message was not found");
+                scheduled.status = "sent";
+                scheduled.messageId = messageId;
+                scheduled.sentAt = sentAt;
+                delete scheduled.failureReason;
+                return save(client, "scheduled_messages", scheduled);
+            }),
+            markFailed: (id, reason) => database.transaction(async (client) => {
+                const scheduled = await find(client, "scheduled_messages", id, true);
+                if (!scheduled)
+                    throw new Error("Scheduled message was not found");
+                scheduled.status = "failed";
+                scheduled.failureReason = reason.slice(0, 300);
+                return save(client, "scheduled_messages", scheduled);
+            }),
+        },
+        sessions: {
+            async create(input) {
+                const timestamp = now();
+                const session = {
+                    id: randomUUID(),
+                    userId: input.userId,
+                    tokenHashes: [...new Set(input.tokenHashes)],
+                    site: input.site,
+                    device: input.device,
+                    ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+                    ...(input.customDeviceName ? { customDeviceName: input.customDeviceName } : {}),
+                    createdAt: timestamp,
+                    lastSeenAt: timestamp,
+                    ...(input.newDevice === undefined ? {} : { newDevice: input.newDevice }),
+                };
+                return insert(pool, "sessions", session);
+            },
+            findById: (id) => find(pool, "sessions", id),
+            async findByTokenHash(hash) {
+                return ((await select(pool, "sessions", "token_hashes @> to_jsonb($1::text)", [hash]))[0] ??
+                    null);
+            },
+            listForUser: (userId) => select(pool, "sessions", "user_id = $1", [userId], "ORDER BY last_seen_at DESC, sequence"),
+            update: (id, input) => mutate("sessions", id, "Session", (session) => {
+                if (input.tokenHashes !== undefined)
+                    session.tokenHashes = [...new Set(input.tokenHashes)];
+                if (input.site !== undefined)
+                    session.site = input.site;
+                if (input.device !== undefined)
+                    session.device = input.device;
+                if (input.deviceId !== undefined)
+                    session.deviceId = input.deviceId;
+                if (input.customDeviceName !== undefined) {
+                    if (input.customDeviceName === null) {
+                        delete session.customDeviceName;
+                    }
+                    else {
+                        session.customDeviceName = input.customDeviceName;
+                    }
+                }
+                if (input.lastSeenAt !== undefined)
+                    session.lastSeenAt = input.lastSeenAt;
+                if (input.acknowledgedAt !== undefined)
+                    session.acknowledgedAt = input.acknowledgedAt;
+                if (input.terminatedAt !== undefined)
+                    session.terminatedAt = input.terminatedAt;
+            }),
+            async delete(id) {
+                const session = await find(pool, "sessions", id);
+                if (!session)
+                    return null;
+                await pool.query("DELETE FROM sessions WHERE id = $1", [id]);
+                return session;
+            },
+            async deleteForUser(userId) {
+                await pool.query("DELETE FROM sessions WHERE user_id = $1", [userId]);
+            },
+            async updateDeviceName(deviceId, name) {
+                if (name) {
+                    await pool.query("UPDATE sessions SET payload = jsonb_set(payload, '{customDeviceName}', to_jsonb($2::text)) WHERE payload->>'deviceId' = $1", [deviceId, name]);
+                }
+                else {
+                    await pool.query("UPDATE sessions SET payload = payload - 'customDeviceName' WHERE payload->>'deviceId' = $1", [deviceId]);
+                }
+            },
+            async findDeviceName(deviceId) {
+                const rows = await select(pool, "sessions", "payload->>'deviceId' = $1 AND payload ? 'customDeviceName'", [deviceId], "ORDER BY last_seen_at DESC LIMIT 1");
+                return rows[0]?.customDeviceName ?? null;
+            },
+        },
+        stickerPacks: {
+            listOwnedBy: (userId) => select(pool, "sticker_packs", "owner_id = $1", [userId], "ORDER BY sequence"),
+            findById: (id) => find(pool, "sticker_packs", id),
+            findManyByIds: (ids) => ids.length
+                ? orderedIds(pool, "sticker_packs", ids)
+                : Promise.resolve([]),
+            create: (input) => {
+                const timestamp = now();
+                return insert(pool, "sticker_packs", {
+                    id: randomUUID(),
+                    ownerId: input.ownerId,
+                    title: input.title,
+                    emoji: input.emoji,
+                    version: 1,
+                    createdAt: timestamp,
+                    updatedAt: timestamp,
+                });
+            },
+            update: (id, ownerId, input) => database.transaction(async (client) => {
+                const pack = await find(client, "sticker_packs", id, true);
+                if (!pack || pack.ownerId !== ownerId) {
+                    throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack not found");
+                }
+                if (input.title !== undefined)
+                    pack.title = input.title;
+                if (input.emoji !== undefined)
+                    pack.emoji = input.emoji;
+                pack.updatedAt = now();
+                return save(client, "sticker_packs", pack);
+            }),
+            async delete(id, ownerId) {
+                const result = await pool.query("DELETE FROM sticker_packs WHERE id = $1 AND owner_id = $2 RETURNING id", [id, ownerId]);
+                if (!result.rowCount) {
+                    throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack not found");
+                }
+            },
+            bumpVersion: (id) => database.transaction(async (client) => {
+                const pack = await find(client, "sticker_packs", id, true);
+                if (!pack)
+                    throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack not found");
+                pack.version += 1;
+                pack.updatedAt = now();
+                return save(client, "sticker_packs", pack);
+            }),
+        },
+        stickers: {
+            listForPack: (packId) => select(pool, "stickers", "pack_id = $1", [packId], "ORDER BY sequence"),
+            listForPacks: (packIds) => packIds.length
+                ? select(pool, "stickers", "pack_id = ANY($1::text[])", [packIds], "ORDER BY sequence")
+                : Promise.resolve([]),
+            findById: (id) => find(pool, "stickers", id),
+            async countForPack(packId) {
+                const result = await pool.query("SELECT count(*)::text AS total FROM stickers WHERE pack_id = $1", [packId]);
+                return Number(result.rows[0]?.total ?? 0);
+            },
+            create: (input) => insert(pool, "stickers", {
+                id: randomUUID(),
+                packId: input.packId,
+                attachmentId: input.attachmentId,
+                emoji: input.emoji,
+                animated: input.animated,
+                createdAt: now(),
+            }),
+            async delete(id, packId) {
+                const sticker = (await select(pool, "stickers", "id = $1 AND pack_id = $2", [id, packId]))[0];
+                if (!sticker)
+                    return null;
+                await pool.query("DELETE FROM stickers WHERE id = $1", [id]);
+                return sticker;
+            },
+            async deleteForPack(packId) {
+                await pool.query("DELETE FROM stickers WHERE pack_id = $1", [packId]);
+            },
+        },
+        stickerInstalls: {
+            listForUser: (userId) => select(pool, "sticker_installs", "user_id = $1", [userId], "ORDER BY sequence"),
+            async find(userId, packId) {
+                return ((await select(pool, "sticker_installs", "user_id = $1 AND pack_id = $2", [userId, packId]))[0] ?? null);
+            },
+            install: (input) => database.transaction(async (client) => {
+                const existing = (await select(client, "sticker_installs", "user_id = $1 AND pack_id = $2", [input.userId, input.packId]))[0];
+                if (existing)
+                    return { install: existing, created: false };
+                const install = {
+                    id: randomUUID(),
+                    userId: input.userId,
+                    packId: input.packId,
+                    sharedByUserId: input.sharedByUserId,
+                    installedAt: now(),
+                };
+                return { install: await insert(client, "sticker_installs", install), created: true };
+            }),
+            async uninstall(userId, packId) {
+                const result = await pool.query("DELETE FROM sticker_installs WHERE user_id = $1 AND pack_id = $2 RETURNING id", [userId, packId]);
+                return Boolean(result.rowCount);
+            },
+            listForPack: (packId) => select(pool, "sticker_installs", "pack_id = $1", [packId], "ORDER BY sequence"),
+            async deleteForPack(packId) {
+                await pool.query("DELETE FROM sticker_installs WHERE pack_id = $1", [packId]);
+            },
+            async deleteForUser(userId) {
+                await pool.query("DELETE FROM sticker_installs WHERE user_id = $1", [userId]);
+            },
+        },
+    };
+}
+//# sourceMappingURL=postgres-repositories.js.map

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Yargram">
+  <title>Логотип Yargram</title>
+  <g transform="translate(256 256) scale(9.6) translate(-24 -24)">
+    <circle cx="24" cy="24" r="22" fill="#3390EC"/>
+    <path d="M12.7 13.9c-.7-1.5 1.2-2.8 2.3-1.6L24 22l9-9.7c1.1-1.2 3-.1 2.4 1.5l-7.5 20.6a4.1 4.1 0 0 1-7.7 0l-7.5-20.5Z" fill="#FFFFFF"/>
+    <path d="m18.2 18.5 5.8 6.3 5.8-6.3L24 32.7l-5.8-14.2Z" fill="#D9EFFA"/>
+  </g>
+</svg>

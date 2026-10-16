@@ -73,22 +73,21 @@ if not os.path.exists(server_modules):
     subprocess.run(["npm", "install", "--omit=dev", "--workspace", "@yargram/server"], cwd=ROOT_DIR, check=True)
 
 # 4. Проверка скомпилированных файлов сборки
-server_dist = os.path.join(ROOT_DIR, "apps", "server", "dist", "index.js")
-web_dist = os.path.join(ROOT_DIR, "apps", "web", "dist", "index.html")
+server_entry = os.path.join(ROOT_DIR, "apps", "server", "out", "index.js")
+if not os.path.exists(server_entry):
+    server_entry = os.path.join(ROOT_DIR, "apps", "server", "dist", "index.js")
 
 server_dir = os.path.join(ROOT_DIR, "apps", "server")
 if os.path.exists(server_dir):
     print(f"[YarGram Debug] apps/server contents: {os.listdir(server_dir)}", flush=True)
-    if os.path.exists(os.path.join(server_dir, "dist")):
-        print(f"[YarGram Debug] apps/server/dist contents: {os.listdir(os.path.join(server_dir, 'dist'))}", flush=True)
 
-print(f"[YarGram] Проверка сборки: server_dist={os.path.exists(server_dist)}, web_dist={os.path.exists(web_dist)}", flush=True)
+print(f"[YarGram] Проверка сборки: server_entry={server_entry} (exists: {os.path.exists(server_entry)})", flush=True)
 
-print("[YarGram] Запуск сервера YarGram на порту 7860...", flush=True)
+print(f"[YarGram] Запуск сервера YarGram на порту 7860 ({server_entry})...", flush=True)
 sys.stdout.flush()
 
 # 5. Запуск сервера YarGram
-server_process = subprocess.Popen(["node", "apps/server/dist/index.js"], cwd=ROOT_DIR, env=os.environ)
+server_process = subprocess.Popen(["node", server_entry], cwd=ROOT_DIR, env=os.environ)
 
 try:
     server_process.wait()

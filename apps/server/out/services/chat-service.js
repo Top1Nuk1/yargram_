@@ -1,0 +1,1097 @@
+import { randomUUID } from "node:crypto";
+import { effectiveGroupPermissions, ensurePublicUser, groupCan, groupDescriptionFor, groupRoleFor, removedUserPlaceholder, toAttachmentView, toPublicUser, toPublicUserFor, } from "../domain/models.js";
+// Круг по модулям безвреден: служба стикеров берёт отсюда только *тип* вида
+// сообщения (импорт type — он стирается при сборке), а значение приходит сюда.
+import { isBuiltinSticker, resolveStickerViews } from "./sticker-service.js";
+const POLL_QUESTION_MAX = 255;
+const POLL_DESCRIPTION_MAX = 500;
+const POLL_OPTION_MAX = 100;
+const POLL_OPTIONS_MAX = 12;
+/** Настройки опроса по умолчанию: как в макете «Новый опрос». */
+export function defaultPollSettings() {
+    return {
+        showNames: true,
+        multiple: false,
+        addOptions: true,
+        changeVote: true,
+        shuffle: false,
+        correctOptionIds: [],
+        deadline: null,
+    };
+}
+/** Собираем настройки: что пришло в запросе, остальное — по умолчанию. */
+export function mergePollSettings(input) {
+    const defaults = defaultPollSettings();
+    const pick = (key) => {
+        const value = input?.[key];
+        return value === undefined ? defaults[key] : value;
+    };
+    return {
+        showNames: pick("showNames"),
+        multiple: pick("multiple"),
+        addOptions: pick("addOptions"),
+        changeVote: pick("changeVote"),
+        shuffle: pick("shuffle"),
+        correctOptionIds: pick("correctOptionIds"),
+        deadline: pick("deadline"),
+    };
+}
+/** Опрос закрыт: автор остановил или вышел срок. */
+export function pollClosed(poll, now = Date.now()) {
+    if (poll.closed)
+        return true;
+    if (!poll.settings.deadline)
+        return false;
+    const at = Date.parse(poll.settings.deadline);
+    return !Number.isNaN(at) && at <= now;
+}
+/**
+ * Опрос глазами смотрящего. Итоги считает сервер, поэтому анонимный опрос тоже
+ * показывает числа; чужие голоса уезжают наружу только при открытых именах.
+ */
+export function viewPoll(poll, viewerId) {
+    const counts = {};
+    for (const option of poll.options)
+        counts[option.id] = 0;
+    let totalVoters = 0;
+    for (const picks of Object.values(poll.votes)) {
+        if (picks.length > 0)
+            totalVoters += 1;
+        for (const pick of picks)
+            counts[pick] = (counts[pick] ?? 0) + 1;
+    }
+    const own = viewerId ? poll.votes[viewerId] : undefined;
+    const votes = poll.settings.showNames ? poll.votes : own ? { [viewerId]: own } : {};
+    return { ...poll, votes, counts, totalVoters, closed: pollClosed(poll) };
+}
+import { AppError, FROZEN_READ_ONLY_MESSAGE } from "../lib/errors.js";
+export class ChatService {
+    repositories;
+    constructor(repositories) {
+        this.repositories = repositories;
+    }
+    async createSavedConversation(currentUserId) {
+        await this.getUser(currentUserId);
+        const result = await this.repositories.conversations.findOrCreateSaved(currentUserId);
+        return { conversation: await this.toConversationView(result.conversation, currentUserId), created: result.created };
+    }
+    async createDirectConversation(currentUserId, otherUserId) {
+        if (currentUserId === otherUserId) {
+            throw new AppError(400, "SELF_CONVERSATION", "A direct chat with yourself is not supported");
+        }
+        if (!(await this.repositories.users.findById(otherUserId))) {
+            throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+        }
+        await this.assertUsersCanInteract(currentUserId, otherUserId);
+        const result = await this.repositories.conversations.findOrCreateDirect(currentUserId, otherUserId);
+        return {
+            conversation: await this.toConversationView(result.conversation, currentUserId),
+            created: result.created,
+        };
+    }
+    async listConversations(currentUserId, archived = "all") {
+        const conversations = await this.repositories.conversations.listForUser(currentUserId);
+        const shown = conversations.filter((conversation) => archived === "all" || conversation.archivedBy.includes(currentUserId) === archived);
+        // Непрочитанные считаем одним запросом на все чаты, а не по беседе.
+        const unread = await this.repositories.messages.countUnread(shown.map((conversation) => conversation.id), currentUserId);
+        return Promise.all(shown.map((conversation) => this.toConversationView(conversation, currentUserId, unread[conversation.id] ?? 0)));
+    }
+    async listMessages(currentUserId, conversationId, options) {
+        await this.getAuthorizedConversation(currentUserId, conversationId);
+        const messages = await this.repositories.messages.listForConversation(conversationId, options);
+        // Сообщения от заблокированных мною не существуют для меня — даже если они
+        // были отправлены до блокировки или пока она действовала.
+        const me = await this.repositories.users.findById(currentUserId);
+        const blocked = me?.blockedUserIds ?? [];
+        const visible = blocked.length
+            ? messages.filter((message) => !blocked.includes(message.senderId))
+            : messages;
+        return this.toMessageViews(visible, currentUserId);
+    }
+    /**
+     * Считает медиа, которое есть в переписке с этим человеком. Профиль показывает
+     * только те разделы, где счётчик больше нуля: пустые «0 файлов» не нужны.
+     */
+    async mediaSummary(currentUserId, peerId) {
+        const summary = {
+            photos: 0,
+            videos: 0,
+            files: 0,
+            audio: 0,
+            voice: 0,
+            videoCircles: 0,
+            gifs: 0,
+            links: 0,
+        };
+        if (currentUserId === peerId) {
+            return summary;
+        }
+        const conversations = await this.repositories.conversations.listForUser(currentUserId);
+        const shared = conversations.filter((conversation) => conversation.type === "direct" && conversation.memberIds.includes(peerId));
+        for (const conversation of shared) {
+            let before;
+            for (let page = 0; page < MEDIA_SCAN_PAGES; page += 1) {
+                const batch = await this.repositories.messages.listForConversation(conversation.id, {
+                    limit: MEDIA_SCAN_PAGE_SIZE,
+                    ...(before === undefined ? {} : { before }),
+                });
+                if (batch.length === 0)
+                    break;
+                const ids = [...new Set(batch.flatMap((message) => message.attachmentIds))];
+                const attachments = ids.length ? await this.repositories.attachments.findManyByIds(ids) : [];
+                const byId = new Map(attachments.map((attachment) => [attachment.id, attachment]));
+                for (const message of batch) {
+                    if (LINK_PATTERN.test(message.text))
+                        summary.links += 1;
+                    for (const id of message.attachmentIds) {
+                        const attachment = byId.get(id);
+                        if (attachment)
+                            countMedia(summary, attachment);
+                    }
+                }
+                if (batch.length < MEDIA_SCAN_PAGE_SIZE)
+                    break;
+                const cursor = batch[0]?.createdAt;
+                if (!cursor || cursor === before)
+                    break;
+                before = cursor;
+            }
+        }
+        return summary;
+    }
+    async sendMessage(currentUserId, conversationId, text, replyToId, options = {}) {
+        // Сокет и HTTP приходят сюда, поэтому одного запрета хватает на оба пути.
+        await this.assertAuthorWritable(currentUserId);
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        await this.assertConversationInteractionAllowed(currentUserId, conversation);
+        // В группе права важнее блокировок: запреты участников и общие правила группы.
+        await this.assertGroupSendingAllowed(currentUserId, conversation, text, options.attachmentIds ?? []);
+        if (replyToId !== undefined) {
+            const replyTarget = await this.repositories.messages.findById(replyToId);
+            if (!replyTarget || replyTarget.conversationId !== conversationId) {
+                throw new AppError(400, "REPLY_MESSAGE_INVALID", "Reply message is not in this conversation");
+            }
+        }
+        const attachmentIds = [...new Set(options.attachmentIds ?? [])];
+        const stickerIds = [...new Set(options.stickerIds ?? [])];
+        if (!text.trim() && attachmentIds.length === 0 && stickerIds.length === 0 && options.stickerPackId === undefined) {
+            throw new AppError(400, "MESSAGE_EMPTY", "A message must contain text or an attachment");
+        }
+        if (attachmentIds.length > 10) {
+            throw new AppError(400, "TOO_MANY_ATTACHMENTS", "A message may contain at most 10 attachments");
+        }
+        await this.assertOwnedMessageAttachments(currentUserId, attachmentIds);
+        // 🔥 Стикер доступен, если человек его видит: набор свой либо присланный.
+        // Проверяем по установке, а не «по факту владения набором» — иначе
+        // сослаться можно было бы на любой набор по угаданному id.
+        if (stickerIds.length > 0) {
+            const known = new Set();
+            for (const stickerId of stickerIds) {
+                // 🔥 Встроенные стикеры описаны кодом, а не записаны в базу. Без этой
+                // проверки отправка любого из сорока встроенных стикеров падала бы с
+                // STICKER_NOT_FOUND — самый заметный и самый обидный из багов.
+                if (isBuiltinSticker(stickerId)) {
+                    known.add(stickerId);
+                    continue;
+                }
+                const sticker = await this.repositories.stickers.findById(stickerId);
+                if (!sticker) {
+                    throw new AppError(404, "STICKER_NOT_FOUND", "Sticker was not found");
+                }
+                const pack = await this.repositories.stickerPacks.findById(sticker.packId);
+                if (!pack)
+                    throw new AppError(404, "STICKER_NOT_FOUND", "Sticker was not found");
+                if (pack.ownerId === currentUserId) {
+                    known.add(sticker.id);
+                    continue;
+                }
+                const install = await this.repositories.stickerInstalls.find(currentUserId, sticker.packId);
+                if (install)
+                    known.add(sticker.id);
+            }
+            if (known.size !== stickerIds.length) {
+                throw new AppError(403, "STICKER_FORBIDDEN", "This sticker pack is not available to you");
+            }
+        }
+        if (options.stickerPackId !== undefined) {
+            // 🔥 Присланный набор — единственное сообщение, которому не нужен текст.
+            // Проверяем, что он вообще существует и доступен отправителю: иначе в чате
+            // появилась бы карточка, которая никому ничего не открывает.
+            const pack = await this.repositories.stickerPacks.findById(options.stickerPackId);
+            const shared = await this.repositories.stickerInstalls.find(currentUserId, options.stickerPackId);
+            if (!pack || (!shared && pack.ownerId !== currentUserId)) {
+                throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack was not found");
+            }
+            if (attachmentIds.length > 0 || text.trim()) {
+                throw new AppError(400, "STICKER_PACK_MESSAGE_INVALID", "A shared pack is sent on its own, without text or files");
+            }
+        }
+        if (options.forwardedFromId !== undefined) {
+            const forwarded = await this.repositories.messages.findById(options.forwardedFromId);
+            if (!forwarded) {
+                throw new AppError(400, "FORWARDED_MESSAGE_INVALID", "Forwarded message was not found");
+            }
+            const sourceConversation = await this.repositories.conversations.findById(forwarded.conversationId);
+            if (!sourceConversation?.memberIds.includes(currentUserId)) {
+                throw new AppError(403, "FORWARDED_MESSAGE_FORBIDDEN", "You cannot forward this message");
+            }
+        }
+        const message = await this.repositories.messages.create({
+            conversationId,
+            senderId: currentUserId,
+            text: text.trim(),
+            ...(replyToId === undefined ? {} : { replyToId }),
+            ...(options.forwardedFromId === undefined
+                ? {}
+                : { forwardedFromId: options.forwardedFromId }),
+            stickerIds,
+            ...(options.stickerPackId === undefined ? {} : { stickerPackId: options.stickerPackId }),
+            attachmentIds,
+        });
+        // A delivered message replaces its own draft.
+        await this.repositories.drafts.delete(currentUserId, conversationId);
+        return {
+            message: await this.toMessageView(message, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    /**
+     * Сообщение от бота: свой вид `bot`, своя клавиатура и, если это пересылка
+     * обращения, привязка к тому, кому вернуть ответ владельца. Обычной отправкой
+     * этого не сделать: там вид всегда `user`, а кнопок не бывает вовсе.
+     */
+    async sendBotMessage(input) {
+        const conversation = await this.repositories.conversations.findById(input.conversationId);
+        if (!conversation) {
+            throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+        }
+        const message = await this.repositories.messages.create({
+            conversationId: input.conversationId,
+            senderId: input.senderId,
+            text: input.text,
+            kind: "bot",
+            ...(input.keyboard === undefined ? {} : { keyboard: input.keyboard }),
+            ...(input.supportTicket === undefined ? {} : { supportTicket: input.supportTicket }),
+            ...(input.attachmentIds === undefined ? {} : { attachmentIds: input.attachmentIds }),
+        });
+        return {
+            message: await this.toMessageView(message),
+            memberIds: conversation.memberIds,
+        };
+    }
+    /** Опрос: отдельное сообщение вида poll, а не текст с разметкой. */
+    async createPoll(currentUserId, conversationId, input) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        await this.assertConversationInteractionAllowed(currentUserId, conversation);
+        if (conversation.type === "group") {
+            if (!groupCan(conversation, currentUserId, "send_messages")) {
+                throw new AppError(403, "GROUP_SENDING_DENIED", "В этой группе вам запрещено писать");
+            }
+            if (!groupCan(conversation, currentUserId, "send_polls")) {
+                throw new AppError(403, "GROUP_POLLS_DENIED", "В этой группе запрещено создавать опросы");
+            }
+        }
+        const question = input.question.trim();
+        if (!question)
+            throw new AppError(400, "POLL_QUESTION_EMPTY", "У опроса должен быть вопрос");
+        if (question.length > POLL_QUESTION_MAX) {
+            throw new AppError(400, "POLL_QUESTION_TOO_LONG", "Вопрос слишком длинный");
+        }
+        const options = input.options.map((option) => option.trim()).filter((option) => option !== "");
+        if (options.length < 2) {
+            throw new AppError(400, "POLL_OPTIONS_TOO_FEW", "Нужно хотя бы два варианта ответа");
+        }
+        if (options.length > POLL_OPTIONS_MAX) {
+            throw new AppError(400, "POLL_OPTIONS_TOO_MANY", "Слишком много вариантов ответа");
+        }
+        const message = await this.repositories.messages.create({
+            conversationId,
+            senderId: currentUserId,
+            text: question,
+            kind: "poll",
+            attachmentIds: [],
+            poll: {
+                question,
+                description: (input.description ?? "").trim().slice(0, POLL_DESCRIPTION_MAX),
+                options: options.map((text) => ({ id: randomUUID().slice(0, 8), text })),
+                settings: mergePollSettings(input.settings),
+                votes: {},
+                closed: false,
+            },
+        });
+        return {
+            message: await this.toMessageView(message, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    /** Голос: один или несколько вариантов, с учётом настроек опроса. */
+    async votePoll(currentUserId, messageId, optionIds) {
+        const message = await this.getPollMessage(currentUserId, messageId);
+        const poll = message.poll;
+        const conversation = await this.repositories.conversations.findById(message.conversationId);
+        if (!conversation)
+            throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+        await this.assertConversationInteractionAllowed(currentUserId, conversation);
+        if (pollClosed(poll)) {
+            throw new AppError(403, "POLL_CLOSED", "Опрос уже завершён");
+        }
+        const known = new Set(poll.options.map((option) => option.id));
+        const picked = [...new Set(optionIds)].filter((id) => known.has(id));
+        if (picked.length === 0 && optionIds.length > 0) {
+            throw new AppError(400, "POLL_OPTION_UNKNOWN", "Такого варианта ответа нет");
+        }
+        if (picked.length > 1 && !poll.settings.multiple) {
+            throw new AppError(400, "POLL_SINGLE_CHOICE", "В этом опросе можно выбрать один ответ");
+        }
+        const voted = poll.votes[currentUserId] !== undefined;
+        if (voted && !poll.settings.changeVote) {
+            throw new AppError(403, "POLL_VOTE_LOCKED", "Ответ уже отправлен и изменить его нельзя");
+        }
+        const votes = { ...poll.votes };
+        if (picked.length === 0) {
+            delete votes[currentUserId];
+        }
+        else {
+            votes[currentUserId] = picked;
+        }
+        const updated = await this.repositories.messages.updatePoll(messageId, { ...poll, votes });
+        return {
+            message: await this.toMessageView(updated, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    /** Свой вариант ответа: только если владелец опроса это разрешил. */
+    async addPollOption(currentUserId, messageId, text) {
+        const message = await this.getPollMessage(currentUserId, messageId);
+        const poll = message.poll;
+        if (pollClosed(poll))
+            throw new AppError(403, "POLL_CLOSED", "Опрос уже завершён");
+        if (!poll.settings.addOptions) {
+            throw new AppError(403, "POLL_OPTIONS_LOCKED", "В этом опросе нельзя добавлять варианты");
+        }
+        const trimmed = text.trim();
+        if (!trimmed)
+            throw new AppError(400, "POLL_OPTION_EMPTY", "Вариант ответа пустой");
+        if (poll.options.length >= POLL_OPTIONS_MAX) {
+            throw new AppError(400, "POLL_OPTIONS_TOO_MANY", "Слишком много вариантов ответа");
+        }
+        const conversation = await this.repositories.conversations.findById(message.conversationId);
+        if (!conversation)
+            throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+        const option = { id: randomUUID().slice(0, 8), text: trimmed.slice(0, POLL_OPTION_MAX) };
+        const updated = await this.repositories.messages.updatePoll(messageId, {
+            ...poll,
+            options: [...poll.options, option],
+        });
+        return {
+            message: await this.toMessageView(updated, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    /** Остановить опрос может только его автор. */
+    async closePoll(currentUserId, messageId) {
+        const message = await this.getPollMessage(currentUserId, messageId);
+        if (message.senderId !== currentUserId) {
+            throw new AppError(403, "POLL_NOT_AUTHOR", "Остановить опрос может только его автор");
+        }
+        const conversation = await this.repositories.conversations.findById(message.conversationId);
+        if (!conversation)
+            throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+        const updated = await this.repositories.messages.updatePoll(messageId, {
+            ...message.poll,
+            closed: true,
+        });
+        return {
+            message: await this.toMessageView(updated, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    /**
+     * Вид сообщения для рассылки всем сразу: в анонимном опросе чужие голоса
+     * не уезжают никому, поэтому итоги считаем без смотрящего.
+     */
+    async broadcastView(messageId) {
+        const message = await this.repositories.messages.findById(messageId);
+        return message ? this.toMessageView(message) : null;
+    }
+    async getPollMessage(currentUserId, messageId) {
+        const message = await this.repositories.messages.findById(messageId);
+        if (!message || message.kind !== "poll" || !message.poll) {
+            throw new AppError(404, "POLL_NOT_FOUND", "Опрос не найден");
+        }
+        await this.getAuthorizedConversation(currentUserId, message.conversationId);
+        return message;
+    }
+    async forwardMessage(currentUserId, sourceConversationId, messageId, targetConversationId) {
+        await this.getAuthorizedConversation(currentUserId, sourceConversationId);
+        const source = await this.getConversationMessage(sourceConversationId, messageId);
+        const target = await this.getAuthorizedConversation(currentUserId, targetConversationId);
+        await this.assertConversationInteractionAllowed(currentUserId, target);
+        const forwarded = await this.repositories.messages.create({
+            conversationId: targetConversationId,
+            senderId: currentUserId,
+            text: source.text,
+            forwardedFromId: source.id,
+            attachmentIds: source.attachmentIds,
+        });
+        return {
+            message: await this.toMessageView(forwarded, currentUserId),
+            memberIds: target.memberIds,
+        };
+    }
+    async updateMessage(currentUserId, conversationId, messageId, text) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        const existing = await this.getConversationMessage(conversationId, messageId);
+        if (existing.senderId !== currentUserId || existing.kind !== "user") {
+            throw new AppError(403, "MESSAGE_EDIT_FORBIDDEN", "You can only edit your own messages");
+        }
+        if (!text.trim() && existing.attachmentIds.length === 0) {
+            throw new AppError(400, "MESSAGE_EMPTY", "A message must contain text or an attachment");
+        }
+        const message = await this.repositories.messages.updateText(messageId, text.trim());
+        return {
+            message: await this.toMessageView(message, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    async deleteMessage(currentUserId, conversationId, messageId) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        await this.getConversationMessage(conversationId, messageId);
+        await this.repositories.messages.deleteFromConversation(conversationId, messageId);
+        const updatedConversation = await this.repositories.conversations.findById(conversationId);
+        if (!updatedConversation) {
+            throw new AppError(500, "DATA_INTEGRITY_ERROR", "Conversation disappeared during deletion");
+        }
+        return {
+            conversationId,
+            messageId,
+            conversation: await this.toConversationView(updatedConversation, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    async setReaction(currentUserId, conversationId, messageId, emoji) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        await this.getConversationMessage(conversationId, messageId);
+        const message = await this.repositories.messages.setReaction(messageId, currentUserId, emoji);
+        return {
+            message: await this.toMessageView(message, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    async setFavorite(currentUserId, conversationId, messageId, favorite) {
+        await this.getAuthorizedConversation(currentUserId, conversationId);
+        const existing = await this.getConversationMessage(conversationId, messageId);
+        await this.repositories.users.setFavorite(currentUserId, messageId, favorite);
+        return {
+            message: await this.toMessageView(existing, currentUserId),
+            favorite,
+        };
+    }
+    async listFavorites(currentUserId) {
+        const user = await this.getUser(currentUserId);
+        const messages = await this.repositories.messages.listByIds(user.favoriteMessageIds);
+        const authorized = [];
+        for (const message of messages) {
+            const conversation = await this.repositories.conversations.findById(message.conversationId);
+            if (conversation?.memberIds.includes(currentUserId))
+                authorized.push(message);
+        }
+        return this.toMessageViews(authorized.reverse(), currentUserId);
+    }
+    async setPinnedMessage(currentUserId, conversationId, messageId) {
+        await this.getAuthorizedConversation(currentUserId, conversationId);
+        if (messageId !== null)
+            await this.getConversationMessage(conversationId, messageId);
+        const updated = await this.repositories.conversations.setPinnedMessage(conversationId, messageId);
+        return this.toPinsResult(updated, currentUserId);
+    }
+    async setMessagePinned(currentUserId, conversationId, messageId, pinned) {
+        await this.getAuthorizedConversation(currentUserId, conversationId);
+        await this.getConversationMessage(conversationId, messageId);
+        const updated = await this.repositories.conversations.setMessagePinned(conversationId, messageId, pinned);
+        return this.toPinsResult(updated, currentUserId);
+    }
+    async updateConversationSettings(currentUserId, conversationId, input) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        const updated = await this.repositories.conversations.updateUserSettings(conversationId, currentUserId, input);
+        return {
+            conversation: await this.toConversationView(updated, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    async markConversationRead(currentUserId, conversationId) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        const result = await this.repositories.messages.markRead(conversationId, currentUserId);
+        return {
+            receipt: {
+                conversationId,
+                messageIds: result.messageIds,
+                userId: currentUserId,
+                readAt: new Date().toISOString(),
+            },
+            memberIds: conversation.memberIds,
+        };
+    }
+    async setBlocked(currentUserId, otherUserId, blocked) {
+        if (currentUserId === otherUserId) {
+            throw new AppError(400, "SELF_BLOCK", "You cannot block yourself");
+        }
+        const target = await this.getUser(otherUserId);
+        // Служебного бота не блокируют: это не человек, а адрес поддержки.
+        if (target.isBot) {
+            throw new AppError(400, "BOT_NOT_BLOCKABLE", "Служебный аккаунт нельзя заблокировать");
+        }
+        await this.repositories.users.setBlocked(currentUserId, otherUserId, blocked);
+        return { userId: otherUserId, blocked };
+    }
+    async listBlocked(currentUserId) {
+        const user = await this.getUser(currentUserId);
+        const users = await this.repositories.users.findManyByIds(user.blockedUserIds);
+        return users.map(toPublicUser);
+    }
+    async reportUser(currentUserId, reportedUserId, reason, details) {
+        if (currentUserId === reportedUserId) {
+            throw new AppError(400, "SELF_REPORT", "You cannot report yourself");
+        }
+        const reported = await this.getUser(reportedUserId);
+        // На служебного бота жаловаться не за что: он не человек и не пишет первым.
+        if (reported.isBot) {
+            throw new AppError(400, "BOT_NOT_REPORTABLE", "На служебный аккаунт нельзя пожаловаться");
+        }
+        return this.repositories.reports.create({
+            reporterId: currentUserId,
+            reportedUserId,
+            reason,
+            ...(details === undefined ? {} : { details: details.trim() }),
+        });
+    }
+    async beginCall(currentUserId, conversationId, callId, mode) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        await this.assertConversationCallable(currentUserId, conversation);
+        if (conversation.type === "saved") {
+            throw new AppError(400, "CALL_NOT_SUPPORTED", "Calls are not supported in Saved Messages");
+        }
+        const existing = await this.repositories.calls.findById(callId);
+        if (existing &&
+            (existing.conversationId !== conversationId || existing.initiatorId !== currentUserId)) {
+            throw new AppError(409, "CALL_ID_TAKEN", "This call identifier is already in use");
+        }
+        const call = await this.repositories.calls.create({
+            id: callId,
+            conversationId,
+            initiatorId: currentUserId,
+            mode,
+            status: "ringing",
+        });
+        return { call, memberIds: conversation.memberIds };
+    }
+    async answerCall(currentUserId, conversationId, callId) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        await this.assertConversationCallable(currentUserId, conversation);
+        const call = await this.getConversationCall(conversationId, callId);
+        if (call.status !== "ringing") {
+            if (call.status === "active" && call.initiatorId !== currentUserId) {
+                return { call, memberIds: conversation.memberIds };
+            }
+            throw new AppError(409, "CALL_NOT_RINGING", "The call is no longer ringing");
+        }
+        if (call.initiatorId === currentUserId) {
+            throw new AppError(403, "CALL_ANSWER_FORBIDDEN", "The caller cannot answer their own call");
+        }
+        const updated = await this.repositories.calls.update(callId, {
+            status: "active",
+            answeredAt: new Date().toISOString(),
+        });
+        return { call: updated, memberIds: conversation.memberIds };
+    }
+    async updateCallMode(currentUserId, conversationId, callId, mode) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        await this.getConversationCall(conversationId, callId);
+        return {
+            call: await this.repositories.calls.update(callId, { mode }),
+            memberIds: conversation.memberIds,
+        };
+    }
+    async finishCall(currentUserId, conversationId, callId, rejected = false) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        const call = await this.getConversationCall(conversationId, callId);
+        if (["completed", "missed", "rejected", "not_answered"].includes(call.status)) {
+            throw new AppError(409, "CALL_ALREADY_FINISHED", "The call has already finished");
+        }
+        const endedAt = new Date().toISOString();
+        const durationSeconds = call.answeredAt
+            ? Math.max(0, Math.floor((Date.parse(endedAt) - Date.parse(call.answeredAt)) / 1_000))
+            : 0;
+        const status = call.status === "active" ? "completed" : rejected ? "rejected" : "not_answered";
+        const updated = await this.repositories.calls.update(callId, {
+            status,
+            endedAt,
+            endedById: currentUserId,
+            durationSeconds,
+        });
+        const labels = {
+            completed: call.mode === "video" ? "Видеозвонок завершён" : "Аудиозвонок завершён",
+            rejected: "Звонок отклонён",
+            not_answered: "Нет ответа",
+        };
+        const message = await this.repositories.messages.create({
+            conversationId,
+            senderId: call.initiatorId,
+            text: labels[status],
+            kind: "system",
+            systemEvent: "call",
+            call: {
+                callId,
+                callerId: call.initiatorId,
+                mode: call.mode,
+                outcome: status === "completed" ? "completed" : status === "rejected" ? "declined" : "unanswered",
+                startedAt: call.startedAt,
+                endedAt,
+                durationSeconds,
+            },
+        });
+        return {
+            call: updated,
+            message: await this.toMessageView(message, currentUserId),
+            memberIds: conversation.memberIds,
+        };
+    }
+    async conversationIdsForUser(userId) {
+        const conversations = await this.repositories.conversations.listForUser(userId);
+        return conversations.map((conversation) => conversation.id);
+    }
+    /** Публичный просмотр беседы: нужен сервису групп, чтобы разослать обновление. */
+    async viewConversation(currentUserId, conversationId) {
+        const conversation = await this.getAuthorizedConversation(currentUserId, conversationId);
+        return this.toConversationView(conversation, currentUserId);
+    }
+    /**
+     * Вид беседы отдельно для каждого участника — то, что рассылается при смене
+     * названия, состава или знаков группы. Вид считается на каждого, потому что
+     * роли, права и непрочитанные у всех разные. Вышедшего пропускаем: он остался
+     * в memberIds, но группы у себя в списке не видит.
+     */
+    async viewsForMembers(conversationId) {
+        const conversation = await this.repositories.conversations.findById(conversationId);
+        if (!conversation)
+            return [];
+        const left = conversation.leftIds ?? [];
+        const views = [];
+        for (const memberId of conversation.memberIds) {
+            if (left.includes(memberId))
+                continue;
+            try {
+                views.push({ userId: memberId, conversation: await this.toConversationView(conversation, memberId) });
+            }
+            catch {
+                // Аккаунт мог быть удалён — рассылка не должна из-за него падать.
+            }
+        }
+        return views;
+    }
+    /**
+     * Служебное сообщение группы («Алиса добавила Боба»). Пишется от имени того,
+     * кто совершил действие, чтобы в истории было видно, кто именно.
+     */
+    async createGroupEventMessage(conversationId, actorId, text, systemEvent) {
+        const conversation = await this.getAuthorizedConversation(actorId, conversationId);
+        const message = await this.repositories.messages.create({
+            conversationId,
+            senderId: actorId,
+            text,
+            kind: "system",
+            systemEvent,
+        });
+        return {
+            message: await this.toMessageView(message),
+            memberIds: conversation.memberIds,
+        };
+    }
+    async memberIdsForConversation(userId, conversationId) {
+        const conversation = await this.getAuthorizedConversation(userId, conversationId);
+        await this.assertConversationInteractionAllowed(userId, conversation);
+        return conversation.memberIds;
+    }
+    async publicUser(userId, viewerId) {
+        return toPublicUserFor(await this.getUser(userId), viewerId);
+    }
+    async markUserSeen(userId, timestamp = new Date().toISOString()) {
+        return toPublicUser(await this.repositories.users.updateLastSeen(userId, timestamp));
+    }
+    async canAccessAttachment(userId, attachment) {
+        // Аватар и баннер — часть публичного профиля, их видит любой вошедший.
+        if (attachment.ownerId === userId || attachment.kind === "avatar" || attachment.kind === "banner") {
+            return true;
+        }
+        const messages = await this.repositories.messages.findByAttachmentId(attachment.id);
+        for (const message of messages) {
+            const conversation = await this.repositories.conversations.findById(message.conversationId);
+            if (conversation?.memberIds.includes(userId))
+                return true;
+        }
+        return false;
+    }
+    /** Shared validation for drafts and scheduled messages: only own, non-avatar files. */
+    async assertAttachableFiles(userId, attachmentIds) {
+        await this.assertOwnedMessageAttachments(userId, attachmentIds);
+    }
+    /** Shared validation for drafts and scheduled messages: membership plus blocking. */
+    async assertConversationUsable(userId, conversationId) {
+        const conversation = await this.getAuthorizedConversation(userId, conversationId);
+        await this.assertConversationInteractionAllowed(userId, conversation);
+        return conversation;
+    }
+    async assertOwnedMessageAttachments(userId, attachmentIds) {
+        if (attachmentIds.length === 0)
+            return;
+        const attachments = await this.repositories.attachments.findManyByIds(attachmentIds);
+        if (attachments.length !== attachmentIds.length) {
+            throw new AppError(400, "ATTACHMENT_NOT_FOUND", "One or more attachments do not exist");
+        }
+        if (attachments.some((attachment) => attachment.ownerId !== userId)) {
+            throw new AppError(403, "ATTACHMENT_FORBIDDEN", "Only your own uploads may be attached");
+        }
+        // Аватар и баннер — оформление профиля, а не файлы переписки.
+        if (attachments.some((attachment) => attachment.kind === "avatar" || attachment.kind === "banner")) {
+            throw new AppError(400, "ATTACHMENT_KIND_INVALID", "Profile images cannot be sent as message files");
+        }
+    }
+    async assertConversationInteractionAllowed(currentUserId, conversation) {
+        // В группе личные блокировки не закрывают общий чат: там решают права группы.
+        if (conversation.type === "group")
+            return;
+        const otherId = conversation.memberIds.find((id) => id !== currentUserId);
+        if (!otherId)
+            return;
+        await this.assertNotBlockedByMe(currentUserId, otherId);
+        // Удалённый аккаунт историю не обнуляет, но новых сообщений не принимает:
+        // клиент вместо поля ввода показывает заглушку, а сервер дублирует запрет.
+        await this.assertAccountAlive(otherId, "Аккаунт собеседника удалён. Отправка недоступна.");
+    }
+    /** Звонок запрещён в обе стороны: звонить заблокировавшему нельзя. */
+    async assertConversationCallable(currentUserId, conversation) {
+        const otherId = conversation.memberIds.find((id) => id !== currentUserId);
+        if (otherId) {
+            const other = await this.repositories.users.findById(otherId);
+            if (other?.isBot) {
+                throw new AppError(400, "BOT_NOT_CALLABLE", "Звонки ботам недоступны");
+            }
+            await this.assertUsersCanInteract(currentUserId, otherId);
+            if (other) {
+                this.assertCallPrivacyAllowed(currentUserId, other);
+            }
+        }
+    }
+    assertCallPrivacyAllowed(callerId, recipient) {
+        // 1. Исключения «Никогда не разрешать» имеют наивысший приоритет
+        if (recipient.callPrivacyDeniedUserIds?.includes(callerId)) {
+            throw new AppError(403, "CALL_FORBIDDEN_BY_PRIVACY", "Пользователь запретил входящие звонки от Вас");
+        }
+        // 2. Исключения «Всегда разрешать»
+        if (recipient.callPrivacyAllowedUserIds?.includes(callerId)) {
+            return;
+        }
+        // 3. Основное правило конфиденциальности
+        const privacy = recipient.callPrivacy ?? "everyone";
+        if (privacy === "nobody") {
+            throw new AppError(403, "CALL_FORBIDDEN_BY_PRIVACY", "Пользователь ограничил круг лиц, которые могут ему звонить");
+        }
+        if (privacy === "contacts") {
+            const isContact = recipient.friendIds?.includes(callerId);
+            if (!isContact) {
+                throw new AppError(403, "CALL_FORBIDDEN_BY_PRIVACY", "Пользователь разрешил звонки только своим контактам");
+            }
+        }
+    }
+    async assertUsersCanInteract(firstUserId, secondUserId) {
+        const [first, second] = await Promise.all([
+            this.repositories.users.findById(firstUserId),
+            this.repositories.users.findById(secondUserId),
+        ]);
+        if (!first || !second)
+            throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+        if (first.blockedUserIds.includes(secondUserId) ||
+            second.blockedUserIds.includes(firstUserId)) {
+            throw new AppError(403, "USER_BLOCKED", "Communication with this user is blocked");
+        }
+        // Удалённый аккаунт нельзя ни открыть заново, ни вызвать.
+        await this.assertAccountAlive(firstUserId, "Аккаунт собеседника удалён.");
+        await this.assertAccountAlive(secondUserId, "Аккаунт собеседника удалён. Звонок и переписка недоступны.");
+    }
+    /** Права группы: писать, отправлять медиа и ссылки — три независимых запрета. */
+    async assertGroupSendingAllowed(currentUserId, conversation, text, attachmentIds) {
+        if (conversation.type !== "group")
+            return;
+        if (!groupCan(conversation, currentUserId, "send_messages")) {
+            throw new AppError(403, "GROUP_SENDING_DENIED", "В этой группе вам запрещено писать");
+        }
+        if (attachmentIds.length > 0 && !groupCan(conversation, currentUserId, "send_media")) {
+            throw new AppError(403, "GROUP_MEDIA_DENIED", "В этой группе запрещено отправлять медиа");
+        }
+        if (LINK_PATTERN.test(text) && !groupCan(conversation, currentUserId, "send_links")) {
+            throw new AppError(403, "GROUP_LINKS_DENIED", "В этой группе запрещено отправлять ссылки");
+        }
+    }
+    /**
+     * Удалённый аккаунт остаётся в базе, но общение с ним закрыто совсем.
+     * Замороженному писать и звонить тоже нельзя: он читает историю, но в переписке
+     * не участвует — ни он собеседнику, ни собеседник ему.
+     */
+    async assertAccountAlive(userId, message) {
+        const user = await this.repositories.users.findById(userId);
+        if (!user)
+            throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+        if (user.isDeleted)
+            throw new AppError(403, "ACCOUNT_DELETED", message);
+        if (user.isFrozen) {
+            throw new AppError(403, "ACCOUNT_FROZEN", "Аккаунт собеседника заморожен. Переписка и звонки недоступны.");
+        }
+    }
+    /**
+     * Замороженный автор — только читатель. Проверяем на отправке: сокет и HTTP
+     * идут через один и тот же метод, поэтому запрет не обойти вторым путём.
+     * Публичный, потому что сокет проверяет то же самое перед «печатает…»:
+     * у замороженного не должно быть даже индикатора набора.
+     */
+    async assertAuthorWritable(userId) {
+        const user = await this.repositories.users.findById(userId);
+        if (!user)
+            throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+        if (user.isFrozen)
+            throw new AppError(403, "ACCOUNT_FROZEN", FROZEN_READ_ONLY_MESSAGE);
+    }
+    /**
+     * Блокирующий не может общаться, пока не снимет блокировку. Обратное направление
+     * здесь не запрещаем: как в Telegram, заблокированный писать может — сообщение
+     * сохраняется у него, но блокирующему не доставляется (см. membersBlocking).
+     */
+    async assertNotBlockedByMe(currentUserId, otherUserId) {
+        const me = await this.repositories.users.findById(currentUserId);
+        if (!me)
+            throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+        if (me.blockedUserIds.includes(otherUserId)) {
+            throw new AppError(403, "USER_BLOCKED", "You blocked this user");
+        }
+    }
+    /** Участники, которым не доставляем сообщения автора: те, кто его заблокировал. */
+    async membersBlocking(authorId, memberIds) {
+        const users = await this.repositories.users.findManyByIds(memberIds);
+        return users.filter((user) => user.blockedUserIds.includes(authorId)).map((user) => user.id);
+    }
+    async getUser(userId) {
+        const user = await this.repositories.users.findById(userId);
+        if (!user)
+            throw new AppError(404, "USER_NOT_FOUND", "User was not found");
+        return user;
+    }
+    async getAuthorizedConversation(userId, conversationId) {
+        const conversation = await this.repositories.conversations.findById(conversationId);
+        if (!conversation) {
+            throw new AppError(404, "CONVERSATION_NOT_FOUND", "Conversation was not found");
+        }
+        if (!conversation.memberIds.includes(userId)) {
+            throw new AppError(403, "CONVERSATION_FORBIDDEN", "You are not a member of this conversation");
+        }
+        return conversation;
+    }
+    async getConversationMessage(conversationId, messageId) {
+        const message = await this.repositories.messages.findById(messageId);
+        if (!message || message.conversationId !== conversationId) {
+            throw new AppError(404, "MESSAGE_NOT_FOUND", "Message was not found in this conversation");
+        }
+        return message;
+    }
+    async getConversationCall(conversationId, callId) {
+        const call = await this.repositories.calls.findById(callId);
+        if (!call || call.conversationId !== conversationId) {
+            throw new AppError(404, "CALL_NOT_FOUND", "Call was not found in this conversation");
+        }
+        return call;
+    }
+    async toConversationView(conversation, currentUserId, unreadCount = 0) {
+        const users = await this.repositories.users.findManyByIds(conversation.memberIds);
+        // Удалённый аккаунт не должен ронять диалог — подставляем заглушку.
+        const usersById = new Map(users.map((user) => [user.id, user]));
+        const currentUser = usersById.get(currentUserId);
+        const otherUser = users.find((user) => user.id !== currentUserId);
+        const blockedByMe = Boolean(currentUser && otherUser && currentUser.blockedUserIds.includes(otherUser.id));
+        const blockedByPeer = Boolean(currentUser && otherUser && otherUser.blockedUserIds.includes(currentUserId));
+        const hiddenAuthors = currentUser?.blockedUserIds ?? [];
+        const members = conversation.memberIds.map((id) => ensurePublicUser(usersById.get(id), id, currentUserId));
+        const storedLast = conversation.lastMessageId
+            ? await this.repositories.messages.findById(conversation.lastMessageId)
+            : null;
+        const lastMessage = storedLast && !hiddenAuthors.includes(storedLast.senderId) ? storedLast : null;
+        const pinned = await this.repositories.messages.listByIds(conversation.pinnedMessageIds);
+        const pinnedMessages = await this.toMessageViews(pinned.filter((message) => message.conversationId === conversation.id), currentUserId);
+        const isGroup = conversation.type === "group";
+        return {
+            id: conversation.id,
+            type: conversation.type,
+            memberIds: conversation.memberIds,
+            createdAt: conversation.createdAt,
+            updatedAt: conversation.updatedAt,
+            members,
+            lastMessage: lastMessage ? await this.toMessageView(lastMessage, currentUserId) : null,
+            pinnedMessage: pinnedMessages.at(-1) ?? null,
+            pinnedMessages,
+            archived: conversation.archivedBy.includes(currentUserId),
+            mutedUntil: conversation.mutedUntilBy[currentUserId] ?? null,
+            unreadCount,
+            blocked: blockedByMe || blockedByPeer,
+            blockedByMe,
+            blockedByPeer,
+            ...(isGroup
+                ? {
+                    // Название, аватар и описание группы: у личного диалога их нет.
+                    title: conversation.title ?? "",
+                    // У помеченной SCAM или FAKE группы вместо описания идёт
+                    // предупреждение — подмена на чтении, прежний текст не теряется.
+                    description: groupDescriptionFor(conversation),
+                    avatarUrl: conversation.avatarUrl ?? null,
+                    // Знаки владельца Yargram: галочка, значок и отметки SCAM/FAKE группы.
+                    isVerified: conversation.isVerified ?? false,
+                    badge: conversation.badge ?? null,
+                    scam: conversation.scam ?? false,
+                    fake: conversation.fake ?? false,
+                    // Пустая строка — «владельца нет»: поле обязательное в записи группы.
+                    ownerId: conversation.ownerId ?? "",
+                    adminIds: conversation.adminIds ?? [],
+                    adminPermissions: conversation.adminPermissions ?? {},
+                    adminDefaults: conversation.adminDefaults ?? {},
+                    inviteCode: conversation.inviteCode ?? "",
+                    // Права участников и личные ограничения: клиент рисует по ним галочки.
+                    permissions: conversation.permissions ?? {},
+                    restrictions: conversation.restrictions ?? {},
+                    mutedMembers: conversation.mutedMembers ?? {},
+                    // Теги участников: клиент рисует их рядом с именем и красит по роли.
+                    memberTags: conversation.memberTags ?? {},
+                    history: conversation.history ?? [],
+                    role: groupRoleFor(conversation, currentUserId),
+                    myPermissions: effectiveGroupPermissions(conversation, currentUserId),
+                    memberCount: conversation.memberIds.length,
+                }
+                : {}),
+        };
+    }
+    async toPinsResult(conversation, currentUserId) {
+        const pinned = await this.repositories.messages.listByIds(conversation.pinnedMessageIds);
+        const pinnedMessages = await this.toMessageViews(pinned.filter((message) => message.conversationId === conversation.id), currentUserId);
+        return {
+            conversationId: conversation.id,
+            message: pinnedMessages.at(-1) ?? null,
+            pinnedMessages,
+            memberIds: conversation.memberIds,
+        };
+    }
+    async toMessageViews(messages, currentUserId) {
+        return Promise.all(messages.map((message) => this.toMessageView(message, currentUserId)));
+    }
+    async toMessageSnapshot(message, currentUserId) {
+        const [sender, attachments, currentUser] = await Promise.all([
+            this.repositories.users.findById(message.senderId),
+            this.repositories.attachments.findManyByIds(message.attachmentIds ?? []),
+            currentUserId ? this.repositories.users.findById(currentUserId) : Promise.resolve(null),
+        ]);
+        // Удалённый отправитель не должен ронять переписку: подставляем заглушку.
+        if (!sender)
+            return this.placeholderSnapshot(message, attachments, currentUserId);
+        // Дефолты на месте: legacy-строки без stickerIds/reactions не должны ронять вью.
+        const { attachmentIds: _attachmentIds, stickerIds = [], reactions = [], poll, ...safeMessage } = message;
+        const groupedReactions = new Map();
+        for (const reaction of reactions) {
+            const users = groupedReactions.get(reaction.emoji) ?? [];
+            users.push(reaction.userId);
+            groupedReactions.set(reaction.emoji, users);
+        }
+        return {
+            ...safeMessage,
+            // Удалённый и замороженный аккаунты остаются в базе, но наружу всё равно
+            // выглядят заглушкой — поэтому toPublicUserFor, а не toPublicUser.
+            sender: toPublicUserFor(sender, currentUserId),
+            attachments: attachments.map((attachment) => toAttachmentView(attachment, currentUserId)),
+            ...(stickerIds.length > 0
+                ? { stickers: await resolveStickerViews(this.repositories, stickerIds) }
+                : {}),
+            reactions: [...groupedReactions].map(([emoji, userIds]) => ({
+                emoji,
+                userIds,
+                count: userIds.length,
+            })),
+            ...(poll ? { poll: viewPoll(poll, currentUserId) } : {}),
+            ...(currentUser
+                ? { isFavorite: currentUser.favoriteMessageIds.includes(message.id) }
+                : {}),
+        };
+    }
+    async toMessageView(message, currentUserId) {
+        const [reply, forwarded] = await Promise.all([
+            message.replyToId ? this.repositories.messages.findById(message.replyToId) : null,
+            message.forwardedFromId
+                ? this.repositories.messages.findById(message.forwardedFromId)
+                : null,
+        ]);
+        return {
+            ...(await this.toMessageSnapshot(message, currentUserId)),
+            replyTo: reply && reply.conversationId === message.conversationId
+                ? await this.toMessageSnapshot(reply, currentUserId)
+                : null,
+            forwardedFrom: forwarded ? await this.toMessageSnapshot(forwarded, currentUserId) : null,
+        };
+    }
+    /**
+     * Снимок сообщения для автора, которого уже нет в базе. Чтобы переписка не
+     * падала, подставляем заглушку «Удалённый аккаунт» вместо настоящего профиля.
+     */
+    async placeholderSnapshot(message, attachments, currentUserId) {
+        const { attachmentIds: _attachmentIds, stickerIds = [], reactions: _reactions = [], poll, ...safeMessage } = message;
+        return {
+            ...safeMessage,
+            sender: removedUserPlaceholder(message.senderId),
+            attachments: attachments.map((attachment) => toAttachmentView(attachment, currentUserId)),
+            // У отправителя-заглушки стикеры всё равно показываем: файл лежит в наборе,
+            // а не в профиле, и удаление аккаунта не стирает сами картинки.
+            ...(stickerIds.length > 0
+                ? { stickers: await resolveStickerViews(this.repositories, stickerIds) }
+                : {}),
+            reactions: [],
+            ...(currentUserId
+                ? {
+                    isFavorite: Boolean((await this.repositories.users.findById(currentUserId))?.favoriteMessageIds.includes(message.id)),
+                }
+                : {}),
+        };
+    }
+}
+/** Профиль не обязан перебирать всю историю: достаточно последних сообщений. */
+const MEDIA_SCAN_PAGE_SIZE = 200;
+const MEDIA_SCAN_PAGES = 25;
+const LINK_PATTERN = /https?:\/\/\S+/i;
+function countMedia(summary, attachment) {
+    if (attachment.kind === "image") {
+        if (attachment.mimeType === "image/gif")
+            summary.gifs += 1;
+        else
+            summary.photos += 1;
+        return;
+    }
+    // Кружочки и голосовые — отдельные разделы, как в Telegram.
+    if (attachment.mediaKind === "voice") {
+        summary.voice += 1;
+        return;
+    }
+    if (attachment.mediaKind === "video_circle") {
+        summary.videoCircles += 1;
+        return;
+    }
+    if (attachment.mimeType.startsWith("video/")) {
+        summary.videos += 1;
+        return;
+    }
+    if (attachment.mimeType.startsWith("audio/")) {
+        summary.audio += 1;
+        return;
+    }
+    summary.files += 1;
+}
+//# sourceMappingURL=chat-service.js.map
