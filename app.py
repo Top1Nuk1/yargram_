@@ -5,6 +5,15 @@ import tarfile
 import urllib.request
 import subprocess
 
+try:
+    import spaces
+
+    @spaces.GPU
+    def gpu_ready():
+        return True
+except Exception:
+    pass
+
 print("==================================================", flush=True)
 print("   YarGram — Hugging Face Gradio Runtime Loader   ", flush=True)
 print("==================================================", flush=True)
