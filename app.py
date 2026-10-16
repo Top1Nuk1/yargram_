@@ -51,15 +51,6 @@ if need_download_node:
     node_bin_path = os.path.join(NODE_BIN_DIR, "bin")
     os.environ["PATH"] = node_bin_path + ":" + os.environ.get("PATH", "")
 
-# Проверяем активные версии
-try:
-    active_node = subprocess.check_output(["node", "-v"], text=True).strip()
-    active_npm = subprocess.check_output(["npm", "-v"], text=True).strip()
-    print(f"[YarGram] Активная версия Node: {active_node}, npm: {active_npm}", flush=True)
-except Exception as e:
-    print(f"[YarGram Error] Ошибка проверки Node.js: {e}", flush=True)
-    sys.exit(1)
-
 # 2. Переменные окружения для YarGram
 os.environ["PORT"] = "7860"
 os.environ["HOST"] = "0.0.0.0"
@@ -75,23 +66,22 @@ if not os.environ.get("JWT_SECRET") or os.environ.get("JWT_SECRET") == "yargram-
 if not os.environ.get("DB_ENCRYPTION_KEY") or os.environ.get("DB_ENCRYPTION_KEY") == "yargram-development-encryption-key-change-me":
     os.environ["DB_ENCRYPTION_KEY"] = "yargram_hf_space_default_db_encryption_key_32chars"
 
-# 3. Установка зависимостей и сборка при первом запуске
-node_modules = os.path.join(ROOT_DIR, "node_modules")
-if not os.path.exists(node_modules):
-    print("[YarGram] Устанавливаем зависимости workspaces (npm install)...", flush=True)
-    subprocess.run(["npm", "install", "--workspaces", "--include-workspace-root", "--omit=dev"], cwd=ROOT_DIR, check=True)
+# 3. Установка production-зависимостей сервера
+server_modules = os.path.join(ROOT_DIR, "node_modules", "express")
+if not os.path.exists(server_modules):
+    print("[YarGram] Устанавливаем production-зависимости сервера (@yargram/server)...", flush=True)
+    subprocess.run(["npm", "install", "--omit=dev", "--workspace", "@yargram/server"], cwd=ROOT_DIR, check=True)
 
+# 4. Проверка скомпилированных файлов сборки
 server_dist = os.path.join(ROOT_DIR, "apps", "server", "dist", "index.js")
 web_dist = os.path.join(ROOT_DIR, "apps", "web", "dist", "index.html")
 
-if not (os.path.exists(server_dist) and os.path.exists(web_dist)):
-    print("[YarGram] Собираем проект (npm run build)...", flush=True)
-    subprocess.run(["npm", "run", "build"], cwd=ROOT_DIR, check=True)
+print(f"[YarGram] Проверка сборки: server_dist={os.path.exists(server_dist)}, web_dist={os.path.exists(web_dist)}", flush=True)
 
 print("[YarGram] Запуск сервера YarGram на порту 7860...", flush=True)
 sys.stdout.flush()
 
-# 4. Запускаем сервер YarGram
+# 5. Запуск сервера YarGram
 server_process = subprocess.Popen(["node", "apps/server/dist/index.js"], cwd=ROOT_DIR, env=os.environ)
 
 try:
