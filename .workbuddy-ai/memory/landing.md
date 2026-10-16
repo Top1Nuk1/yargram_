@@ -166,3 +166,19 @@ colors: {
   всех 6 словарей (отпечаток без значений) — ловит пропущенное поле в переводе. `App.test.tsx`
   содержит тест переключения языка на английский (проверяет `document.documentElement.lang`,
   `localStorage['yargram.landing.lang']` и что заголовок перерисовался).
+
+## 🔥 Соглашение `/terms` — вторая точка входа
+
+- Страница **не раздел SPA**, а отдельная точка входа: `terms.html` в корне `apps/landing`
+  + `src/terms.tsx` (рендерит `src/components/TermsPage.tsx` под `LanguageProvider`).
+- 🔥 **Vite по умолчанию берёт только `index.html`** — без
+  `build.rollupOptions.input = { main: index.html, terms: terms.html }` файл соглашения
+  молча пропадал бы из `dist`, а ссылка из подвала вела бы в 404. Сторож: сборка
+  (в `dist` обязан быть `terms.html` со своим `assets/terms-*.js`).
+- Сервер отдаёт `/terms` **до** одиночного маршрута (`landingDistPath/terms.html`), см. блок
+  «Разводка на сервере» выше.
+- Тексты — **в словаре** (`LandingContent.terms` + `footer.terms` / `footer.notTelegram`),
+  т. е. на все 6 языках: `translations.ts` проверяется по **форме**, tsc не пропустит
+  пропущенное поле.
+- `noindex` в `terms.html`: документ нужен по прямой ссылке из приложения и подвала, а не в
+  поисковой выдаче.

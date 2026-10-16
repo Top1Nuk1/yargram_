@@ -1,3 +1,4 @@
+import { STATUS_CODES } from "node:http";
 import type { ErrorRequestHandler, RequestHandler } from "express";
 import { ZodError } from "zod";
 
@@ -29,8 +30,8 @@ export const asyncHandler = (
 export const FROZEN_READ_ONLY_MESSAGE =
   "Аккаунт заморожен: доступен только просмотр. Отправка сообщений, звонки и изменения недоступны.";
 
-export const notFoundHandler: RequestHandler = (request, _response, next) => {
-  next(new AppError(404, "NOT_FOUND", `Route ${request.method} ${request.path} was not found`));
+export const notFoundHandler: RequestHandler = (_request, _response, next) => {
+  next(new AppError(404, "NOT_FOUND", "Route not found"));
 };
 
 export const errorHandler: ErrorRequestHandler = (error, _request, response, _next) => {
@@ -81,6 +82,22 @@ export const errorHandler: ErrorRequestHandler = (error, _request, response, _ne
     return;
   }
 
+  // 🔥 Клиентские коды, которые уже знает сама ошибка.
+  //
+  // Express бросает `URIError: Failed to decode param` на кривом percent-коде
+  // в пути (`/api/users/%`, `/app/%E0%A4%A`) и подписывает его `status: 400`;
+  // статика — `Forbidden`/`Not Found` с 403/404. Раньше такие ошибки ни одна
+  // ветка не распознавала, и человек на экране читал «An unexpected server
+  // error occurred», хотя сервер знал настоящий код. Ошибки с готовым 4xx
+  // отдаём под этим кодом и не пишем в консоль — это не сбой.
+  const clientStatus = clientErrorStatus(error);
+  if (clientStatus !== undefined) {
+    response.status(clientStatus).json({
+      error: { code: clientErrorCode(error, clientStatus), message: clientErrorMessage(clientStatus) },
+    });
+    return;
+  }
+
   console.error(error);
   response.status(500).json({
     error: {
@@ -89,3 +106,37 @@ export const errorHandler: ErrorRequestHandler = (error, _request, response, _ne
     },
   });
 };
+
+/** Числовой 4xx, который уже проставлен на ошибке самим Express или статикой. */
+function clientErrorStatus(error: unknown): number | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const withStatus = error as Error & { status?: unknown; statusCode?: unknown };
+  for (const candidate of [withStatus.status, withStatus.statusCode]) {
+    if (typeof candidate === "number" && Number.isInteger(candidate) && candidate >= 400 && candidate < 500) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function clientErrorCode(error: unknown, status: number): string {
+  if (error instanceof URIError) return "INVALID_URL";
+  switch (status) {
+    case 400:
+      return "BAD_REQUEST";
+    case 403:
+      return "FORBIDDEN";
+    case 404:
+      return "NOT_FOUND";
+    case 429:
+      return "TOO_MANY_REQUESTS";
+    default:
+      return `HTTP_${status}`;
+  }
+}
+
+function clientErrorMessage(status: number): string {
+  // Сообщения из самой ошибки не берём: у них на входе может быть что угодно,
+  // вплоть до кусков внутренних путей. Стандартная формулировка кода достаточна.
+  return STATUS_CODES[status] ?? "Request failed";
+}

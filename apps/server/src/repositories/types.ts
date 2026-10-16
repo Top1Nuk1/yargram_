@@ -15,11 +15,15 @@ import type {
   ReportReason,
   ScheduledMessage,
   Session,
+  Sticker,
+  StickerPack,
+  StickerPackInstall,
   SupportTicket,
   User,
   FavoriteNote,
   UserReport,
   EmailCodePurpose,
+  CallPrivacyRule,
 } from "../domain/models.js";
 
 export type CreateUserInput = Pick<User, "email" | "passwordHash" | "displayName" | "username"> & {
@@ -34,8 +38,13 @@ export type UpdateUserInput = {
   username?: string | undefined;
   bio?: string | undefined;
   avatar?: AttachmentView | null | undefined;
+  /** Прямая ссылка на аватар (без загрузки файла). `null` убирает. */
+  avatarUrl?: string | null | undefined;
   notificationSoundEnabled?: boolean | undefined;
   showLastSeen?: boolean | undefined;
+  callPrivacy?: CallPrivacyRule | undefined;
+  callPrivacyAllowedUserIds?: string[] | undefined;
+  callPrivacyDeniedUserIds?: string[] | undefined;
   themeColor?: string | undefined;
   wallpaperUrl?: string | undefined;
   /** Тип загруженного фона: `image/*` или `video/*` (для `<video>` вместо картинки). */
@@ -56,6 +65,9 @@ export type UpdateUserInput = {
   isOwner?: boolean;
   isBanned?: boolean;
   isFrozen?: boolean;
+  /** Язык интерфейса: по нему служебный бот поддержки выбирает, на каком
+   *  языке отвечать. Клиент сообщает его при смене языка. */
+  language?: string | undefined;
   /** Аккаунт удалён владельцем: запись остаётся, чтобы почта не освободилась. */
   isDeleted?: boolean;
   deletedAt?: string | undefined;
@@ -216,6 +228,10 @@ export type CreateMessageInput = Pick<Message, "conversationId" | "senderId" | "
   keyboard?: BotKeyboard;
   /** Обращение в поддержку, пересланное в группу владельцев. */
   supportTicket?: SupportTicket;
+  /** Отправленные стикеры: ссылки на картинки, а не на вложения. */
+  stickerIds?: string[];
+  /** Присланный набор стикеров: сообщение без текста, только карточка набора. */
+  stickerPackId?: string;
 };
 
 export interface MessageRepository {
@@ -337,6 +353,8 @@ export type CreateSessionInput = {
   tokenHashes: string[];
   site: string;
   device: string;
+  deviceId?: string | undefined;
+  customDeviceName?: string | null | undefined;
   /** Вход с незнакомого сайта: владельца надо предупредить. */
   newDevice?: boolean;
 };
@@ -345,6 +363,8 @@ export type UpdateSessionInput = {
   tokenHashes?: string[];
   site?: string | undefined;
   device?: string | undefined;
+  deviceId?: string | undefined;
+  customDeviceName?: string | null | undefined;
   lastSeenAt?: string | undefined;
   acknowledgedAt?: string | null | undefined;
   terminatedAt?: string | null | undefined;
@@ -365,6 +385,66 @@ export interface SessionRepository {
   delete(id: string): Promise<Session | null>;
   /** Все сеансы человека разом: аккаунт удалён, входов быть не должно. */
   deleteForUser(userId: string): Promise<void>;
+  /** Обновить имя устройства для всех сеансов с этим deviceId. */
+  updateDeviceName(deviceId: string, name: string | null): Promise<void>;
+  /** Найти имя устройства по deviceId, если оно было сохранено ранее. */
+  findDeviceName(deviceId: string): Promise<string | null>;
+}
+
+/**
+ * Наборы стикеров, собранные людьми.
+ *
+ * 🔥 Встроенных наборов Yargram здесь нет и быть не должно: они описаны в коде
+ * и одинаковы у всех. Хранить их значило бы держать копию в согласии с кодом и
+ * разноски по всем аккаунтам при каждом обновлении приложения.
+ */
+export interface StickerPackRepository {
+  /** Наборы, собранные человеком. Присланные сюда не попадают — за них отвечает установка. */
+  listOwnedBy(userId: string): Promise<StickerPack[]>;
+  findById(id: string): Promise<StickerPack | null>;
+  findManyByIds(ids: string[]): Promise<StickerPack[]>;
+  create(input: { ownerId: string; title: string; emoji: string }): Promise<StickerPack>;
+  /** Переименование и смена значка. Править можно только свой набор. */
+  update(id: string, ownerId: string, input: { title?: string | undefined; emoji?: string | undefined }): Promise<StickerPack>;
+  delete(id: string, ownerId: string): Promise<void>;
+  /** Отметка об изменении содержимого: по ней клиенты перечитывают набор. */
+  bumpVersion(id: string): Promise<StickerPack>;
+}
+
+export interface StickerRepository {
+  listForPack(packId: string): Promise<Sticker[]>;
+  /** Стикеры сразу нескольких наборов: список наборов собирается одним проходом. */
+  listForPacks(packIds: string[]): Promise<Sticker[]>;
+  findById(id: string): Promise<Sticker | null>;
+  /** Сколько стикеров уже в наборе: по этому числу работает предел в 200. */
+  countForPack(packId: string): Promise<number>;
+  create(input: { packId: string; attachmentId: string; emoji: string; animated: boolean }): Promise<Sticker>;
+  delete(id: string, packId: string): Promise<Sticker | null>;
+  deleteForPack(packId: string): Promise<void>;
+}
+
+/**
+ * Присланные наборы, которые человек оставил себе.
+ *
+ * Записи есть только у присланных наборов: встроенные доступны всем по
+ * определению, а свои принадлежат человеку по `ownerId`.
+ */
+export interface StickerPackInstallRepository {
+  listForUser(userId: string): Promise<StickerPackInstall[]>;
+  find(userId: string, packId: string): Promise<StickerPackInstall | null>;
+  /**
+   * Добавляет набор себе. Повторная установка не плодит записи: набор могли
+   * прислать в чат, где он у человека уже есть, и второй раз это не новость.
+   */
+  install(input: { userId: string; packId: string; sharedByUserId: string }): Promise<{ install: StickerPackInstall; created: boolean }>;
+  /** Убирает набор у человека. `false` — набора у него и не было. */
+  uninstall(userId: string, packId: string): Promise<boolean>;
+  /** Все, у кого набор есть: по этому списку шлётся обновление набора. */
+  listForPack(packId: string): Promise<StickerPackInstall[]>;
+  /** Набор удалён: записи о нём больше никому не нужны. */
+  deleteForPack(packId: string): Promise<void>;
+  /** Аккаунт удалён. */
+  deleteForUser(userId: string): Promise<void>;
 }
 
 export type Repositories = {
@@ -379,4 +459,7 @@ export type Repositories = {
   folders: FolderRepository;
   scheduledMessages: ScheduledMessageRepository;
   sessions: SessionRepository;
+  stickerPacks: StickerPackRepository;
+  stickers: StickerRepository;
+  stickerInstalls: StickerPackInstallRepository;
 };

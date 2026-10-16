@@ -3,6 +3,8 @@ export interface YargramNotificationOptions {
   body: string;
   avatarUrl?: string | null;
   conversationId?: string;
+  tag?: string;
+  requireInteraction?: boolean;
   onlyWhenHidden?: boolean;
   onClick?: () => void;
 }
@@ -33,7 +35,8 @@ export function showBrowserNotification(options: YargramNotificationOptions): No
     const notification = new Notification(options.title, {
       body: options.body,
       ...(options.avatarUrl ? { icon: options.avatarUrl } : {}),
-      tag: options.conversationId ? `yargram-chat-${options.conversationId}` : undefined,
+      tag: options.tag ?? (options.conversationId ? `yargram-chat-${options.conversationId}` : undefined),
+      ...(options.requireInteraction ? { requireInteraction: true } : {}),
     });
     notification.onclick = () => {
       window.focus();

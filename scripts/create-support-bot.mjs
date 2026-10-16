@@ -31,6 +31,13 @@ const BOT_BIO =
 const INBOX_TITLE = 'Yargram · Поддержка';
 const INBOX_DESCRIPTION =
   'Служебная группа поддержки. Сюда бот пересылает обращения, а ответ на сообщение бота уходит человеку от вашего имени.';
+/**
+ * Картинки оформления лежат в приложении и адресуются от его корня (`/app`).
+ * Это не ссылка на загрузку, а готовый файл в сборке: подпись у таких адресов
+ * не протухает, и переподписывать при чтении нечего.
+ */
+const BOT_AVATAR_URL = '/app/brand/bot.png';
+const INBOX_AVATAR_URL = '/app/brand/support.png';
 
 /** Права администратора по умолчанию: всё, кроме добавления новых админов. */
 const ADMIN_DEFAULTS = {
@@ -74,7 +81,7 @@ async function upsertBot(client) {
     username: BOT_USERNAME,
     bio: BOT_BIO,
     email: BOT_EMAIL,
-    // Служебные отметки: метка «бот», значок Yargram, галочка и полный доступ.
+    // Служебные отметки: метка «BOT», значок Yargram, галочка и полный доступ.
     isBot: true,
     isApp: true,
     badge: 'yargram',
@@ -82,6 +89,9 @@ async function upsertBot(client) {
     isOwner: true,
     showLastSeen: false,
     emailVerified: true,
+    // Аватар задан ссылкой на файл в приложении: у бота нет профиля, в котором
+    // картинку можно загрузить руками.
+    avatarUrl: BOT_AVATAR_URL,
     // Бот никого не блокирует и не ведёт избранное — поля есть, но пустые.
     blockedUserIds: [],
     favoriteMessageIds: [],
@@ -120,11 +130,22 @@ async function upsertInbox(client, botId) {
 
   if (existing) {
     // Состав мог измениться: приводим участников к «бот + все владельцы».
+    // Заодно возвращаем на место оформление — название, описание и картинку:
+    // группу видно только владельцам, но выглядеть она должна одинаково.
     await client.query(
       `UPDATE conversations
          SET payload = payload || $2::jsonb
        WHERE id = $1`,
-      [existing.id, JSON.stringify({ memberIds })],
+      [
+        existing.id,
+        JSON.stringify({
+          memberIds,
+          title: INBOX_TITLE,
+          description: INBOX_DESCRIPTION,
+          avatarUrl: INBOX_AVATAR_URL,
+          ownerId: botId,
+        }),
+      ],
     );
     return { id: existing.id, created: false, owners };
   }
@@ -143,7 +164,7 @@ async function upsertInbox(client, botId) {
     mutedUntilBy: {},
     title: INBOX_TITLE,
     description: INBOX_DESCRIPTION,
-    avatarUrl: null,
+    avatarUrl: INBOX_AVATAR_URL,
     ownerId: botId,
     adminIds: [],
     adminDefaults: ADMIN_DEFAULTS,

@@ -23,6 +23,7 @@ import {
   SUPPORT_BOT_USERNAME,
 } from "../src/services/support-bot-texts.js";
 import { SupportBotService } from "../src/services/support-bot-service.js";
+import { StickerService } from "../src/services/sticker-service.js";
 import { JsonDatabase } from "../src/storage/json-database.js";
 
 /**
@@ -88,6 +89,7 @@ async function createHarness() {
   const friendService = new FriendService(repositories, events);
   const sessionService = new SessionService(repositories.sessions, repositories.users, events);
   const supportBotService = new SupportBotService(repositories, chatService, events);
+  const stickerService = new StickerService(repositories, events);
   const app = createApp({
     config,
     repositories,
@@ -101,6 +103,7 @@ async function createHarness() {
     friendService,
     sessionService,
     supportBotService,
+    stickerService,
     events,
     crypto,
   });
@@ -158,7 +161,7 @@ async function messagesOf(
 }
 
 describe("Бот поддержки", () => {
-  it("открывает переписку с ботом и показывает меню кнопками", async () => {
+  it("открывает пустую переписку: приветствие приходит только на /start", async () => {
     const harness = await createHarness();
     await createBotAccount(harness);
     const user = await registerUser(harness, "user@example.test", "Пользователь", "user");
@@ -173,17 +176,143 @@ describe("Бот поддержки", () => {
     // Метка «бот» должна доехать до клиента: по ней рисуется плашка.
     expect(conversation.members.some((member) => member.isBot === true)).toBe(true);
 
-    const messages = await messagesOf(harness, user.accessToken, conversation.id);
-    expect(messages).toHaveLength(1);
-    expect(messages[0]?.kind).toBe("bot");
-    expect(messages[0]?.sender?.isBot).toBe(true);
-    // Кнопки: «Ошибка», «Идея», «Другое» — плоским списком рядов.
-    const actions = (messages[0]?.keyboard ?? []).flat().map((button) => button.action);
-    expect(actions).toEqual(["cat:error", "cat:idea", "cat:other"]);
+    // Бот не пишет первым: вместо «приветствия, которого не просили» клиент
+    // показывает кнопку «СТАРТ», и она отправляет /start обычным сообщением.
+    expect(await messagesOf(harness, user.accessToken, conversation.id)).toHaveLength(0);
 
-    // Повторное открытие приветствие не дублирует.
-    await request(harness.app).get("/api/support").set("Authorization", bearer(user.accessToken));
-    expect(await messagesOf(harness, user.accessToken, conversation.id)).toHaveLength(1);
+    const send = (text: string) =>
+      request(harness.app)
+        .post(`/api/conversations/${conversation.id}/messages`)
+        .set("Authorization", bearer(user.accessToken))
+        .send({ text });
+
+    expect((await send("/start")).status).toBe(201);
+
+    const greeting = await waitFor(async () => {
+      const list = await messagesOf(harness, user.accessToken, conversation.id);
+      return list.find((item) => item.kind === "bot") ?? null;
+    }, "бот ответил на /start");
+    expect(greeting.sender?.isBot).toBe(true);
+    expect(greeting.text).toContain("бот поддержки Yargram");
+    // Кнопки: «Ошибка», «Идея», «Другое» — плоским списком рядов.
+    expect(greeting.keyboard?.flat().map((button) => button.action)).toEqual([
+      "cat:error",
+      "cat:idea",
+      "cat:other",
+    ]);
+
+    // Повторный /start приветствие не дублирует: подсказка заменяется, а не копится.
+    await send("/start");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const bots = (await messagesOf(harness, user.accessToken, conversation.id)).filter(
+      (item) => item.kind === "bot",
+    );
+    expect(bots).toHaveLength(1);
+  });
+
+  it("говорит на языке человека, а не на языке владельца", async () => {
+    const harness = await createHarness();
+    await createBotAccount(harness);
+    const user = await registerUser(harness, "user@example.test", "Пользователь", "user");
+
+    // Клиент сообщает язык при смене настройки — так сервер узнаёт, на каком
+    // языке должен отвечать бот.
+    const patched = await request(harness.app)
+      .patch("/api/users/me")
+      .set("Authorization", bearer(user.accessToken))
+      .send({ language: "en" });
+    expect(patched.status).toBe(200);
+
+    const opened = await request(harness.app)
+      .get("/api/support")
+      .set("Authorization", bearer(user.accessToken));
+    const conversationId = opened.body.conversation.id as string;
+
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(user.accessToken))
+      .send({ text: "/start" });
+
+    const greeting = await waitFor(async () => {
+      const list = await messagesOf(harness, user.accessToken, conversationId);
+      return list.find((item) => item.kind === "bot") ?? null;
+    }, "бот ответил по-английски");
+    expect(greeting.text).toContain("support bot");
+    expect(greeting.text).not.toContain("Здравствуйте");
+    expect(greeting.keyboard?.flat().map((button) => button.label)).toEqual([
+      "🐞 Bug",
+      "💡 Idea",
+      "❓ Other",
+    ]);
+  });
+
+  it("отвечает на команды: справка вместо обращения", async () => {
+    const harness = await createHarness();
+    await createBotAccount(harness);
+    const user = await registerUser(harness, "user@example.test", "Пользователь", "user");
+
+    const opened = await request(harness.app)
+      .get("/api/support")
+      .set("Authorization", bearer(user.accessToken));
+    const conversationId = opened.body.conversation.id as string;
+
+    const send = (text: string) =>
+      request(harness.app)
+        .post(`/api/conversations/${conversationId}/messages`)
+        .set("Authorization", bearer(user.accessToken))
+        .send({ text });
+
+    await send("/help");
+    const help = await waitFor(async () => {
+      const list = await messagesOf(harness, user.accessToken, conversationId);
+      return list.find((item) => item.text.includes("Что я умею")) ?? null;
+    }, "бот показал справку");
+    expect(help.kind).toBe("bot");
+
+    // Незнакомая команда — тоже просьба о помощи, а не обращение владельцам.
+    await send("/frobnicate");
+    const unknown = await waitFor(async () => {
+      const list = await messagesOf(harness, user.accessToken, conversationId);
+      return list.find((item) => item.text.includes("Такой команды я не знаю")) ?? null;
+    }, "бот не понял команду");
+    expect(unknown.text).toContain("Что я умею");
+    // Владельцам ничего не ушло: служебной группы так и нет.
+    expect(await harness.repositories.conversations.findSupportInbox()).toBeNull();
+  });
+
+  it("заменяет прошлую подсказку новой, а не копит их в истории", async () => {
+    const harness = await createHarness();
+    await createBotAccount(harness);
+    const user = await registerUser(harness, "user@example.test", "Пользователь", "user");
+
+    const opened = await request(harness.app)
+      .get("/api/support")
+      .set("Authorization", bearer(user.accessToken));
+    const conversationId = opened.body.conversation.id as string;
+
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(user.accessToken))
+      .send({ text: "/start" });
+    await waitFor(async () => {
+      const list = await messagesOf(harness, user.accessToken, conversationId);
+      return list.some((item) => item.text.includes("бот поддержки Yargram")) ? list : null;
+    }, "приветствие с меню");
+
+    await request(harness.app)
+      .post("/api/support/actions")
+      .set("Authorization", bearer(user.accessToken))
+      .send({ conversationId, action: "cat:error" });
+
+    const after = await waitFor(async () => {
+      const list = await messagesOf(harness, user.accessToken, conversationId);
+      return list.some((item) => item.text.includes("Уточните")) ? list : null;
+    }, "уточнение по ошибке");
+
+    // Приветствие заменено подсказкой: в истории одно сообщение бота, а не два.
+    const bots = after.filter((item) => item.kind === "bot");
+    expect(bots).toHaveLength(1);
+    expect(bots[0]?.text).toContain("Уточните");
   });
 
   it("ведёт по меню: ошибка → уточнение → описание → обращение владельцам", async () => {
@@ -246,7 +375,14 @@ describe("Бот поддержки", () => {
       return list.at(-1) ?? null;
     }, "обращение появилось в служебной группе");
     expect(ticket.sender?.isBot).toBe(true);
-    expect(ticket.supportTicket).toEqual({ userId: user.user.id, category: "error", topic: "code" });
+    // Номер обращения человек называет, если пишет снова: по нему находится
+    // прежнее обращение, а не заводится новое.
+    expect(ticket.supportTicket).toMatchObject({
+      userId: user.user.id,
+      category: "error",
+      topic: "code",
+    });
+    expect(ticket.supportTicket?.code).toMatch(/^[0-9A-F]{4}$/);
     expect(ticket.text).toContain("Пользователь");
     expect(ticket.text).toContain("Код из письма");
     expect(ticket.text).toContain("Код из письма не приходит уже дважды");
@@ -351,5 +487,120 @@ describe("Бот поддержки", () => {
       .set("Authorization", bearer(second.accessToken))
       .send({ conversationId, action: "menu" });
     expect(foreign.status).toBe(403);
+  });
+
+  it("даёт спросить ещё: продолжение уходит тем же обращением", async () => {
+    const harness = await createHarness();
+    await createBotAccount(harness);
+    const owner = await registerUser(harness, "owner@example.test", "Василий", "owner");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const user = await registerUser(harness, "user@example.test", "Пользователь", "user");
+
+    const opened = await request(harness.app)
+      .get("/api/support")
+      .set("Authorization", bearer(user.accessToken));
+    const conversationId = opened.body.conversation.id as string;
+
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(user.accessToken))
+      .send({ text: "Не приходит код из письма" });
+
+    const inbox = await waitFor(
+      () => harness.repositories.conversations.findSupportInbox(),
+      "появилась служебная группа поддержки",
+    );
+    const ticket = await waitFor(async () => {
+      const list = await messagesOf(harness, owner.accessToken, inbox.id);
+      return list.at(-1) ?? null;
+    }, "обращение появилось в служебной группе");
+    const code = ticket.supportTicket?.code as string;
+    expect(code).toMatch(/^[0-9A-F]{4}$/);
+
+    await request(harness.app)
+      .post(`/api/conversations/${inbox.id}/messages`)
+      .set("Authorization", bearer(owner.accessToken))
+      .send({ text: "Проверьте папку «Спам»", replyToId: ticket.id });
+
+    const relayed = await waitFor(async () => {
+      const list = await messagesOf(harness, user.accessToken, conversationId);
+      return list.find((item) => item.text.includes("Ответ от")) ?? null;
+    }, "ответ владельца дошёл до человека");
+    // Номер обращения виден человеку: по нему он и говорит о своём обращении.
+    expect(relayed.text).toContain(code);
+
+    // 🔥 Кнопка «Спросить ещё» несёт номер и раздел в себе: состояние сервера
+    // тут не нужно, поэтому старая кнопка работает и после перезапуска.
+    const ask = relayed.keyboard?.flat().find((button) => button.action.startsWith("ask:"));
+    expect(ask?.action).toBe(`ask:${code}:other`);
+
+    await request(harness.app)
+      .post("/api/support/actions")
+      .set("Authorization", bearer(user.accessToken))
+      .send({ conversationId, action: ask?.action });
+
+    const prompt = await waitFor(async () => {
+      const list = await messagesOf(harness, user.accessToken, conversationId);
+      return list.find((item) => item.text.includes("уточнить") && item.text.includes(code)) ?? null;
+    }, "бот попросил уточнить");
+    expect(prompt.kind).toBe("bot");
+
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(user.accessToken))
+      .send({ text: "Спама тоже нет" });
+
+    const followUp = await waitFor(async () => {
+      const list = await messagesOf(harness, owner.accessToken, inbox.id);
+      return list.find((item) => item.text.includes("Спама тоже нет")) ?? null;
+    }, "дополнение дошло до владельцев");
+    // Продолжение — то же обращение: номер и раздел не меняются, история цела.
+    expect(followUp.supportTicket?.code).toBe(code);
+    expect(followUp.supportTicket?.category).toBe("other");
+
+    // Человек получил подтверждение дополнения, а не новое обращение.
+    const confirmed = await waitFor(async () => {
+      const list = await messagesOf(harness, user.accessToken, conversationId);
+      return list.find((item) => item.text.includes("дополнение")) ?? null;
+    }, "бот подтвердил дополнение");
+    expect(confirmed.text).toContain(code);
+  });
+
+  it("уносит владельцам приложенный файл", async () => {
+    const harness = await createHarness();
+    await createBotAccount(harness);
+    const owner = await registerUser(harness, "owner@example.test", "Владелец", "owner");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const user = await registerUser(harness, "user@example.test", "Пользователь", "user");
+
+    const opened = await request(harness.app)
+      .get("/api/support")
+      .set("Authorization", bearer(user.accessToken));
+    const conversationId = opened.body.conversation.id as string;
+
+    const shot = await harness.repositories.attachments.create({
+      ownerId: user.user.id,
+      kind: "image",
+      fileName: "shot.png",
+      storedFileName: "stored-shot.png",
+      mimeType: "image/png",
+      size: 12,
+    });
+
+    await request(harness.app)
+      .post(`/api/conversations/${conversationId}/messages`)
+      .set("Authorization", bearer(user.accessToken))
+      .send({ text: "Вот снимок экрана", attachmentIds: [shot.id] });
+
+    const inbox = await waitFor(
+      () => harness.repositories.conversations.findSupportInbox(),
+      "появилась служебная группа поддержки",
+    );
+    const ticket = await waitFor(async () => {
+      const list = await messagesOf(harness, owner.accessToken, inbox.id);
+      return list.at(-1) ?? null;
+    }, "обращение появилось в служебной группе");
+    // Снимок экрана едет вместе с обращением: без него владельцам нечего смотреть.
+    expect(ticket.attachments?.map((attachment) => attachment.fileName)).toEqual(["shot.png"]);
   });
 });

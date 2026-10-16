@@ -80,6 +80,8 @@ export type AdminAccountView = {
   isOwner: boolean;
   isFrozen: boolean;
   isDeleted: boolean;
+  /** Служебный бот: рядом с именем метка «BOT», а войти в него нельзя. */
+  isBot: boolean;
   createdAt: string;
   /** Когда аккаунт удалили. Пусто, если он не удалён. */
   deletedAt: string | null;
@@ -100,7 +102,7 @@ export type AdminAccountsFilter = "all" | "active" | "frozen" | "deleted";
  * знаки комбинируются между собой и с любым состоянием, поэтому это не
  * значение перечисления, а набор включённых галочек.
  */
-export type AdminAccountsMark = "verified" | "badge" | "scam" | "fake" | "owner";
+export type AdminAccountsMark = "verified" | "badge" | "scam" | "fake" | "owner" | "bot";
 
 /** По чему искать: только ник, только @юзернеймы или и то и другое. */
 export type AdminAccountsScope = "any" | "name" | "handle";
@@ -138,6 +140,7 @@ function matchesMarks(user: User, marks: AdminAccountsMark[]): boolean {
     if (mark === "badge") return user.badge === "yargram";
     if (mark === "scam") return user.scam === true;
     if (mark === "fake") return user.fake === true;
+    if (mark === "bot") return user.isBot === true;
     return user.isOwner === true;
   });
 }
@@ -179,13 +182,15 @@ function toAdminAccountView(user: User): AdminAccountView {
     isOwner: user.isOwner ?? false,
     isFrozen: user.isFrozen ?? false,
     isDeleted: user.isDeleted ?? false,
+    isBot: user.isBot ?? false,
     createdAt: user.createdAt,
     deletedAt: user.deletedAt ?? null,
     lastSeenAt: user.lastSeenAt,
   };
 }
 
-function groupView(conversation: Conversation): AdminGroupView {  return {
+function groupView(conversation: Conversation): AdminGroupView {
+  return {
     id: conversation.id,
     title: conversation.title ?? "",
     memberCount: conversation.memberIds.length,
@@ -395,6 +400,13 @@ export class AdminService {
     if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
     const updated = await this.users.update(targetUserId, { scam });
     if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    this.events.publishUpdatedProfile({ user: toPublicUser(updated) });
+    this.events.publishAccountState({
+      userId: targetUserId,
+      frozen: updated.isFrozen ?? false,
+      removed: updated.isDeleted ?? false,
+      user: publicAccountStateFor(updated),
+    });
     return updated;
   }
 
@@ -412,6 +424,13 @@ export class AdminService {
     if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
     const updated = await this.users.update(targetUserId, { fake });
     if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    this.events.publishUpdatedProfile({ user: toPublicUser(updated) });
+    this.events.publishAccountState({
+      userId: targetUserId,
+      frozen: updated.isFrozen ?? false,
+      removed: updated.isDeleted ?? false,
+      user: publicAccountStateFor(updated),
+    });
     return updated;
   }
 
@@ -505,6 +524,58 @@ export class AdminService {
     };
     const updated = await this.repositories.conversations.update(group.id, patch);
     return groupView(updated);
+  }
+
+  /**
+   * Список служебных ботов: всё, что помечено `isBot`.
+   *
+   * Отдельно от `listAccounts`, хотя данные те же: там список обзорный и
+   * отфильтрованный вручную, а ботов на установке единицы, и владельцу нужен
+   * именно их перечень целиком — чтобы видеть, какие служебные аккаунты вообще
+   * заведены, а не искать их поиском.
+   */
+  async listBots(grantorId: string): Promise<AdminAccountView[]> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can list bots");
+    }
+    const users = await this.users.listAll();
+    return users.filter((user) => user.isBot === true).map(toAdminAccountView);
+  }
+
+  /**
+   * Метка «BOT»: пометить аккаунт служебным ботом или снять метку.
+   *
+   * 🔥 Метка не косметическая. Войти в аккаунт с ней нельзя — `AuthService.login`
+   * такие записи не пускает, а пароля у бота нет вовсе. Поэтому себе её поставить
+   * нельзя: владелец запер бы сам себя без единого способа вернуться через
+   * интерфейс (снять метку было бы уже некому). Для остальных аккаунтов метка
+   * безопасна — её всегда можно снять отсюда.
+   */
+  async setBot(grantorId: string, targetUserId: string, isBot: boolean): Promise<User> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can mark accounts as bots");
+    }
+    if (targetUserId === grantorId) {
+      throw new AppError(
+        400,
+        "SELF_ACTION",
+        "Нельзя пометить ботом свой аккаунт: войти в него после этого будет нельзя",
+      );
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
+    const updated = await this.users.update(targetUserId, { isBot });
+    if (!updated) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
+    this.events.publishUpdatedProfile({ user: toPublicUser(updated) });
+    this.events.publishAccountState({
+      userId: targetUserId,
+      frozen: updated.isFrozen ?? false,
+      removed: updated.isDeleted ?? false,
+      user: publicAccountStateFor(updated),
+    });
+    return updated;
   }
 
   /**

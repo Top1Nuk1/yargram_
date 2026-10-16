@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, resolve, sep } from "node:path";
-import type { Attachment, AttachmentKind, AttachmentView, CurrentUser } from "../domain/models.js";
+import type { Attachment, AttachmentKind, AttachmentView, CurrentUser, MediaKind } from "../domain/models.js";
 import { toAttachmentView, toCurrentUser } from "../domain/models.js";
 import { ENCRYPTION_OVERHEAD, type AtRestCrypto } from "../lib/crypto.js";
 import { AppError } from "../lib/errors.js";
@@ -21,6 +21,13 @@ export const uploadLimits = {
   wallpaper: 50 * MEBIBYTE,
   image: 20 * MEBIBYTE,
   file: 100 * MEBIBYTE,
+  // Стикер — маленькая картинка 512×512, как в любом мессенджере. Предел низкий
+  // намеренно: набор из 200 стикеров по несколько мегабайт каждый — это гигабайт
+  // на диске у одного человека, а стикеры рисуют мелкими.
+  sticker: 2 * MEBIBYTE,
+  // Гифка — короткое видео без звука. Предел ниже обычного файла: гифку смотрят
+  // в переписке, и она должна успеть приехать.
+  gif: 12 * MEBIBYTE,
 } satisfies Record<AttachmentKind, number>;
 
 const allowedImageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
@@ -31,6 +38,9 @@ const allowedAvatarExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 const allowedBannerExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
 // Фон — как баннер: статичная картинка или GIF, без сюрпризов.
 const allowedWallpaperExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+// Стикер — картинка, и почти всегда анимированная: GIF, анимированный WebP или
+// APNG. JPEG разрешён тоже: статичный стикер ничем не хуже.
+const allowedStickerExtensions = new Set([".png", ".webp", ".gif", ".jpg", ".jpeg"]);
 
 // Живое оформление: фон и баннер можно сделать видео. Форматы — только те, что
 // браузеры играют сами, без внешних кодеков: mp4 (H.264) и webm.
@@ -41,7 +51,7 @@ const videoMimeByExtension: Record<string, string> = {
 };
 const mimePattern = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
 
-type UploadInput = { fileName: string; mimeType: string; data: Buffer; mediaKind?: "voice" | "video_circle"; durationSeconds?: number };
+type UploadInput = { fileName: string; mimeType: string; data: Buffer; mediaKind?: MediaKind; durationSeconds?: number };
 
 export class UploadService {
   constructor(
@@ -165,6 +175,21 @@ export class UploadService {
     return { attachment, bytes: await this.readStoredBytes(attachment) };
   }
 
+  /**
+ * Прочитать свой файл по id — без подписи в адресе.
+ *
+ * Нужен там, где файл свежий и его только что загрузили: у стикера надо
+ * посмотреть сигнатуру (анимированный он или нет), а подписанная ссылка для
+ * этого лишняя — она живёт недолго и предназначена для отдачи в браузер.
+ */
+  async readOwnFile(userId: string, attachmentId: string): Promise<Buffer> {
+    const attachment = await this.repositories.attachments.findById(attachmentId);
+    if (!attachment || attachment.ownerId !== userId) {
+      throw new AppError(404, "UPLOAD_NOT_FOUND", "The uploaded file was not found");
+    }
+    return this.readStoredBytes(attachment);
+  }
+
   private async readStoredBytes(attachment: Attachment): Promise<Buffer> {
     const filePath = this.resolveStoredFile(attachment.storedFileName);
     let stored: Buffer;
@@ -245,7 +270,13 @@ function validateUpload(
     throw new AppError(400, "UPLOAD_MIME_INVALID", "The upload MIME type is invalid");
   }
 
-  if (input.mediaKind !== undefined || input.durationSeconds !== undefined) {
+  // Запись голосом и кружок живут внутри обычного файла и обещают длительность.
+  // Гифка — свой вид: она тоже бывает видео, но длительности не обещает.
+  if (input.mediaKind === "gif") {
+    if (kind !== "gif") {
+      throw new AppError(400, "RECORDING_METADATA_INVALID", "The gif media kind requires a gif upload");
+    }
+  } else if (input.mediaKind !== undefined || input.durationSeconds !== undefined) {
     if (kind !== "file" || !input.mediaKind || input.durationSeconds === undefined ||
         !Number.isFinite(input.durationSeconds) || input.durationSeconds <= 0) {
       throw new AppError(400, "RECORDING_METADATA_INVALID", "Recordings require a file, media kind and positive duration");
@@ -259,13 +290,44 @@ function validateUpload(
     }
   }
   const detectedImageMime = detectImageMime(input.data);
-  if (kind === "image" || kind === "avatar" || kind === "banner" || kind === "wallpaper") {
+
+  // Гифка — либо картинка (GIF и анимированный WebP играют сами по себе), либо
+  // короткое видео без звука: его тоже показываем зацикленным. Разбираем оба
+  // случая и в обоих проверяем подпись файла, а не только расширение.
+  if (kind === "gif") {
+    if (videoExtensions.has(extension)) {
+      const expectedMime = videoMimeByExtension[extension];
+      if (detectVideoMime(input.data) !== expectedMime) {
+        throw new AppError(400, "UPLOAD_SIGNATURE_INVALID", "The file is not a supported video");
+      }
+      if (declaredMime !== expectedMime && declaredMime !== "application/octet-stream") {
+        throw new AppError(400, "UPLOAD_MIME_MISMATCH", "The video MIME type does not match its content");
+      }
+      return { fileName, extension, mimeType: expectedMime };
+    }
+    if (!allowedImageExtensions.has(extension)) {
+      throw new AppError(400, "UPLOAD_EXTENSION_INVALID", "A gif must be an image or a short video");
+    }
+    if (!detectedImageMime) {
+      throw new AppError(400, "UPLOAD_SIGNATURE_INVALID", "The file is not a supported image");
+    }
+    if (!extensionMatchesImageMime(extension, detectedImageMime)) {
+      throw new AppError(400, "UPLOAD_TYPE_MISMATCH", "The image extension does not match its content");
+    }
+    if (declaredMime !== detectedImageMime && declaredMime !== "application/octet-stream") {
+      throw new AppError(400, "UPLOAD_MIME_MISMATCH", "The image MIME type does not match its content");
+    }
+    return { fileName, extension, mimeType: detectedImageMime };
+  }
+
+  if (kind === "image" || kind === "avatar" || kind === "banner" || kind === "wallpaper" || kind === "sticker") {
     // Баннер и фон — тоже картинки профиля, но крупнее по размеру и допускают GIF.
     const allowed =
       kind === "image" ? allowedImageExtensions
-        : kind === "banner" ? allowedBannerExtensions
-          : kind === "wallpaper" ? allowedWallpaperExtensions
-            : allowedAvatarExtensions;
+        : kind === "sticker" ? allowedStickerExtensions
+          : kind === "banner" ? allowedBannerExtensions
+            : kind === "wallpaper" ? allowedWallpaperExtensions
+              : allowedAvatarExtensions;
     // Живое оформление: фон и баннер можно поставить видео. Проверяем подпись
     // так же строго, как у картинок, — расширению верить нельзя.
     if (videoExtensions.has(extension) && (kind === "banner" || kind === "wallpaper")) {

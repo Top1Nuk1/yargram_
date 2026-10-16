@@ -163,9 +163,35 @@ export function attachSocketServer(
   const userSockets = new Map<string, Set<string>>();
   /** Отпечаток токена каждого подключения: завершённый сеанс рвём по нему. */
   const socketTokens = new Map<string, string>();
-  const offlineTimers = new Map<string, NodeJS.Timeout>();
+  const offlineTimers = new Map<string, () => void>();
   const callSessions = new Map<string, CallSession>();
+  const pendingDirectedIce = new Map<
+    string,
+    Array<{
+      callId: string;
+      conversationId: string;
+      fromUserId: string;
+      toUserId: string;
+      candidate: unknown;
+      timestamp: number;
+    }>
+  >();
   const pendingWork = createPendingWorkTracker();
+
+  const flushPendingIce = (callId: string) => {
+    const candidates = pendingDirectedIce.get(callId);
+    if (!candidates || candidates.length === 0) return;
+    pendingDirectedIce.delete(callId);
+    for (const item of candidates) {
+      if (Date.now() - item.timestamp > 30_000) continue;
+      io.to(`user:${item.toUserId}`).emit("call:ice", {
+        callId: item.callId,
+        conversationId: item.conversationId,
+        fromUserId: item.fromUserId,
+        candidate: item.candidate,
+      });
+    }
+  };
 
   io.use(async (socket, next) => {
     try {
@@ -203,7 +229,7 @@ export function attachSocketServer(
     const typingStates = new Map<string, TypingState>();
     const pendingOffline = offlineTimers.get(userId);
     if (pendingOffline) {
-      clearTimeout(pendingOffline);
+      pendingOffline();
       offlineTimers.delete(userId);
     }
 
@@ -237,12 +263,13 @@ export function attachSocketServer(
       }
       if (wasOffline) {
         const user = await dependencies.chatService.publicUser(userId);
+        const live = (userSockets.get(userId)?.size ?? 0) > 0 && user.lastSeenStatus === null;
         io.emit("presence:updated", {
           userId,
-          online: user.lastSeenAt !== null,
-          isOnline: user.lastSeenAt !== null,
-          lastSeenAt: user.lastSeenAt,
-          lastSeenStatus: user.lastSeenStatus,
+          online: live,
+          isOnline: live,
+          lastSeenAt: live ? null : user.lastSeenAt,
+          lastSeenStatus: live ? null : user.lastSeenStatus,
         });
       }
     } catch (error) {
@@ -337,6 +364,7 @@ export function attachSocketServer(
           joinedIds: new Set(),
           participantSocketIds: new Set([socket.id]),
         });
+        flushPendingIce(input.callId);
         emitToOtherMembers(io, result.memberIds, userId, "call:incoming", {
           ...input,
           fromUser: { ...fromUser, online: fromUser.lastSeenAt !== null },
@@ -361,10 +389,19 @@ export function attachSocketServer(
           session.joinedIds.add(userId);
           session.participantSocketIds.add(socket.id);
         }
+        flushPendingIce(input.callId);
         emitToOtherMembers(io, result.memberIds, userId, "call:answered", {
           ...input,
           fromUserId: userId,
         });
+        for (const sockId of userSockets.get(userId) ?? []) {
+          if (sockId !== socket.id) {
+            io.to(sockId).emit("call:answered", {
+              ...input,
+              fromUserId: userId,
+            });
+          }
+        }
       } catch (error) {
         emitCallError(socket, payload, error);
       }
@@ -415,13 +452,20 @@ export function attachSocketServer(
         const input = callBaseSchema.parse(payload);
         const session = callSessions.get(input.callId);
         if (!session) throw new AppError(404, "CALL_NOT_FOUND", "The call does not exist");
-        if (!session.invitedIds.has(userId) && session.initiatorId !== userId) {
+        const isAllowed =
+          session.invitedIds.has(userId) ||
+          session.initiatorId === userId ||
+          session.joinedIds.has(userId) ||
+          session.memberIds.includes(userId);
+        if (!isAllowed) {
           throw new AppError(403, "CALL_NOT_INVITED", "You are not invited to this call");
         }
         session.invitedIds.delete(userId);
-        if (userId === session.initiatorId || session.joinedIds.has(userId)) return;
-        session.joinedIds.add(userId);
-        session.participantSocketIds.add(socket.id);
+        if (userId !== session.initiatorId && !session.joinedIds.has(userId)) {
+          session.joinedIds.add(userId);
+          session.participantSocketIds.add(socket.id);
+        }
+        flushPendingIce(input.callId);
         const user = await dependencies.chatService.publicUser(userId);
         const participantIds = [...session.joinedIds, session.initiatorId];
         for (const participantId of participantIds) {
@@ -442,7 +486,11 @@ export function attachSocketServer(
         const input = callJoinOfferSchema.parse(payload);
         const session = callSessions.get(input.callId);
         if (!session) throw new AppError(404, "CALL_NOT_FOUND", "The call does not exist");
-        if (!session.joinedIds.has(userId) && userId !== session.initiatorId) {
+        const isParticipant =
+          session.joinedIds.has(userId) ||
+          session.initiatorId === userId ||
+          session.memberIds.includes(userId);
+        if (!isParticipant) {
           throw new AppError(403, "CALL_NOT_MEMBER", "You are not a participant of this call");
         }
         io.to(`user:${input.toUserId}`).emit("call:join-offer", {
@@ -461,7 +509,11 @@ export function attachSocketServer(
         const input = callJoinAnswerSchema.parse(payload);
         const session = callSessions.get(input.callId);
         if (!session) throw new AppError(404, "CALL_NOT_FOUND", "The call does not exist");
-        if (!session.joinedIds.has(input.fromUserId) && session.initiatorId !== input.fromUserId) {
+        const isParticipant =
+          session.joinedIds.has(input.fromUserId) ||
+          session.initiatorId === input.fromUserId ||
+          session.memberIds.includes(input.fromUserId);
+        if (!isParticipant) {
           throw new AppError(403, "CALL_NOT_MEMBER", "The target is not a participant of this call");
         }
         io.to(`user:${input.fromUserId}`).emit("call:join-answer", {
@@ -479,18 +531,34 @@ export function attachSocketServer(
       try {
         const input = callDirectedIceSchema.parse(payload);
         const session = callSessions.get(input.callId);
-        if (!session) throw new AppError(404, "CALL_NOT_FOUND", "The call does not exist");
-        if (!session.joinedIds.has(userId) && userId !== session.initiatorId) {
-          throw new AppError(403, "CALL_NOT_MEMBER", "You are not a participant of this call");
+        if (!session) {
+          const pending = pendingDirectedIce.get(input.callId) ?? [];
+          if (pending.length < 64) {
+            pending.push({
+              callId: input.callId,
+              conversationId: input.conversationId,
+              fromUserId: userId,
+              toUserId: input.toUserId,
+              candidate: input.candidate,
+              timestamp: Date.now(),
+            });
+            pendingDirectedIce.set(input.callId, pending);
+          }
+          return;
         }
+        const isParticipant =
+          session.initiatorId === userId ||
+          session.joinedIds.has(userId) ||
+          session.memberIds.includes(userId);
+        if (!isParticipant) return;
         io.to(`user:${input.toUserId}`).emit("call:ice", {
           callId: input.callId,
           conversationId: input.conversationId,
           fromUserId: userId,
           candidate: input.candidate,
         });
-      } catch (error) {
-        emitCallError(socket, payload, error);
+      } catch {
+        // Directed ICE signaling issues should never kill an active call
       }
     });
 
@@ -500,7 +568,11 @@ export function attachSocketServer(
         const input = callRenegotiateSchema.parse(payload);
         const session = callSessions.get(input.callId);
         if (!session) throw new AppError(404, "CALL_NOT_FOUND", "The call does not exist");
-        if (!session.joinedIds.has(userId) && userId !== session.initiatorId) {
+        const isParticipant =
+          session.joinedIds.has(userId) ||
+          session.initiatorId === userId ||
+          session.memberIds.includes(userId);
+        if (!isParticipant) {
           throw new AppError(403, "CALL_NOT_MEMBER", "You are not a participant of this call");
         }
         if (!session.memberIds.includes(input.toUserId)) {
@@ -522,7 +594,11 @@ export function attachSocketServer(
         const input = callRenegotiateAnswerSchema.parse(payload);
         const session = callSessions.get(input.callId);
         if (!session) throw new AppError(404, "CALL_NOT_FOUND", "The call does not exist");
-        if (!session.joinedIds.has(userId) && userId !== session.initiatorId) {
+        const isParticipant =
+          session.joinedIds.has(userId) ||
+          session.initiatorId === userId ||
+          session.memberIds.includes(userId);
+        if (!isParticipant) {
           throw new AppError(403, "CALL_NOT_MEMBER", "You are not a participant of this call");
         }
         io.to(`user:${input.toUserId}`).emit("call:renegotiate-answer", {
@@ -631,6 +707,30 @@ export function attachSocketServer(
           }
           continue;
         }
+        if (!session.answered) {
+          const remainingSockets = userSockets.get(userId);
+          if (remainingSockets && remainingSockets.size > 1) {
+            session.participantSocketIds.delete(socket.id);
+            continue;
+          }
+          pendingWork.schedule(() => {
+            const currentSession = callSessions.get(session.callId);
+            if (!currentSession || currentSession.answered) return;
+            if ((userSockets.get(userId)?.size ?? 0) > 0) return;
+            pendingWork.track(
+              finishCall(session.conversationId, session.callId, userId, rejected)
+                .then(() => {
+                  emitToCallParticipants(io, session, session.memberIds, userId, "call:ended", {
+                    callId: session.callId,
+                    conversationId: session.conversationId,
+                    fromUserId: userId,
+                  });
+                })
+                .catch((error) => console.error("Cannot finish disconnected call", error)),
+            );
+          }, 3_000);
+          continue;
+        }
         pendingWork.track(
           finishCall(session.conversationId, session.callId, userId, rejected)
             .then(() => {
@@ -649,9 +749,13 @@ export function attachSocketServer(
       remaining?.delete(socket.id);
       if (remaining?.size) return;
       userSockets.delete(userId);
+      let cancelled = false;
+      offlineTimers.set(userId, () => {
+        cancelled = true;
+      });
       pendingWork.schedule(() => {
         offlineTimers.delete(userId);
-        if (userSockets.has(userId)) return;
+        if (cancelled || userSockets.has(userId)) return;
         pendingWork.track(
           dependencies.chatService
             .markUserSeen(userId)
@@ -692,6 +796,7 @@ export function attachSocketServer(
       if (!(error instanceof AppError && error.code === "CALL_ALREADY_FINISHED")) throw error;
     } finally {
       callSessions.delete(callId);
+      pendingDirectedIce.delete(callId);
     }
   }
 
@@ -750,6 +855,15 @@ export function attachSocketServer(
   // Дружба: заявку и принятие присылаем лично тому, чей список изменился.
   dependencies.events.onFriendship((event) => {
     io.to(`user:${event.userId}`).emit("friendship:changed", event);
+  });
+
+  // Набор стикеров: лично тому, у кого он есть. `sharedWithUserId` заполнен, когда
+  // набор только что прислали — тогда клиент добавляет его в список.
+  //
+  // 🔥 Событие адресное, а не «всем подряд»: у человека может не быть этого
+  // набора, и обновление ему ничего не скажет, только зря разбудит сокет.
+  dependencies.events.onStickerPack((event) => {
+    io.to(`user:${event.sharedWithUserId ?? ""}`).emit("stickerPack:updated", event);
   });
 
   // Сеанс завершён: его подключения рвём сразу, чтобы чужой вход перестал

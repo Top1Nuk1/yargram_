@@ -39,6 +39,7 @@ import {
 } from '../../lib/group';
 import { formatLastSeen, presenceTextClass } from '../../lib/presence';
 import { translateScamWarning } from '../../lib/i18n';
+import { HighlightedText } from '../messenger/MessageExtras';
 import {
   groupPermissionKeys,
   memberPermissionKeys,
@@ -470,7 +471,7 @@ export function GroupInfoPanel({
                     </div>
                   ) : (
                     <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-ink/85">
-                      {conversation.description}
+                      <HighlightedText text={conversation.description} />
                     </p>
                   ))}
               </>

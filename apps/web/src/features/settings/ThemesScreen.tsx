@@ -47,6 +47,10 @@ interface ThemesScreenProps {
   onApplyWallpaper: (url: string) => Promise<void> | void;
   /** Снять фон: вернуть чат к стандартному заполнению. */
   onClearWallpaper: () => Promise<void> | void;
+  /** Текущий цвет акцента интерфейса (Telegram палитра). */
+  currentColor?: string;
+  /** Смена цвета акцента всего интерфейса. */
+  onChangeAccentColor?: (color: string) => Promise<void> | void;
   /**
    * Стрелка «назад»: вернуться на экран, откуда пришли (список настроек).
    * Не задана — стрелка работает как закрытие.
@@ -56,6 +60,16 @@ interface ThemesScreenProps {
 }
 
 type View = 'list' | 'editor' | 'import' | 'share';
+
+const ACCENT_COLOR_PRESETS = [
+  { name: 'Синий', color: '#3390ec' },
+  { name: 'Бирюзовый', color: '#28b4a4' },
+  { name: 'Зелёный', color: '#4fae4e' },
+  { name: 'Оранжевый', color: '#e26c2e' },
+  { name: 'Красный', color: '#d14949' },
+  { name: 'Фиолетовый', color: '#8559cf' },
+  { name: 'Розовый', color: '#d34e87' },
+];
 
 /**
  * Экран «Темы».
@@ -78,6 +92,8 @@ export function ThemesScreen({
   currentWallpaperUrl,
   onApplyWallpaper,
   onClearWallpaper,
+  currentColor,
+  onChangeAccentColor,
   onBack,
   onClose,
 }: ThemesScreenProps) {
@@ -466,6 +482,44 @@ export function ThemesScreen({
                 </div>
               ) : (
                 <>
+                  {/* Выбор цвета интерфейса / акцентного цвета как в Telegram */}
+                  <div className="border-b border-line/70 px-4 py-3 sm:px-5">
+                    <span className="block text-xs font-bold uppercase tracking-wider text-muted">
+                      {t('profile.interfaceColor') ?? 'Цвет интерфейса'}
+                    </span>
+                    <div className="mt-2.5 flex items-center gap-2.5 overflow-x-auto pb-1">
+                      {ACCENT_COLOR_PRESETS.map((preset) => {
+                        const isSelected = (currentColor?.toLowerCase() === preset.color.toLowerCase());
+                        return (
+                          <button
+                            key={preset.color}
+                            type="button"
+                            onClick={() => onChangeAccentColor?.(preset.color)}
+                            className={`group relative grid h-8 w-8 shrink-0 place-items-center rounded-full transition hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${isSelected ? 'ring-2 ring-offset-2 ring-brand ring-offset-surface' : ''}`}
+                            style={{ backgroundColor: preset.color }}
+                            title={preset.name}
+                            aria-label={preset.name}
+                          >
+                            {isSelected && <Check className="h-4 w-4 text-white drop-shadow" />}
+                          </button>
+                        );
+                      })}
+                      {/* Пользовательский цвет */}
+                      <label
+                        className="relative grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-canvas transition hover:border-brand/40"
+                        title="Выбрать свой цвет"
+                      >
+                        <Plus className="h-4 w-4 text-muted" />
+                        <input
+                          type="color"
+                          value={currentColor ?? '#3390ec'}
+                          onChange={(e) => onChangeAccentColor?.(e.target.value)}
+                          className="sr-only"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
                   {/* Фильтр по режиму. Ничего не прячет: нажали «Тёмные» — они
                       поднялись наверх, светлые остались ниже. */}
                   <div

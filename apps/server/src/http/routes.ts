@@ -5,6 +5,7 @@ import type { ServerConfig } from "../config.js";
 import {
   allowedReactionEmojis,
   groupPermissions,
+  servesInline,
   toPublicUser,
   toPublicUserFor,
 } from "../domain/models.js";
@@ -22,6 +23,7 @@ import type { FolderService } from "../services/folder-service.js";
 import type { ScheduledMessageService } from "../services/scheduled-message-service.js";
 import type { FriendService } from "../services/friend-service.js";
 import type { SessionService } from "../services/session-service.js";
+import type { StickerService } from "../services/sticker-service.js";
 import type { SupportBotService } from "../services/support-bot-service.js";
 import { uploadLimits, type UploadService } from "../services/upload-service.js";
 import { createAuthMiddleware } from "./auth-middleware.js";
@@ -121,6 +123,13 @@ const updateProfileSchema = z
     bio: z.string().trim().max(500).optional(),
     notificationSoundEnabled: z.boolean().optional(),
     showLastSeen: z.boolean().optional(),
+    callPrivacy: z.enum(["everyone", "contacts", "nobody"]).optional(),
+    callPrivacyAllowedUserIds: z.array(z.string().trim().min(1)).max(1000).optional(),
+    callPrivacyDeniedUserIds: z.array(z.string().trim().min(1)).max(1000).optional(),
+    // Язык интерфейса. Клиент держит его у себя и сообщает сюда — только для
+    // того, чтобы служебный бот поддержки отвечал на том же языке. Список
+    // языков один и тот же у клиента и у сервера: `el` бот тоже знает.
+    language: z.enum(["ru", "en", "bg", "uk", "be", "el"]).optional(),
     themeColor: z.string().trim().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).optional(),
     wallpaperUrl: decorativeUrlSchema.optional(),
     // Тип фона: `image/*` или `video/*`. По самой ссылке не видно, видео это
@@ -168,6 +177,9 @@ const userListQuerySchema = z.object({
 });
 const userParamsSchema = z.object({ userId: z.string().uuid() });
 const sessionParamsSchema = z.object({ sessionId: z.string().uuid() });
+const renameSessionSchema = z.object({
+  name: z.string().trim().max(100),
+});
 // Знак приложения: "" и null одинаково снимают значок, как в админке.
 const appBadgeSchema = z.object({
   badge: z
@@ -176,10 +188,21 @@ const appBadgeSchema = z.object({
 });
 const uploadParamsSchema = z.object({ uploadId: z.string().uuid() });
 const uploadQuerySchema = z.object({
-  kind: z.enum(["image", "file", "wallpaper"]),
-  mediaKind: z.enum(["voice", "video_circle"]).optional(),
+  kind: z.enum(["image", "file", "wallpaper", "sticker", "gif"]),
+  mediaKind: z.enum(["voice", "video_circle", "gif"]).optional(),
   durationSeconds: z.coerce.number().finite().positive().optional(),
 }).superRefine((input, context) => {
+  // 🔥 Гифка — исключение из правила «вид и длительность вместе»: она бывает
+  // видео, но длительности не обещает, поэтому пара для неё не обязательна.
+  if (input.mediaKind === "gif") {
+    if (input.kind !== "gif") {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "The gif media kind requires kind=gif" });
+    }
+    if (input.durationSeconds !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "A gif does not carry a duration" });
+    }
+    return;
+  }
   if ((input.mediaKind === undefined) !== (input.durationSeconds === undefined)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "Recording kind and duration are required together" });
   }
@@ -194,6 +217,20 @@ const downloadQuerySchema = z.object({
   download: z.string().optional(),
   t: z.string().min(1).max(4_096).optional(),
 });
+const stickerPackParamsSchema = z.object({ packId: z.string().min(1).max(200) });
+const stickerPackStickerParamsSchema = stickerPackParamsSchema.extend({
+  stickerId: z.string().uuid(),
+});
+const createStickerPackSchema = z.object({
+  title: z.string().trim().min(1).max(40),
+  emoji: z.string().trim().max(8).optional(),
+});
+const updateStickerPackSchema = createStickerPackSchema.partial();
+const addStickerSchema = z.object({
+  attachmentId: z.string().uuid(),
+  emoji: z.string().trim().max(8).optional(),
+});
+const conversationIdSchema = z.object({ conversationId: z.string().uuid() });
 const directConversationSchema = z.object({ userId: z.string().uuid() });
 const conversationParamsSchema = z.object({ conversationId: z.string().uuid() });
 const messageParamsSchema = conversationParamsSchema.extend({ messageId: z.string().uuid() });
@@ -211,6 +248,22 @@ export const sendMessageSchema = z.object({
   replyToId: z.string().uuid().optional(),
   forwardedFromId: z.string().uuid().optional(),
   attachmentIds: z.array(z.string().uuid()).max(10).optional(),
+  // Отправляемые стикеры. Сообщение может состоять только из них — тогда
+  // текста и файлов нет, а в пузыре рисуются сами картинки. Предел в 10
+  // стикеров на сообщение тот же, что у вложений: иначе в один пузырь влезло
+  // бы столько картинок, сколько влезет в набор.
+  //
+  // 🔥 Здесь **не uuid**, в отличие от вложений: встроенные стикеры описаны
+  // кодом и носят читаемые имена (`yargram-logo`). Строгий uuid отверг бы их,
+  // и отправка встроенного стикера падала бы с VALIDATION_ERROR.
+  stickerIds: z.array(z.string().min(1).max(200)).max(10).optional(),
+  /**
+   * Присланный набор стикеров. Сообщение с ним идёт **без текста и файлов**:
+   * в переписке появляется карточка набора, а получателям он добавляется.
+   * Проверка на сервисе: иначе можно было бы отправить набор с текстом и он
+   * бы выглядел как обычное сообщение, потеряв половину смысла.
+   */
+  stickerPackId: z.string().min(1).max(200).optional(),
 });
 
 const editMessageSchema = z.object({ text: z.string().trim().max(4_000) });
@@ -346,6 +399,7 @@ export function createApiRouter(dependencies: {
   scheduledMessageService: ScheduledMessageService;
   friendService: FriendService;
   sessionService: SessionService;
+  stickerService: StickerService;
   supportBotService: SupportBotService;
   uploadService: UploadService;
   repositories: Repositories;
@@ -353,6 +407,14 @@ export function createApiRouter(dependencies: {
 }): Router {
   const router = Router();
   const requireAuth = createAuthMiddleware(dependencies.authService, dependencies.repositories.users);
+  function clientIp(request: Request): string {
+    const cfIp = request.headers["cf-connecting-ip"];
+    if (typeof cfIp === "string" && cfIp.trim()) {
+      return cfIp.trim();
+    }
+    return request.ip || request.socket?.remoteAddress || "127.0.0.1";
+  }
+
   // The limiter belongs to one app instance: separate servers and tests must not
   // share attempt counters.
   const authLimiter = rateLimit({
@@ -360,9 +422,50 @@ export function createApiRouter(dependencies: {
     limit: 30,
     standardHeaders: "draft-7",
     legacyHeaders: false,
+    keyGenerator: (request) => clientIp(request),
     handler: (_request, response) => {
       response.status(429).json({
         error: { code: "AUTH_RATE_LIMITED", message: "Too many authentication attempts" },
+      });
+    },
+  });
+
+  const loginAccountLimiter = rateLimit({
+    windowMs: 15 * 60 * 1_000,
+    limit: 15,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: (request) => {
+      const body = request.body as { email?: unknown } | undefined;
+      const target = typeof body?.email === "string" ? body.email.trim().toLowerCase() : clientIp(request);
+      return `login:${target}`;
+    },
+    handler: (_request, response) => {
+      response.status(429).json({
+        error: {
+          code: "AUTH_RATE_LIMITED",
+          message: "Слишком много попыток входа для этого аккаунта. Попробуйте через 15 минут.",
+        },
+      });
+    },
+  });
+
+  const resetPasswordLimiter = rateLimit({
+    windowMs: 5 * 60 * 1_000,
+    limit: 5,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: (request) => {
+      const body = request.body as { email?: unknown } | undefined;
+      const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+      return email ? `reset:${email}` : `reset:ip:${clientIp(request)}`;
+    },
+    handler: (_request, response) => {
+      response.status(429).json({
+        error: {
+          code: "RESET_RATE_LIMITED",
+          message: "Слишком много запросов на сброс пароля. Подождите 5 минут.",
+        },
       });
     },
   });
@@ -388,6 +491,7 @@ export function createApiRouter(dependencies: {
   router.post(
     "/auth/login",
     authLimiter,
+    loginAccountLimiter,
     asyncHandler(async (request, response) => {
       const input = parseBody(loginSchema, request);
       response.json(
@@ -427,6 +531,7 @@ export function createApiRouter(dependencies: {
   router.post(
     "/auth/reset-password/request",
     authLimiter,
+    resetPasswordLimiter,
     asyncHandler(async (request, response) => {
       const input = parseBody(resetRequestSchema, request);
       response.json(await dependencies.authService.requestPasswordReset(input.email));
@@ -481,6 +586,24 @@ export function createApiRouter(dependencies: {
         await dependencies.sessionService.acknowledge(
           request.auth.userId,
           sessionId,
+          bearerToken(request),
+        ),
+      );
+    }),
+  );
+
+  // Переименовать устройство/сеанс.
+  router.patch(
+    "/sessions/:sessionId/rename",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { sessionId } = parseParams(sessionParamsSchema, request);
+      const { name } = parseBody(renameSessionSchema, request);
+      response.json(
+        await dependencies.sessionService.rename(
+          request.auth.userId,
+          sessionId,
+          name,
           bearerToken(request),
         ),
       );
@@ -660,6 +783,7 @@ export function createApiRouter(dependencies: {
   const adminScamSchema = z.object({ scam: z.boolean() });
   const adminFakeSchema = z.object({ fake: z.boolean() });
   const adminAppSchema = z.object({ isApp: z.boolean() });
+  const adminBotSchema = z.object({ isBot: z.boolean() });
   const adminLookupSchema = z.object({ handle: z.string().trim().min(1).max(32) });
 
   /**
@@ -691,6 +815,24 @@ export function createApiRouter(dependencies: {
       const { userId } = parseParams(userParamsSchema, request);
       const { isApp } = parseBody(adminAppSchema, request);
       const updated = await dependencies.adminService.setApp(request.auth.userId, userId, isApp);
+      response.json({ user: toPublicUser(updated) });
+    }),
+  );
+
+  // Метка «BOT»: служебный аккаунт, в который нельзя войти. Ставится и снимается
+  // владельцем, поэтому живёт рядом с остальными знаками владельца.
+  router.post(
+    "/admin/:userId/bot",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { userId } = parseParams(userParamsSchema, request);
+      const { isBot } = parseBody(adminBotSchema, request);
+      const updated = await dependencies.adminService.setBot(request.auth.userId, userId, isBot);
+      // Метку видно в чужом списке бесед и в шапке чата: обновляем сразу, а не
+      // после перезагрузки у собеседников.
+      dependencies.events.publishUpdatedProfile({
+        user: await dependencies.chatService.publicUser(userId),
+      });
       response.json({ user: toPublicUser(updated) });
     }),
   );
@@ -811,8 +953,8 @@ export function createApiRouter(dependencies: {
         value
           .split(",")
           .map((mark) => mark.trim())
-          .filter((mark): mark is "verified" | "badge" | "scam" | "fake" | "owner" =>
-            ["verified", "badge", "scam", "fake", "owner"].includes(mark),
+          .filter((mark): mark is "verified" | "badge" | "scam" | "fake" | "owner" | "bot" =>
+            ["verified", "badge", "scam", "fake", "owner", "bot"].includes(mark),
           ),
       ),
     // Где искать введённое: ник, @юзернеймы или всё сразу.
@@ -829,6 +971,19 @@ export function createApiRouter(dependencies: {
         marks: query.marks,
         scope: query.scope,
       });
+      response.json({ accounts });
+    }),
+  );
+
+  /**
+   * Служебные боты установки: владелец видит их перечень целиком, не выискивая
+   * поиском. Метка ставится и снимается через `POST /admin/:userId/bot`.
+   */
+  router.get(
+    "/admin/bots",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const accounts = await dependencies.adminService.listBots(request.auth.userId);
       response.json({ accounts });
     }),
   );
@@ -1253,13 +1408,9 @@ export function createApiRouter(dependencies: {
         t,
       );
       // Оформление профиля отдаём инлайном: фон и баннер — часть интерфейса,
-      // и «скачать файл» вместо показа сломало бы их. `image` — фото в переписке.
-      const inline =
-        !download &&
-        (attachment.kind === "image" ||
-          attachment.kind === "avatar" ||
-          attachment.kind === "banner" ||
-          attachment.kind === "wallpaper");
+      // и «скачать файл» вместо показа сломало бы их. `image` — фото в переписке,
+      // `sticker` и `gif` — то, что рисуется прямо в пузыре.
+      const inline = !download && servesInline(attachment.kind);
       const fallbackName = attachment.fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "download";
       const encodedName = encodeURIComponent(attachment.fileName).replace(
         /['()]/g,
@@ -1285,6 +1436,151 @@ export function createApiRouter(dependencies: {
       }
       response.setHeader("Content-Length", String(bytes.length));
       response.end(bytes);
+    }),
+  );
+
+  // ---- Стикеры и наборы ----
+
+/** Все наборы человека: встроенные, свои и присланные. */
+  router.get(
+    "/sticker-packs",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      response.json({ packs: await dependencies.stickerService.listPacks(request.auth.userId) });
+    }),
+  );
+
+  router.get(
+    "/sticker-packs/:packId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { packId } = parseParams(stickerPackParamsSchema, request);
+      response.json({ pack: await dependencies.stickerService.getPack(request.auth.userId, packId) });
+    }),
+  );
+
+  router.post(
+    "/sticker-packs",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(createStickerPackSchema, request);
+      const pack = await dependencies.stickerService.createPack(request.auth.userId, input);
+      response.status(201).json({ pack });
+    }),
+  );
+
+  router.patch(
+    "/sticker-packs/:packId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { packId } = parseParams(stickerPackParamsSchema, request);
+      const input = parseBody(updateStickerPackSchema, request);
+      response.json({
+        pack: await dependencies.stickerService.updatePack(request.auth.userId, packId, input),
+      });
+    }),
+  );
+
+  router.delete(
+    "/sticker-packs/:packId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { packId } = parseParams(stickerPackParamsSchema, request);
+      await dependencies.stickerService.deletePack(request.auth.userId, packId);
+      response.status(204).end();
+    }),
+  );
+
+  /**
+   * Добавить стикер в свой набор. Файл грузится отдельным запросом (`kind=sticker`),
+   * а здесь только ссылка на него: так загрузка остаётся общей для картинок,
+   * и один файл нельзя случайно забыть приложить к двум наборам.
+   */
+  router.post(
+    "/sticker-packs/:packId/stickers",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { packId } = parseParams(stickerPackParamsSchema, request);
+      const input = parseBody(addStickerSchema, request);
+      // Подпись нужна, чтобы отличить анимированный стикер от статичного: по
+      // расширению это не определить (`.webp` бывает и таким, и другим).
+      const file = await dependencies.uploadService.readOwnFile(request.auth.userId, input.attachmentId);
+      const stored = await dependencies.repositories.attachments.findById(input.attachmentId);
+      const pack = await dependencies.stickerService.addSticker(
+        request.auth.userId,
+        packId,
+        input.attachmentId,
+        file,
+        stored?.mimeType ?? "image/png",
+        input.emoji,
+      );
+      response.status(201).json({ pack });
+    }),
+  );
+
+  router.delete(
+    "/sticker-packs/:packId/stickers/:stickerId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { packId, stickerId } = parseParams(stickerPackStickerParamsSchema, request);
+      response.json({
+        pack: await dependencies.stickerService.removeSticker(
+          request.auth.userId,
+          packId,
+          stickerId,
+        ),
+      });
+    }),
+  );
+
+  /** Пригласить человека в набор: сообщение в беседу + набор у получателей. */
+  router.post(
+    "/sticker-packs/:packId/share",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { packId } = parseParams(stickerPackParamsSchema, request);
+      const { conversationId } = parseBody(conversationIdSchema, request);
+      const result = await dependencies.stickerService.sharePack(
+        request.auth.userId,
+        conversationId,
+        packId,
+        (senderId, targetConversationId, id) =>
+          dependencies.chatService.sendMessage(senderId, targetConversationId, "", undefined, {
+            stickerPackId: id,
+          }),
+      );
+      // Сообщение уходит всем участникам, как и любое другое: карточку набора
+      // в переписке видят все, а добавляется набор только тем, кому он нужен.
+      dependencies.events.publishNewMessage(result);
+      response.status(201).json({ message: result.message });
+    }),
+  );
+
+  router.post(
+    "/sticker-packs/:packId/install",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { packId } = parseParams(stickerPackParamsSchema, request);
+      response.json({ pack: await dependencies.stickerService.installPack(request.auth.userId, packId) });
+    }),
+  );
+
+  router.delete(
+    "/sticker-packs/:packId/install",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { packId } = parseParams(stickerPackParamsSchema, request);
+      await dependencies.stickerService.uninstallPack(request.auth.userId, packId);
+      response.status(204).end();
+    }),
+  );
+
+  /** Библиотека гифок: загруженное можно слать снова и снова. */
+  router.get(
+    "/gifs",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      response.json({ gifs: await dependencies.stickerService.listGifs(request.auth.userId) });
     }),
   );
 
@@ -1422,7 +1718,11 @@ export function createApiRouter(dependencies: {
         input.replyToId,
         {
           ...(input.attachmentIds === undefined ? {} : { attachmentIds: input.attachmentIds }),
+          // 🔥 Стикеры обязаны дойти до сервиса: без этого сообщение оказывалось
+          // пустым, и отправка стикера отвергалась с `MESSAGE_EMPTY`.
+          ...(input.stickerIds === undefined ? {} : { stickerIds: input.stickerIds }),
           ...(input.forwardedFromId === undefined ? {} : { forwardedFromId: input.forwardedFromId }),
+          ...(input.stickerPackId === undefined ? {} : { stickerPackId: input.stickerPackId }),
         },
       );
       dependencies.events.publishNewMessage(result);

@@ -27,6 +27,10 @@
   text-rendering: optimizeLegibility;
 }
 
+html, body, button, input, textarea, select {
+  font-family: var(--app-font, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+
 .emoji {
   font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
   line-height: 1;
@@ -55,10 +59,27 @@
   --warning: 240 176 90;
 }
 
+/*
+ * 🔥 Полосы прокрутки не рисуем вовсе, а саму прокрутку оставляем.
+ *
+ * Windows рисует полосы системными — с уголками и стрелками по краям, — и они
+ * лезут в интерфейс: одна стоит рядом с обоями переписки, вторая тянется по
+ * низу во всю ширину. Прежнее `scrollbar-width: thin` их только сужало:
+ * стрелки и уголки оставались на месте, потому что рисует их система, а не мы.
+ *
+ * Листать это не мешает: колесо мыши, тачпад, свайп на телефоне, стрелки и
+ * Page Up/Down с клавиатуры работают без полосы. Меняется только вид — и
+ * именно поэтому полосу можно убрать целиком, а не прятать до наведения.
+ *
+ * 🔥 Три правила — три движка, и одного мало: `scrollbar-width` понимает
+ * Firefox и свежий Chromium, `-ms-overflow-style` — старый Edge,
+ * `::-webkit-scrollbar` — Safari и Chromium постарше. Без запаса на любом из
+ * них полоса вернётся ровно в том браузере, где правила нет.
+ */
 * {
   box-sizing: border-box;
-  scrollbar-width: thin;
-  scrollbar-color: rgb(var(--line)) transparent;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 /*
@@ -108,18 +129,11 @@ button:not(:disabled) {
   background: rgb(var(--brand));
 }
 
+/* Полоса не должна занимать и пикселя: `width/height: 0` убирает её вместе с
+   уголком и стрелками, а не оставляет пустую дорожку у края. */
 ::-webkit-scrollbar {
-  width: 7px;
-  height: 7px;
-}
-
-::-webkit-scrollbar-thumb {
-  border-radius: 99px;
-  background: rgb(var(--line));
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
+  width: 0;
+  height: 0;
 }
 
 .chat-wallpaper {
@@ -207,7 +221,6 @@ button:focus-visible, a:focus-visible {
   outline: 2px solid rgb(var(--brand));
   outline-offset: 3px;
 }
-textarea { scrollbar-width: thin; }
 @media (max-width: 767px) {
   input, textarea, select { font-size: 16px; }
 }

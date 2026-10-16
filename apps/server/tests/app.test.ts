@@ -2,6 +2,7 @@ import { createServer, type Server as HttpServer } from "node:http";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import express from "express";
 import request from "supertest";
 import { io as createClient, type Socket as ClientSocket } from "socket.io-client";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,6 +12,7 @@ import { createJsonRepositories } from "../src/repositories/json-repositories.js
 import { RealtimeEvents } from "../src/realtime/events.js";
 import { attachSocketServer, releaseSocketServer } from "../src/realtime/socket-server.js";
 import { mediaUrlFor } from "../src/lib/media-links.js";
+import { errorHandler } from "../src/lib/errors.js";
 import { AtRestCrypto } from "../src/lib/crypto.js";
 import { withEncryption } from "../src/repositories/encrypted-repositories.js";
 import { AuthService } from "../src/services/auth-service.js";
@@ -23,6 +25,7 @@ import { ChatService, type MessageView } from "../src/services/chat-service.js";
 import { FriendService } from "../src/services/friend-service.js";
 import { SessionService } from "../src/services/session-service.js";
 import { SupportBotService } from "../src/services/support-bot-service.js";
+import { StickerService } from "../src/services/sticker-service.js";
 import { uploadLimits } from "../src/services/upload-service.js";
 import {
   FAKE_BIO_WARNING,
@@ -41,7 +44,7 @@ async function closeRealtimeServer(io: ReturnType<typeof attachSocketServer>): P
   await releaseSocketServer(io);
 }
 
-async function createHarness(seedState?: unknown) {
+async function createHarness(seedState?: unknown, extraEnv: NodeJS.ProcessEnv = {}) {
   const directory = await mkdtemp(join(tmpdir(), "yargram-server-"));
   temporaryDirectories.push(directory);
   const config = loadConfig({
@@ -49,6 +52,7 @@ async function createHarness(seedState?: unknown) {
     JWT_SECRET: "test-secret-that-is-long-enough",
     BCRYPT_ROUNDS: "4",
     DATA_DIR: directory,
+    ...extraEnv,
   });
   if (seedState !== undefined) {
     await writeFile(config.dataFile, JSON.stringify(seedState, null, 2) + "\n", "utf8");
@@ -73,6 +77,7 @@ async function createHarness(seedState?: unknown) {
   const friendService = new FriendService(repositories, events);
   const sessionService = new SessionService(repositories.sessions, repositories.users, events);
   const supportBotService = new SupportBotService(repositories, chatService, events);
+  const stickerService = new StickerService(repositories, events);
   const app = createApp({
     config,
     repositories,
@@ -86,6 +91,7 @@ async function createHarness(seedState?: unknown) {
     friendService,
     sessionService,
     supportBotService,
+    stickerService,
     events,
     crypto,
   });
@@ -103,6 +109,7 @@ async function createHarness(seedState?: unknown) {
     friendService,
     sessionService,
     supportBotService,
+    stickerService,
     events,
   };
 }
@@ -202,6 +209,90 @@ describe("Yargram API", () => {
     const config = loadConfig({ NODE_ENV: "test", PUBLIC_ORIGIN: "https://yargram.example.com/" });
     expect(config.publicOrigin).toBe("https://yargram.example.com");
     expect(loadConfig({ NODE_ENV: "test" }).publicOrigin).toBeUndefined();
+  });
+
+  // 🔥 Редирект на HTTPS выключен по умолчанию, и это важнее удобства.
+  // Если сервер не знает исходную схему (перед ним нет прокси с
+  // `X-Forwarded-Proto`), он и уже защищённый запрос считает незащищённым —
+  // тогда включённый по умолчанию редирект замкнул бы сайт в бесконечный
+  // цикл перенаправлений. Проверяем и сам редирект, и что он молчит.
+  it("перенаправление на HTTPS выключено, пока не задано обратное", async () => {
+    const { app } = await createHarness();
+    const response = await request(app).get("/health").set("Host", "yargram.example.com");
+
+    expect(response.status).toBe(200);
+    expect(loadConfig({ NODE_ENV: "test" }).forceHttps).toBe(false);
+    expect(loadConfig({ NODE_ENV: "test", FORCE_HTTPS: "false" }).forceHttps).toBe(false);
+  });
+
+  it("уводит запрос по HTTP на HTTPS, когда перенаправление включено", async () => {
+    const { app } = await createHarness(undefined, { FORCE_HTTPS: "true", TRUST_PROXY: "true" });
+
+    // Обычный запрос без прокси-заголовков — уводим на HTTPS, путь и параметры
+    // сохраняем: иначе человек после перенаправления попал бы не туда.
+    const insecure = await request(app).get("/health?x=1").set("Host", "yargram.example.com");
+    expect(insecure.status).toBe(301);
+    expect(insecure.headers.location).toBe("https://yargram.example.com/health?x=1");
+
+    // 🔥 Запрос с телом перенаправлять как `301` нельзя: этот код браузеры
+    // вправе применить к любому методу как чтение, и тело бы потерялось —
+    // вход или отправка сообщения молча превратились бы в пустой GET.
+    const posted = await request(app)
+      .post("/api/auth/login")
+      .set("Host", "yargram.example.com")
+      .send({ email: "a@b.c" });
+    expect(posted.status).toBe(308);
+    expect(posted.headers.location).toBe("https://yargram.example.com/api/auth/login");
+
+    // Прокси сообщил, что запрос уже пришёл по HTTPS — не трогаем его.
+    const secure = await request(app)
+      .get("/health")
+      .set("Host", "yargram.example.com")
+      .set("X-Forwarded-Proto", "https");
+    expect(secure.status).toBe(200);
+  });
+
+  // 🔥 Кривой percent-код в пути: Express бросает `URIError` с уже проставленным
+  // `status: 400`, но обработчик раньше такие ошибки не распознавал — человек
+  // читал «An unexpected server error occurred» вместо честного отказа.
+  it("отдаёт клиентский код на кривом percent-коде в пути, а не 500", async () => {
+    const { app } = await createHarness();
+    for (const path of [
+      "/api/users/%",
+      "/api/users/%ZZ",
+      "/api/users/%E0%A4%A",
+      "/api/conversations/%/messages",
+      "/api/sticker-packs/%",
+      "/api/uploads/%",
+    ]) {
+      const response = await request(app).get(path);
+      expect(`${path} → ${response.status}`).toBe(`${path} → 400`);
+      expect(response.body.error.code).toBe("INVALID_URL");
+      expect(response.body.error.message).not.toMatch(/unexpected/i);
+    }
+  });
+
+  // Готовые 4xx от статики и парсеров доходят под своим кодом, а настоящие
+  // сбои по-прежнему прячутся за общей фразой 500.
+  it("пропускает готовые 4xx наружу и оставляет 500 для настоящих сбоев", async () => {
+    const app = express();
+    app.get("/api/forbidden", () => {
+      const error = new Error("нет доступа") as Error & { status: number };
+      error.status = 403;
+      throw error;
+    });
+    app.get("/api/boom", () => {
+      throw new Error("внутренний сбой");
+    });
+    app.use(errorHandler);
+
+    const forbidden = await request(app).get("/api/forbidden");
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error).toMatchObject({ code: "FORBIDDEN", message: "Forbidden" });
+
+    const boom = await request(app).get("/api/boom");
+    expect(boom.status).toBe(500);
+    expect(boom.body.error.code).toBe("INTERNAL_ERROR");
   });
 
   it("registers, logs in and atomically updates a profile", async () => {
@@ -1837,6 +1928,79 @@ describe("Yargram API", () => {
     const self = await request(harness.app).delete(`/api/admin/${owner.user.id}`).set(ownerAuth);
     expect(self.status).toBe(400);
     expect(self.body.error.code).toBe("SELF_ACTION");
+  });
+
+  it("lets the owner hand out and revoke the BOT mark", async () => {
+    const harness = await createHarness();
+    const owner = await register(harness.app, "bot-owner@example.com", "BotOwner");
+    const target = await register(harness.app, "bot-target@example.com", "BotTarget");
+    const plain = await register(harness.app, "bot-plain@example.com", "BotPlain");
+    await harness.repositories.users.update(owner.user.id, { isOwner: true });
+    const ownerAuth = { Authorization: bearer(owner.accessToken) };
+
+    // Обычный пользователь отметку выдать не может.
+    const forbidden = await request(harness.app)
+      .post(`/api/admin/${target.user.id}/bot`)
+      .set({ Authorization: bearer(plain.accessToken) })
+      .send({ isBot: true });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe("NOT_OWNER");
+
+    // Перечень пуст, пока ботов нет, и чужаку его не показывают.
+    const empty = await request(harness.app).get("/api/admin/bots").set(ownerAuth);
+    expect(empty.status).toBe(200);
+    expect(empty.body.accounts).toEqual([]);
+    const foreignList = await request(harness.app)
+      .get("/api/admin/bots")
+      .set({ Authorization: bearer(plain.accessToken) });
+    expect(foreignList.status).toBe(403);
+
+    // Выдача: аккаунт остаётся на месте, меняется только метка.
+    const granted = await request(harness.app)
+      .post(`/api/admin/${target.user.id}/bot`)
+      .set(ownerAuth)
+      .send({ isBot: true });
+    expect(granted.status).toBe(200);
+    expect(granted.body.user.isBot).toBe(true);
+    expect(granted.body.user.id).toBe(target.user.id);
+    const stored = await harness.repositories.users.findById(target.user.id);
+    expect(stored).toMatchObject({ isBot: true });
+    // Запись жива: метка закрывает вход, но не трогает аккаунт.
+    expect(stored?.isDeleted ?? false).toBe(false);
+
+    // Метка входит в перечень — владелец видит, кому она выдана.
+    const listed = await request(harness.app).get("/api/admin/bots").set(ownerAuth);
+    expect(listed.status).toBe(200);
+    expect(listed.body.accounts.map((account: { id: string }) => account.id)).toEqual([
+      target.user.id,
+    ]);
+
+    // С пометкой вход закрывается — ровно в этом её смысл.
+    const login = await request(harness.app)
+      .post("/api/auth/login")
+      .send({ email: "bot-target@example.com", password: TEST_PASSWORD });
+    expect(login.status).toBe(403);
+    expect(login.body.error.code).toBe("BOT_ACCOUNT");
+
+    // Снятие возвращает возможность войти.
+    const revoked = await request(harness.app)
+      .post(`/api/admin/${target.user.id}/bot`)
+      .set(ownerAuth)
+      .send({ isBot: false });
+    expect(revoked.status).toBe(200);
+    expect(revoked.body.user.isBot).toBe(false);
+    const loginAgain = await request(harness.app)
+      .post("/api/auth/login")
+      .send({ email: "bot-target@example.com", password: TEST_PASSWORD });
+    expect(loginAgain.status).toBe(200);
+
+    // Себе метку поставить нельзя: снять её было бы уже некому.
+    const selfMark = await request(harness.app)
+      .post(`/api/admin/${owner.user.id}/bot`)
+      .set(ownerAuth)
+      .send({ isBot: true });
+    expect(selfMark.status).toBe(400);
+    expect(selfMark.body.error.code).toBe("SELF_ACTION");
   });
 
   it("replaces the bio of a SCAM-marked account and freezes it against edits", async () => {
@@ -4446,6 +4610,12 @@ describe("два сайта: лендинг и приложение", () => {
         "<!doctype html><title>Лендинг Yargram</title><p>Описание возможностей</p>",
         "utf8",
       );
+      // Соглашение — отдельный файл лендинга, его отдаёт свой маршрут.
+      await writeFile(
+        join(landingDirectory, "terms.html"),
+        "<!doctype html><title>Соглашение Yargram</title>",
+        "utf8",
+      );
     }
     if (options.web) {
       await mkdir(join(webDirectory, "assets"), { recursive: true });
@@ -4455,6 +4625,15 @@ describe("два сайта: лендинг и приложение", () => {
         "utf8",
       );
       await writeFile(join(webDirectory, "assets", "app.js"), "console.log('yargram');", "utf8");
+      // Встроенные картинки Yargram: лежат рядом с интерфейсом, но адресуются
+      // от корня — `/banners/…`, а не `/app/banners/…`.
+      for (const folder of ["banners", "wallpapers"]) {
+        await mkdir(join(webDirectory, folder), { recursive: true });
+        await writeFile(
+          join(webDirectory, folder, `Yargram-${folder.slice(0, -1)}-blue.png`),
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        );
+      }
     }
 
     const config = {
@@ -4494,6 +4673,7 @@ describe("два сайта: лендинг и приложение", () => {
       friendService: new FriendService(repositories, events),
       sessionService: new SessionService(repositories.sessions, repositories.users, events),
       supportBotService: new SupportBotService(repositories, chatService, events),
+      stickerService: new StickerService(repositories, events),
       events,
       crypto,
     });
@@ -4517,7 +4697,7 @@ describe("два сайта: лендинг и приложение", () => {
 
     // Клиентская маршрутизация: любой путь под /app должен отдать тот же
     // index.html, иначе перезагрузка страницы в чате показала бы лендинг.
-    for (const path of ["/app/settings", "/app/chat/123"]) {
+    for (const path of ["/app/settings", "/app/chat/123", "/join/invite123"]) {
       const response = await request(app).get(path).set("Accept", "text/html");
       expect(response.status, path).toBe(200);
       expect(response.text, path).toContain('id="root"');
@@ -4559,5 +4739,55 @@ describe("два сайта: лендинг и приложение", () => {
 
     const response = await request(app).get("/favicon-missing.ico").set("Accept", "image/png");
     expect(response.status).toBe(404);
+  });
+
+  it("соглашение отдаётся как документ, а не как файл приложения", async () => {
+    const app = await createStaticHarness({ landing: true, web: true });
+
+    const terms = await request(app).get("/terms").set("Accept", "text/html");
+    expect(terms.status).toBe(200);
+    expect(terms.text).toContain("Соглашение Yargram");
+    // 🔥 Не приложение: иначе человек вместо документа увидел бы мессенджер
+    // со статусом 200, и поломка осталась бы незаметной.
+    expect(terms.text).not.toContain('id="root"');
+  });
+
+  it("любой путь лендинга ведёт в лендинг, а не в мессенджер", async () => {
+    const app = await createStaticHarness({ landing: true, web: true });
+
+    // 🔥 Проверка «приложение или лендинг» обязана смотреть на префикс `/app/`.
+    // Когда она была всегда истинной, любой адрес сайта отдавал файл
+    // приложения со статусом 200: адрес вёл в мессенджер, а ошибки не было.
+    for (const path of ["/about", "/privacy", "/some/deep/link"]) {
+      const response = await request(app).get(path).set("Accept", "text/html");
+      expect(response.status, path).toBe(200);
+      expect(response.text, path).toContain("Лендинг Yargram");
+      expect(response.text, path).not.toContain('id="root"');
+    }
+  });
+
+  it("встроенные картинки Yargram отдаются с корня картинкой, а не страницей", async () => {
+    const app = await createStaticHarness({ landing: true, web: true });
+
+    // 🔥 Браузер просит картинку с `Accept: image/*,*/*` — и `*/*` делает
+    // HTML-страницу «приемлемым» ответом. Именно поэтому поломка была
+    // незаметной: запрос `/banners/…` получал `index.html` со статусом 200, и
+    // `<img>` молча не рисовал ничего — ни готовый баннер, ни выбранный в
+    // профиле. Проверяем заголовком настоящего браузера, а не `image/png`.
+    const browserAccepts = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+
+    for (const path of ["/banners/Yargram-banner-blue.png", "/wallpapers/Yargram-wallpaper-blue.png"]) {
+      const response = await request(app).get(path).set("Accept", browserAccepts);
+      expect(response.status, path).toBe(200);
+      expect(response.headers["content-type"], path).toContain("image/png");
+    }
+
+    // А отсутствующей картинке — честный 404: страница приложения здесь была бы
+    // подменой ответа и снова спрятала бы ошибку.
+    const missing = await request(app)
+      .get("/banners/Yargram-banner-none.png")
+      .set("Accept", browserAccepts);
+    expect(missing.status).toBe(404);
+    expect(missing.body).toMatchObject({ error: { code: "ASSET_NOT_FOUND" } });
   });
 });

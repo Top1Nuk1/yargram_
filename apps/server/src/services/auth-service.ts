@@ -223,7 +223,13 @@ export class AuthService {
       ...(aliasesChanged ? { usernames: aliases ?? [] } : {}),
       ...(input.bio === undefined || bioLocked ? {} : { bio: input.bio.trim() }),
       ...(input.showLastSeen === undefined ? {} : { showLastSeen: input.showLastSeen }),
+      ...(input.callPrivacy === undefined ? {} : { callPrivacy: input.callPrivacy }),
+      ...(input.callPrivacyAllowedUserIds === undefined ? {} : { callPrivacyAllowedUserIds: input.callPrivacyAllowedUserIds }),
+      ...(input.callPrivacyDeniedUserIds === undefined ? {} : { callPrivacyDeniedUserIds: input.callPrivacyDeniedUserIds }),
       ...(input.notificationSoundEnabled === undefined ? {} : { notificationSoundEnabled: input.notificationSoundEnabled }),
+      // Язык интерфейса: его читает служебный бот поддержки, чтобы отвечать
+      // на том же языке, что и кнопки вокруг.
+      ...(input.language === undefined ? {} : { language: input.language }),
       ...(input.themeColor === undefined ? {} : { themeColor: input.themeColor }),
       ...(input.wallpaperUrl === undefined
         ? {}
@@ -298,8 +304,21 @@ export class AuthService {
       await this.options.sessions.update(session.id, { terminatedAt: new Date().toISOString() });
       throw new AppError(401, "SESSION_ENDED", "Сеанс завершён: им давно не пользовались. Войдите снова.");
     }
+    const sessionUpdates: { lastSeenAt?: string; deviceId?: string; customDeviceName?: string | null } = {};
     if (shouldTouch(session)) {
-      await this.options.sessions.update(session.id, { lastSeenAt: new Date().toISOString() });
+      sessionUpdates.lastSeenAt = new Date().toISOString();
+    }
+    if (context?.deviceId && !session.deviceId) {
+      sessionUpdates.deviceId = context.deviceId;
+      if (!session.customDeviceName) {
+        const existingName = await this.options.sessions.findDeviceName(context.deviceId);
+        if (existingName) {
+          sessionUpdates.customDeviceName = existingName;
+        }
+      }
+    }
+    if (Object.keys(sessionUpdates).length > 0) {
+      await this.options.sessions.update(session.id, sessionUpdates);
     }
     return user.id;
   }
@@ -444,6 +463,22 @@ export class AuthService {
         purpose,
         expiresInSeconds: this.options.emailCodeTtlSeconds ?? 600,
       };
+    }
+    const ttlSeconds = this.options.emailCodeTtlSeconds ?? 600;
+    // Дедупликация и защита от спама: если код на сброс пароля уже был отправлен
+    // недавно (меньше 60 секунд назад), не спамим ящик новым письмом и не дёргаем SMTP.
+    // Возвращаем тот же статус и оставшееся время жизни.
+    if (user.emailCodeExpiresAt && user.emailCodePurpose === purpose) {
+      const expiresAtMs = new Date(user.emailCodeExpiresAt).getTime();
+      const remainingSeconds = Math.max(0, Math.round((expiresAtMs - Date.now()) / 1000));
+      if (remainingSeconds > ttlSeconds - 60 && remainingSeconds > 0) {
+        return {
+          status: "code_sent",
+          email: user.email,
+          purpose,
+          expiresInSeconds: remainingSeconds,
+        };
+      }
     }
     const expiresInSeconds = await this.issueCode(user, purpose);
     return { status: "code_sent", email: user.email, purpose, expiresInSeconds };

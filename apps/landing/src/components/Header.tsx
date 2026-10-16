@@ -26,8 +26,14 @@ export function Header({ theme, onToggleTheme }: HeaderProps) {
   return (
     <header className="sticky top-0 z-40 border-b border-stroke/70 bg-page/85 backdrop-blur-md">
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-4 px-5 sm:px-8">
-        <a href="#top" className="shrink-0" aria-label="Yargram — на главную">
-          <Logo size={38} />
+        <a href="#top" className="flex shrink-0 items-center gap-2.5" aria-label="Yargram — на главную">
+          {/* 🔥 Надпись в шапке скрывается на узком экране: вместе с кнопкой
+              «Открыть Yargram», переключателем языка и двумя иконками она не
+              влезала в 390 px, и лендинг уезжал вбок на 45 px. */}
+          <Logo size={38} withWordmark={false} />
+          <span className="hidden text-[19.8px] font-bold tracking-[-0.02em] text-brand sm:inline">
+            Yargram
+          </span>
         </a>
 
         <nav className="ml-4 hidden items-center gap-1 lg:flex" aria-label="Разделы страницы">
@@ -68,11 +74,16 @@ export function Header({ theme, onToggleTheme }: HeaderProps) {
           {/* 🔥 Переключатель языка — ровно между темой и «Открыть Yargram». */}
           <LanguageSwitcher />
 
+          {/* 🔥 На телефоне у кнопки остаётся только значок: подпись в 128 px
+              плюс всё остальное не помещались в шапку. Подпись всё равно
+              есть в блоке призыва на первом экране. */}
           <a
             href={appHref()}
-            className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-brand px-4 text-[13.5px] font-semibold text-white transition hover:bg-brand-strong"
+            aria-label={content.header.cta}
+            title={content.header.cta}
+            className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-brand px-3 text-[13.5px] font-semibold text-white transition hover:bg-brand-strong sm:px-4"
           >
-            {content.header.cta}
+            <span className="hidden sm:inline">{content.header.cta}</span>
             <Icon name="arrow" className="h-4 w-4" />
           </a>
         </div>

@@ -9,6 +9,10 @@ export type SessionContext = {
   site: string;
   /** Браузер и система, например «Chrome, Windows». Пусто, если не распознали. */
   device: string;
+  /** Постоянный идентификатор физического устройства / браузера. */
+  deviceId?: string;
+  /** Пользовательское имя устройства (например, «Домашний ПК»). */
+  customDeviceName?: string | null;
 };
 
 /**

@@ -42,6 +42,18 @@ describe('upsertAccount', () => {
     expect(byId[0]!.token).toBe('token-2');
   });
 
+  it('вычищает существующие дубликаты одного пользователя', () => {
+    const duplicateA1 = account('token-1', { id: 'a', displayName: 'Алиса' });
+    const duplicateA2 = account('token-2', { id: 'a', displayName: 'Алиса Дубликат' });
+    const b = account('token-3', { id: 'b', displayName: 'Борис' });
+
+    // При обновлении пользователя 'a' все предыдущие дубли удаляются
+    const result = upsertAccount([duplicateA1, duplicateA2, b], account('token-4', { id: 'a', displayName: 'Алиса Новая' }));
+    expect(result).toHaveLength(2);
+    expect(result.map((item) => item.user.id)).toEqual(['a', 'b']);
+    expect(result.find((item) => item.user.id === 'a')?.token).toBe('token-4');
+  });
+
   it('убирает аккаунт по токену, оставляя остальные', () => {
     const accounts = [account('token-1', { id: 'a' }), account('token-2', { id: 'b' })];
     expect(removeAccountByToken(accounts, 'token-1').map((item) => item.token)).toEqual([

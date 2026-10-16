@@ -10,6 +10,9 @@ import type {
   Message,
   ScheduledMessage,
   Session,
+  Sticker,
+  StickerPack,
+  StickerPackInstall,
   User,
   UserReport,
 } from "../domain/models.js";
@@ -29,13 +32,29 @@ type Table =
   | "drafts"
   | "folders"
   | "scheduled_messages"
-  | "sessions";
+  | "sessions"
+  | "sticker_packs"
+  | "stickers"
+  | "sticker_installs";
 type Queryable = Pick<PoolClient, "query">;
 const now = () => new Date().toISOString();
 
+function normalizeMessage(message: Message): Message {
+  const reactionsByUser = new Map((message.reactions ?? []).map((reaction) => [reaction.userId, reaction]));
+  return {
+    ...message,
+    kind: message.kind ?? "user",
+    stickerIds: [...new Set(message.stickerIds ?? [])],
+    attachmentIds: [...new Set(message.attachmentIds ?? [])],
+    reactions: [...reactionsByUser.values()],
+    readBy: [...new Set([message.senderId, ...(message.readBy ?? [])])],
+  };
+}
 async function select<T>(db: Queryable, table: Table, where = "TRUE", values: unknown[] = [], suffix = "ORDER BY sequence"): Promise<T[]> {
   const result = await db.query<{ payload: T }>(`SELECT payload FROM ${table} WHERE ${where} ${suffix}`, values);
-  return result.rows.map((row) => row.payload);
+  // Legacy rows written before the sticker feature predate `stickerIds` and other
+  // defaulted fields. The JSON driver fills them via Zod; PostgreSQL must do the same.
+  return result.rows.map((row) => (table === "messages" ? (normalizeMessage(row.payload as unknown as Message) as T) : row.payload));
 }
 async function find<T>(db: Queryable, table: Table, id: string, lock = false): Promise<T | null> {
   return (await select<T>(db, table, "id = $1", [id], lock ? "FOR UPDATE" : ""))[0] ?? null;
@@ -85,7 +104,8 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
       async create(input) {
         const timestamp = now();
         const user: User = { id: randomUUID(), ...input, bio: "", lastSeenAt: timestamp,
-          blockedUserIds: [], favoriteMessageIds: [], notificationSoundEnabled: true, showLastSeen: true, createdAt: timestamp };
+          blockedUserIds: [], favoriteMessageIds: [], notificationSoundEnabled: true, showLastSeen: true,
+          callPrivacy: "everyone", callPrivacyAllowedUserIds: [], callPrivacyDeniedUserIds: [], createdAt: timestamp };
         try { return await insert(pool, "users", user); } catch (error) { return conflict(error); }
       },
       findById: (id) => find<User>(pool, "users", id),
@@ -125,8 +145,13 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
             if (input.username !== undefined) user.username = input.username;
             if (input.bio !== undefined) user.bio = input.bio;
             if (input.showLastSeen !== undefined) user.showLastSeen = input.showLastSeen;
+            if (input.callPrivacy !== undefined) user.callPrivacy = input.callPrivacy;
+            if (input.callPrivacyAllowedUserIds !== undefined) user.callPrivacyAllowedUserIds = input.callPrivacyAllowedUserIds;
+            if (input.callPrivacyDeniedUserIds !== undefined) user.callPrivacyDeniedUserIds = input.callPrivacyDeniedUserIds;
             if (input.avatar === null) delete user.avatar;
             else if (input.avatar !== undefined) user.avatar = input.avatar;
+            if (input.avatarUrl === null) delete user.avatarUrl;
+            else if (input.avatarUrl !== undefined) user.avatarUrl = input.avatarUrl;
             if (input.themeColor !== undefined) user.themeColor = input.themeColor;
             if (input.wallpaperUrl !== undefined) user.wallpaperUrl = input.wallpaperUrl;
             if (input.wallpaperMimeType !== undefined) user.wallpaperMimeType = input.wallpaperMimeType;
@@ -153,6 +178,7 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
             if (input.incomingFriendRequestIds !== undefined) user.incomingFriendRequestIds = input.incomingFriendRequestIds;
             if (input.isApp !== undefined) user.isApp = input.isApp;
             if (input.isBot !== undefined) user.isBot = input.isBot;
+            if (input.language !== undefined) user.language = input.language;
             if (input.birthday !== undefined) {
               if (input.birthday === null) delete user.birthday;
               else user.birthday = input.birthday;
@@ -240,7 +266,9 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         const conversation: Conversation = { id: randomUUID(), type: "saved", memberIds: [userId], directKey: `saved:${userId}`,
           createdAt: timestamp, updatedAt: timestamp, pinnedMessageIds: [], archivedBy: [], mutedUntilBy: {} };
         return database.transaction(async (client) => {
-          const inserted = await client.query("INSERT INTO conversations (payload) VALUES ($1::jsonb) ON CONFLICT (direct_key) DO NOTHING RETURNING id", [JSON.stringify(conversation)]);
+          // 🔥 Условие в `ON CONFLICT` повторяет условие частичного индекса:
+          // без него Postgres не выведет индекс по цели конфликта и запрос упадёт.
+          const inserted = await client.query("INSERT INTO conversations (payload) VALUES ($1::jsonb) ON CONFLICT (direct_key) WHERE direct_key <> '' DO NOTHING RETURNING id", [JSON.stringify(conversation)]);
           if (inserted.rowCount) return { conversation, created: true };
           const existing = (await select<Conversation>(client, "conversations", "direct_key = $1", [conversation.directKey]))[0];
           if (!existing) throw new Error("Saved conversation was not found");
@@ -253,7 +281,7 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         const conversation: Conversation = { id: randomUUID(), type: "direct", memberIds, directKey: memberIds.join(":"),
           createdAt: timestamp, updatedAt: timestamp, pinnedMessageIds: [], archivedBy: [], mutedUntilBy: {} };
         return database.transaction(async (client) => {
-          const inserted = await client.query("INSERT INTO conversations (payload) VALUES ($1::jsonb) ON CONFLICT (direct_key) DO NOTHING RETURNING id", [JSON.stringify(conversation)]);
+          const inserted = await client.query("INSERT INTO conversations (payload) VALUES ($1::jsonb) ON CONFLICT (direct_key) WHERE direct_key <> '' DO NOTHING RETURNING id", [JSON.stringify(conversation)]);
           if (inserted.rowCount) return { conversation, created: true };
           const existing = (await select<Conversation>(client, "conversations", "direct_key = $1", [conversation.directKey]))[0];
           if (!existing) throw new Error("Conversation was not found");
@@ -378,7 +406,8 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         return database.transaction(async (client) => {
           const conversation = await find<Conversation>(client, "conversations", input.conversationId, true);
           const message: Message = { id: randomUUID(), ...input, kind: input.kind ?? "user", createdAt: now(),
-            attachmentIds: [...new Set(input.attachmentIds ?? [])], reactions: [], readBy: [input.senderId] };
+            attachmentIds: [...new Set(input.attachmentIds ?? [])], stickerIds: [...new Set(input.stickerIds ?? [])],
+            reactions: [], readBy: [input.senderId] };
           await insert(client, "messages", message);
           if (conversation) {
             conversation.lastMessageId = message.id;
@@ -721,6 +750,8 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
           tokenHashes: [...new Set(input.tokenHashes)],
           site: input.site,
           device: input.device,
+          ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+          ...(input.customDeviceName ? { customDeviceName: input.customDeviceName } : {}),
           createdAt: timestamp,
           lastSeenAt: timestamp,
           ...(input.newDevice === undefined ? {} : { newDevice: input.newDevice }),
@@ -741,6 +772,14 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
           if (input.tokenHashes !== undefined) session.tokenHashes = [...new Set(input.tokenHashes)];
           if (input.site !== undefined) session.site = input.site;
           if (input.device !== undefined) session.device = input.device;
+          if (input.deviceId !== undefined) session.deviceId = input.deviceId;
+          if (input.customDeviceName !== undefined) {
+            if (input.customDeviceName === null) {
+              delete session.customDeviceName;
+            } else {
+              session.customDeviceName = input.customDeviceName;
+            }
+          }
           if (input.lastSeenAt !== undefined) session.lastSeenAt = input.lastSeenAt;
           if (input.acknowledgedAt !== undefined) session.acknowledgedAt = input.acknowledgedAt;
           if (input.terminatedAt !== undefined) session.terminatedAt = input.terminatedAt;
@@ -753,6 +792,165 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
       },
       async deleteForUser(userId) {
         await pool.query("DELETE FROM sessions WHERE user_id = $1", [userId]);
+      },
+      async updateDeviceName(deviceId: string, name: string | null) {
+        if (name) {
+          await pool.query(
+            "UPDATE sessions SET payload = jsonb_set(payload, '{customDeviceName}', to_jsonb($2::text)) WHERE payload->>'deviceId' = $1",
+            [deviceId, name],
+          );
+        } else {
+          await pool.query(
+            "UPDATE sessions SET payload = payload - 'customDeviceName' WHERE payload->>'deviceId' = $1",
+            [deviceId],
+          );
+        }
+      },
+      async findDeviceName(deviceId: string) {
+        const rows = await select<Session>(
+          pool,
+          "sessions",
+          "payload->>'deviceId' = $1 AND payload ? 'customDeviceName'",
+          [deviceId],
+          "ORDER BY last_seen_at DESC LIMIT 1",
+        );
+        return rows[0]?.customDeviceName ?? null;
+      },
+    },
+    stickerPacks: {
+      listOwnedBy: (userId) =>
+        select<StickerPack>(pool, "sticker_packs", "owner_id = $1", [userId], "ORDER BY sequence"),
+      findById: (id) => find<StickerPack>(pool, "sticker_packs", id),
+      findManyByIds: (ids) =>
+        ids.length
+          ? orderedIds<StickerPack>(pool, "sticker_packs", ids)
+          : Promise.resolve([]),
+      create: (input) => {
+        const timestamp = now();
+        return insert<StickerPack>(pool, "sticker_packs", {
+          id: randomUUID(),
+          ownerId: input.ownerId,
+          title: input.title,
+          emoji: input.emoji,
+          version: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      },
+      update: (id, ownerId, input) =>
+        database.transaction(async (client) => {
+          const pack = await find<StickerPack>(client, "sticker_packs", id, true);
+          if (!pack || pack.ownerId !== ownerId) {
+            throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack not found");
+          }
+          if (input.title !== undefined) pack.title = input.title;
+          if (input.emoji !== undefined) pack.emoji = input.emoji;
+          pack.updatedAt = now();
+          return save(client, "sticker_packs", pack);
+        }),
+      async delete(id, ownerId) {
+        const result = await pool.query(
+          "DELETE FROM sticker_packs WHERE id = $1 AND owner_id = $2 RETURNING id",
+          [id, ownerId],
+        );
+        if (!result.rowCount) {
+          throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack not found");
+        }
+      },
+      bumpVersion: (id) =>
+        database.transaction(async (client) => {
+          const pack = await find<StickerPack>(client, "sticker_packs", id, true);
+          if (!pack) throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack not found");
+          pack.version += 1;
+          pack.updatedAt = now();
+          return save(client, "sticker_packs", pack);
+        }),
+    },
+    stickers: {
+      listForPack: (packId) =>
+        select<Sticker>(pool, "stickers", "pack_id = $1", [packId], "ORDER BY sequence"),
+      listForPacks: (packIds) =>
+        packIds.length
+          ? select<Sticker>(pool, "stickers", "pack_id = ANY($1::text[])", [packIds], "ORDER BY sequence")
+          : Promise.resolve([]),
+      findById: (id) => find<Sticker>(pool, "stickers", id),
+      async countForPack(packId) {
+        const result = await pool.query<{ total: string }>(
+          "SELECT count(*)::text AS total FROM stickers WHERE pack_id = $1",
+          [packId],
+        );
+        return Number(result.rows[0]?.total ?? 0);
+      },
+      create: (input) =>
+        insert<Sticker>(pool, "stickers", {
+          id: randomUUID(),
+          packId: input.packId,
+          attachmentId: input.attachmentId,
+          emoji: input.emoji,
+          animated: input.animated,
+          createdAt: now(),
+        }),
+      async delete(id, packId) {
+        const sticker = (
+          await select<Sticker>(pool, "stickers", "id = $1 AND pack_id = $2", [id, packId])
+        )[0];
+        if (!sticker) return null;
+        await pool.query("DELETE FROM stickers WHERE id = $1", [id]);
+        return sticker;
+      },
+      async deleteForPack(packId) {
+        await pool.query("DELETE FROM stickers WHERE pack_id = $1", [packId]);
+      },
+    },
+    stickerInstalls: {
+      listForUser: (userId) =>
+        select<StickerPackInstall>(pool, "sticker_installs", "user_id = $1", [userId], "ORDER BY sequence"),
+      async find(userId, packId) {
+        return (
+          (
+            await select<StickerPackInstall>(
+              pool,
+              "sticker_installs",
+              "user_id = $1 AND pack_id = $2",
+              [userId, packId],
+            )
+          )[0] ?? null
+        );
+      },
+      install: (input) =>
+        database.transaction(async (client) => {
+          const existing = (
+            await select<StickerPackInstall>(
+              client,
+              "sticker_installs",
+              "user_id = $1 AND pack_id = $2",
+              [input.userId, input.packId],
+            )
+          )[0];
+          if (existing) return { install: existing, created: false };
+          const install: StickerPackInstall = {
+            id: randomUUID(),
+            userId: input.userId,
+            packId: input.packId,
+            sharedByUserId: input.sharedByUserId,
+            installedAt: now(),
+          };
+          return { install: await insert(client, "sticker_installs", install), created: true };
+        }),
+      async uninstall(userId, packId) {
+        const result = await pool.query(
+          "DELETE FROM sticker_installs WHERE user_id = $1 AND pack_id = $2 RETURNING id",
+          [userId, packId],
+        );
+        return Boolean(result.rowCount);
+      },
+      listForPack: (packId) =>
+        select<StickerPackInstall>(pool, "sticker_installs", "pack_id = $1", [packId], "ORDER BY sequence"),
+      async deleteForPack(packId) {
+        await pool.query("DELETE FROM sticker_installs WHERE pack_id = $1", [packId]);
+      },
+      async deleteForUser(userId) {
+        await pool.query("DELETE FROM sticker_installs WHERE user_id = $1", [userId]);
       },
     },
   };

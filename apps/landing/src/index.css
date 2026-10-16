@@ -116,7 +116,11 @@ body {
  */
 .hero-glow {
   position: absolute;
-  inset: -20% -10% auto -10%;
+  /* 🔥 Радиальные градиенты рисуются по всей площади блока и вылезали
+     вправо на 45 px, из-за чего страница уезжала вбок на телефоне. `inset`
+     задаёт именно размер блока, а свечение — `background`, он обрезается
+     рамкой секции (`overflow-hidden`). */
+  inset: -20% 0 auto 0;
   height: 120%;
   pointer-events: none;
   background-image:

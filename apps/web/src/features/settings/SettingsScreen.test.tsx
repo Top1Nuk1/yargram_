@@ -27,7 +27,14 @@ function renderScreen(overrides: Partial<Parameters<typeof SettingsScreen>[0]> =
       {...overrides}
     />,
   );
-  return { ...view, onOpenAccount, onOpenLanguage, onOpenPrivacy, onOpenSessions, onClose };
+  return {
+    ...view,
+    onOpenAccount,
+    onOpenLanguage,
+    onOpenPrivacy,
+    onOpenSessions,
+    onClose,
+  };
 }
 
 beforeEach(() => {

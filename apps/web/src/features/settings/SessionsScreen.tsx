@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, Globe, ShieldCheck, X } from 'lucide-react';
-import { api } from '../../api/client';
+import { ArrowLeft, Globe, Pencil, ShieldCheck, X } from 'lucide-react';
+import { api, setStoredDeviceName } from '../../api/client';
 import { useTranslation } from '../../hooks/useLanguage';
 import { formatDayLabel, formatMessageTime } from '../../lib/format';
 import type { Session, SessionOverview, User } from '../../types';
@@ -49,6 +49,8 @@ export function SessionsScreen({ token, user, onAutoTerminateChange, onBack, onC
   const [autoTerminateDays, setAutoTerminateDays] = useState<number | null>(
     user.sessionAutoTerminateDays ?? null,
   );
+  const [renamingSession, setRenamingSession] = useState<Session | null>(null);
+  const [renameName, setRenameName] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -67,10 +69,46 @@ export function SessionsScreen({ token, user, onAutoTerminateChange, onBack, onC
   }, [load]);
 
   useEffect(() => {
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && (onBack ?? onClose)();
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (renamingSession) {
+          setRenamingSession(null);
+        } else {
+          (onBack ?? onClose)();
+        }
+      }
+    };
     document.addEventListener('keydown', close);
     return () => document.removeEventListener('keydown', close);
-  }, [onBack, onClose]);
+  }, [onBack, onClose, renamingSession]);
+
+  function startRename(session: Session) {
+    setRenamingSession(session);
+    setRenameName(session.customDeviceName || '');
+    setError('');
+    setNotice('');
+  }
+
+  async function handleSaveRename(event?: React.FormEvent) {
+    if (event) event.preventDefault();
+    if (!renamingSession) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const updated = await api.renameSession(token, renamingSession.id, renameName);
+      setOverview(updated);
+      if (renamingSession.current) {
+        setStoredDeviceName(renameName.trim() || null);
+      }
+      setNotice(t('sessions.nameUpdated'));
+      setRenamingSession(null);
+    } catch (reason) {
+      setError(reason instanceof Error && reason.message ? reason.message : t('sessions.failed'));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function terminate(session: Session) {
     if (!session.current && !overview?.canTerminateOthers) return;
@@ -177,11 +215,24 @@ export function SessionsScreen({ token, user, onAutoTerminateChange, onBack, onC
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start gap-3">
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[15px] font-semibold text-ink">
-                              {siteLabel(session, t)}
+                            <span className="flex items-center gap-1.5">
+                              <span className="block truncate text-[15px] font-semibold text-ink">
+                                {session.customDeviceName || siteLabel(session, t)}
+                              </span>
+                              <button
+                                type="button"
+                                title={t('sessions.renameDevice')}
+                                aria-label={t('sessions.renameDevice')}
+                                onClick={() => startRename(session)}
+                                className="grid h-6 w-6 place-items-center rounded-lg text-muted transition hover:bg-brand-soft/60 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
                             </span>
                             <span className="mt-0.5 block truncate text-xs text-muted">
-                              {deviceLabel(session, t)}
+                              {session.customDeviceName
+                                ? `${deviceLabel(session, t)} • ${siteLabel(session, t)}`
+                                : deviceLabel(session, t)}
                             </span>
                             <span className="mt-1 block text-xs leading-5 text-muted">
                               {t('sessions.lastSeen', { time: activityAt(session) })}
@@ -257,6 +308,56 @@ export function SessionsScreen({ token, user, onAutoTerminateChange, onBack, onC
           {error && <p className="px-4 pb-4 text-xs font-semibold text-danger sm:px-5">{error}</p>}
         </div>
       </section>
+
+      {renamingSession && (
+        <div
+          className="fixed inset-0 z-[80] grid items-center justify-center bg-[#171724]/60 p-4 backdrop-blur-sm"
+          role="presentation"
+          onMouseDown={(event) => event.target === event.currentTarget && setRenamingSession(null)}
+        >
+          <div
+            className="w-full max-w-[360px] animate-scale-in rounded-2xl border border-line bg-surface p-5 shadow-xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('sessions.renameDevice')}
+          >
+            <h3 className="text-base font-bold text-ink">
+              {t('sessions.renameDevice')}
+            </h3>
+            <p className="mt-1 text-xs text-muted">
+              {deviceLabel(renamingSession, t)}
+            </p>
+            <form onSubmit={handleSaveRename} className="mt-4">
+              <input
+                type="text"
+                className="h-10 w-full rounded-xl border border-line bg-canvas px-3 text-sm text-ink outline-none transition focus:border-brand/60 focus:ring-4 focus:ring-brand/10"
+                placeholder={t('sessions.renamePlaceholder')}
+                value={renameName}
+                onChange={(event) => setRenameName(event.target.value)}
+                maxLength={100}
+                autoFocus
+              />
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setRenamingSession(null)}
+                  className="rounded-xl px-4 py-2 text-xs font-semibold text-muted transition hover:bg-brand-soft/60 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="rounded-xl bg-brand px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50"
+                >
+                  {t('common.save')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

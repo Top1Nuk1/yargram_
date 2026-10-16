@@ -1,5 +1,14 @@
+import type { IncomingHttpHeaders } from "node:http";
 import type { Request } from "express";
 import type { CorsOptions, CorsOptionsDelegate } from "cors";
+
+/**
+ * Так выглядит запрос для `cors`, когда его вызывает `socket.io`: это не
+ * express-запрос, а сырой узел-запрос (или его обёртка). Нужны из него только
+ * заголовки, поэтому описываем минимум — иначе пришлось бы тянуть тип из
+ * внутренностей `engine.io`.
+ */
+type SocketCorsRequest = { headers: IncomingHttpHeaders };
 
 function normalizeHostname(host: string | undefined): string | undefined {
   if (!host) return undefined;
@@ -73,15 +82,48 @@ export function createCorsOptions(
   };
 }
 
-export function createSocketCorsOptions(allowedOrigins: readonly string[]) {
-  return {
-    credentials: true,
-    origin(origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) {
-      if (isOriginAllowed(origin, allowedOrigins)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Origin is not allowed"));
-      }
-    },
+/**
+ * CORS для socket.io.
+ *
+ * 🔥 Хост запроса здесь обязателен — без него ломается realtime на своём адресе.
+ *
+ * `socket.io` передаёт эти настройки в `cors` и **отклоняет хендшейк**, если
+ * источник не разрешён: клиент получает не «пустой» ответ, а ошибку связи, и в
+ * интерфейсе загорается «Нет realtime-связи» (заодно пропадают сообщения в
+ * живом режиме, «печатает…» и звонки). Заметно это только на своём адресе —
+ * при открытии приложения по его же домену, потому что `Origin` в этом случае
+ * равен домену, которого в `CORS_ORIGINS` нет.
+ *
+ * Раньше здесь вызывался `isOriginAllowed(origin, allowedOrigins)` **без
+ * третьего аргумента**, и правило «источник совпал с хостом запроса — свой»
+ * не срабатывало. Через HTTP-мидлварь (`createCorsOptions` выше, плюс
+ * отдельная ветка с `req.hostname` в `isOriginAllowed`) тот же случай уже был
+ * закрыт — поэтому ломались только сокеты.
+ *
+ * Поэтому берём ровно ту же проверку, что и в HTTP-ветке, и тоже передаём
+ * `Host`. Делегат-функция (а не готовый объект) нужен именно ради доступа к
+ * запросу: `origin`-колбэк формы `(origin, cb)` хост не получает вообще.
+ */
+export function createSocketCorsOptions(
+  allowedOrigins: readonly string[],
+): CorsOptionsDelegate<SocketCorsRequest> {
+  return (request, callback) => {
+    const origin = request.headers.origin;
+    // Тот же разбор, что и у HTTP-CORS, включая правило «источник совпал с
+    // хостом запроса — свой». `request.headers.host` доступен только здесь:
+    // колбэк формы `(origin, cb)` запрос не получает, поэтому и был разрыв.
+    if (!isOriginAllowed(origin, allowedOrigins, request.headers.host)) {
+      callback(new Error("Origin is not allowed"));
+      return;
+    }
+    const options: CorsOptions = {
+      // `true` — отразить источник запроса (а не `*`): с `credentials: true`
+      // браузер отвергает звёздочку, и вход с куками перестал бы работать.
+      origin: true,
+      credentials: true,
+      methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Authorization", "Content-Type"],
+    };
+    callback(null, options);
   };
 }

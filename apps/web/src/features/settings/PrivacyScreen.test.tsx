@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { User } from '../../types';
+import type { CallPrivacyRule, Conversation, User } from '../../types';
 import { PrivacyScreen } from './PrivacyScreen';
 
 const user: User = {
@@ -8,28 +8,59 @@ const user: User = {
   displayName: 'Васька',
   username: 'vaskaime_001',
   showLastSeen: true,
+  callPrivacy: 'everyone',
+  callPrivacyAllowedUserIds: [],
+  callPrivacyDeniedUserIds: [],
 };
+
+const peerUser: User = {
+  id: 'user-2',
+  displayName: 'Брат Дима',
+  username: 'dima',
+};
+
+const mockConversations: Conversation[] = [
+  {
+    id: 'conv-1',
+    type: 'direct',
+    title: 'Брат Дима',
+    unreadCount: 0,
+    updatedAt: new Date().toISOString(),
+    otherUser: peerUser,
+    memberIds: ['user-1', 'user-2'],
+  },
+];
 
 function renderScreen(
   overrides: {
     user?: User;
+    conversations?: Conversation[];
     onToggleLastSeen?: (value: boolean) => Promise<void>;
+    onUpdateCallPrivacy?: (
+      privacy: CallPrivacyRule,
+      allowedUserIds: string[],
+      deniedUserIds: string[],
+    ) => Promise<void>;
     withBack?: boolean;
   } = {},
 ) {
   const onToggleLastSeen =
     overrides.onToggleLastSeen ?? vi.fn(async () => undefined);
+  const onUpdateCallPrivacy =
+    overrides.onUpdateCallPrivacy ?? vi.fn(async () => undefined);
   const onClose = vi.fn();
   const onBack = vi.fn();
   const view = render(
     <PrivacyScreen
       user={overrides.user ?? user}
+      conversations={overrides.conversations ?? mockConversations}
       onToggleLastSeen={onToggleLastSeen}
+      onUpdateCallPrivacy={onUpdateCallPrivacy}
       onClose={onClose}
       {...(overrides.withBack ? { onBack } : {})}
     />,
   );
-  return { ...view, onToggleLastSeen, onClose, onBack };
+  return { ...view, onToggleLastSeen, onUpdateCallPrivacy, onClose, onBack };
 }
 
 afterEach(cleanup);
@@ -48,7 +79,6 @@ describe('экран «Конфиденциальность»', () => {
 
     fireEvent.click(screen.getByRole('switch', { name: 'Время захода' }));
 
-    // false, потому что в профиле было true.
     expect(onToggleLastSeen).toHaveBeenCalledWith(false);
     await waitFor(() =>
       expect(screen.getByRole('switch', { name: 'Время захода' })).toHaveAttribute(
@@ -59,8 +89,6 @@ describe('экран «Конфиденциальность»', () => {
   });
 
   it('при ошибке сохранения переключатель возвращается назад', async () => {
-    // Оптимистичное переключение не должно оставлять пользователя с тем, чего
-    // сервер не принял.
     const onToggleLastSeen = vi.fn(async () => {
       throw new Error('Сервер недоступен');
     });
@@ -75,18 +103,60 @@ describe('экран «Конфиденциальность»', () => {
     );
   });
 
-  it('недоступные разделы помечены, а не притворяются рабочими', () => {
+  it('недоступные разделы помечены «скоро», а звонки доступны', () => {
     renderScreen();
 
-    // У разделов без реализации нет переключателя вообще: иначе он выглядел бы
-    // как рабочая настройка, которая ничего не меняет.
     expect(screen.queryByRole('switch', { name: 'Звонки' })).toBeNull();
     expect(screen.queryByRole('switch', { name: 'Сообщения' })).toBeNull();
     expect(screen.queryByRole('switch', { name: 'День рождения' })).toBeNull();
     expect(screen.queryByRole('switch', { name: 'Приглашения' })).toBeNull();
 
     expect(screen.getByText('Звонки')).toBeTruthy();
-    expect(screen.getAllByText('скоро')).toHaveLength(4);
+    expect(screen.getAllByText('скоро')).toHaveLength(3);
+  });
+
+  it('переход в экран звонков и переключение правила на «Никто»', async () => {
+    const onUpdateCallPrivacy = vi.fn(async () => undefined);
+    renderScreen({ onUpdateCallPrivacy });
+
+    // Кликаем по кнопке перехода в звонки ("Все")
+    fireEvent.click(screen.getByText('Все'));
+
+    // Открылся экран Звонки
+    expect(screen.getByText('Кто может звонить мне')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Все' })).toHaveAttribute('aria-checked', 'true');
+
+    // Переключаем на «Никто»
+    fireEvent.click(screen.getByRole('radio', { name: 'Никто' }));
+    expect(onUpdateCallPrivacy).toHaveBeenCalledWith('nobody', [], []);
+  });
+
+  it('добавление исключений через модальное окно', async () => {
+    const onUpdateCallPrivacy = vi.fn(async () => undefined);
+    renderScreen({
+      user: { ...user, callPrivacy: 'nobody', callPrivacyAllowedUserIds: [] },
+      onUpdateCallPrivacy,
+    });
+
+    // Открываем звонки
+    fireEvent.click(screen.getByText('Никто'));
+
+    // Кликаем «Всегда разрешать»
+    fireEvent.click(screen.getByText('Всегда разрешать'));
+
+    // Открылось модальное окно
+    expect(screen.getByRole('dialog', { name: 'Всегда разрешать' })).toBeTruthy();
+    expect(screen.getByText('Брат Дима')).toBeTruthy();
+
+    // Выбираем «Брат Дима»
+    fireEvent.click(screen.getByText('Брат Дима'));
+
+    // Сохраняем
+    fireEvent.click(screen.getByText('Сохранить'));
+
+    await waitFor(() => {
+      expect(onUpdateCallPrivacy).toHaveBeenCalledWith('nobody', ['user-2'], []);
+    });
   });
 
   it('Escape закрывает экран', () => {

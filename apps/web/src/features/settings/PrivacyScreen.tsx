@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Lock, Moon, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Lock, Moon, Phone, ShieldCheck } from 'lucide-react';
 import { useTranslation } from '../../hooks/useLanguage';
-import type { User } from '../../types';
+import { CallPrivacyScreen } from './CallPrivacyScreen';
+import type { CallPrivacyRule, Conversation, User } from '../../types';
 
 /**
- * Разделы экрана. Открытый перечень — не весь Telegram: показываем только то,
- * что приложение действительно умеет, плюс явно помеченные заготовки.
+ * Разделы экрана.
  */
 type PrivacySectionId = 'lastSeen' | 'calls' | 'messages' | 'birthday' | 'invites';
 
@@ -13,13 +13,12 @@ interface PrivacySection {
   id: PrivacySectionId;
   titleKey: string;
   hintKey: string;
-  /** Раздел сделан: под ним есть рабочий переключатель. */
   ready: boolean;
 }
 
 const SECTIONS: PrivacySection[] = [
   { id: 'lastSeen', titleKey: 'privacy.lastSeen', hintKey: 'privacy.lastSeenHint', ready: true },
-  { id: 'calls', titleKey: 'privacy.calls', hintKey: 'privacy.callsHint', ready: false },
+  { id: 'calls', titleKey: 'privacy.calls', hintKey: 'privacy.callsHint', ready: true },
   { id: 'messages', titleKey: 'privacy.messages', hintKey: 'privacy.messagesHint', ready: false },
   { id: 'birthday', titleKey: 'privacy.birthday', hintKey: 'privacy.birthdayHint', ready: false },
   { id: 'invites', titleKey: 'privacy.invites', hintKey: 'privacy.invitesHint', ready: false },
@@ -27,11 +26,20 @@ const SECTIONS: PrivacySection[] = [
 
 interface PrivacyScreenProps {
   user: User;
+  conversations?: Conversation[];
+  token?: string;
   /**
-   * Сохранить настройку. Экран сам не знает про токен и про api: их пробрасывает
-   * мессенджер, чтобы экран оставался переиспользуемым и простым в тестах.
+   * Сохранить настройку времени захода.
    */
   onToggleLastSeen: (value: boolean) => Promise<void>;
+  /**
+   * Сохранить настройки звонков.
+   */
+  onUpdateCallPrivacy?: (
+    privacy: CallPrivacyRule,
+    allowedUserIds: string[],
+    deniedUserIds: string[],
+  ) => Promise<void>;
   /**
    * Стрелка «назад»: вернуться на экран, откуда пришли (список настроек).
    * Не задана — стрелка работает как закрытие.
@@ -48,17 +56,43 @@ interface PrivacyScreenProps {
  * Остальные разделы показаны по макету, но выключены и подписаны: лучше честная
  * заглушка, чем переключатель, который ничего не меняет.
  */
-export function PrivacyScreen({ user, onToggleLastSeen, onBack, onClose }: PrivacyScreenProps) {
+export function PrivacyScreen({
+  user,
+  conversations,
+  token,
+  onToggleLastSeen,
+  onUpdateCallPrivacy,
+  onBack,
+  onClose,
+}: PrivacyScreenProps) {
   const t = useTranslation();
   const [showLastSeen, setShowLastSeen] = useState(user.showLastSeen ?? true);
+  const [callPrivacyOpen, setCallPrivacyOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && (onBack ?? onClose)();
+    const close = (event: KeyboardEvent) => event.key === 'Escape' && !callPrivacyOpen && (onBack ?? onClose)();
     document.addEventListener('keydown', close);
     return () => document.removeEventListener('keydown', close);
-  }, [onBack, onClose]);
+  }, [callPrivacyOpen, onBack, onClose]);
+
+  if (callPrivacyOpen) {
+    return (
+      <CallPrivacyScreen
+        user={user}
+        conversations={conversations}
+        token={token}
+        onUpdateCallPrivacy={async (privacy, allowed, denied) => {
+          if (onUpdateCallPrivacy) {
+            await onUpdateCallPrivacy(privacy, allowed, denied);
+          }
+        }}
+        onBack={() => setCallPrivacyOpen(false)}
+        onClose={onClose}
+      />
+    );
+  }
 
   async function toggleLastSeen(next: boolean) {
     // Переключатель отзывается сразу, а при ошибке возвращается назад:
@@ -124,7 +158,16 @@ export function PrivacyScreen({ user, onToggleLastSeen, onBack, onClose }: Priva
                       </span>
                     </span>
 
-                    {section.ready ? (
+                    {section.id === 'calls' ? (
+                      <button
+                        type="button"
+                        onClick={() => setCallPrivacyOpen(true)}
+                        className="mt-1 flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold text-brand transition hover:bg-brand-soft/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                      >
+                        <span>{getCallsRuleLabel(user.callPrivacy, t)}</span>
+                        <ChevronRight className="h-4 w-4 text-muted/60" />
+                      </button>
+                    ) : section.ready ? (
                       <Switch
                         label={t(section.titleKey)}
                         checked={showLastSeen}
@@ -142,7 +185,7 @@ export function PrivacyScreen({ user, onToggleLastSeen, onBack, onClose }: Priva
                   </div>
 
                   {/* Ошибку показываем в том разделе, к которому она относится. */}
-                  {section.ready && error && (
+                  {section.ready && section.id === 'lastSeen' && error && (
                     <p className="mt-2 text-xs font-semibold text-danger">{error}</p>
                   )}
                 </div>
@@ -155,10 +198,17 @@ export function PrivacyScreen({ user, onToggleLastSeen, onBack, onClose }: Priva
   );
 }
 
+function getCallsRuleLabel(rule: CallPrivacyRule | undefined, t: (key: string) => string): string {
+  if (rule === 'nobody') return t('privacy.ruleNobody');
+  if (rule === 'contacts') return t('privacy.ruleContacts');
+  return t('privacy.ruleEveryone');
+}
+
 /** Иконка раздела: у каждого своя, чтобы список читался по макету. */
 function SectionIcon({ id }: { id: PrivacySectionId }) {
   const className = 'mt-0.5 h-5 w-5 shrink-0 text-muted';
   if (id === 'lastSeen') return <Moon className={className} aria-hidden="true" />;
+  if (id === 'calls') return <Phone className={className} aria-hidden="true" />;
   return <Lock className={className} aria-hidden="true" />;
 }
 

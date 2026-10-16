@@ -10,6 +10,7 @@ import type {
   PollSettings,
   PublicUser,
   ReactionEmoji,
+  StickerView,
   SupportTicket,
   User,
   UserReport,
@@ -26,6 +27,9 @@ import {
   toPublicUserFor,
 } from "../domain/models.js";
 import type { EffectiveGroupPermissions, GroupRole } from "../domain/models.js";
+// Круг по модулям безвреден: служба стикеров берёт отсюда только *тип* вида
+// сообщения (импорт type — он стирается при сборке), а значение приходит сюда.
+import { isBuiltinSticker, resolveStickerViews } from "./sticker-service.js";
 
 const POLL_QUESTION_MAX = 255;
 const POLL_DESCRIPTION_MAX = 500;
@@ -110,9 +114,15 @@ export type PollView = Poll & {
   totalVoters: number;
 };
 
-export type MessageSnapshot = Omit<Message, "attachmentIds" | "reactions" | "poll"> & {
+export type MessageSnapshot = Omit<Message, "attachmentIds" | "stickerIds" | "reactions" | "poll"> & {
   sender: PublicUser;
   attachments: AttachmentView[];
+  /**
+   * 🔥 Отправленные стикеры с готовыми адресами. В самом сообщении лежат только
+   * id, а подпись на загруженный файл живёт недолго — если бы она попала в
+   * историю, старые сообщения рано или поздно остались бы без картинки.
+   */
+  stickers?: StickerView[];
   reactions: ReactionView[];
   poll?: PollView | undefined;
   isFavorite?: boolean;
@@ -263,8 +273,13 @@ export class ChatService {
       gifs: 0,
       links: 0,
     };
+    if (currentUserId === peerId) {
+      return summary;
+    }
     const conversations = await this.repositories.conversations.listForUser(currentUserId);
-    const shared = conversations.filter((conversation) => conversation.memberIds.includes(peerId));
+    const shared = conversations.filter(
+      (conversation) => conversation.type === "direct" && conversation.memberIds.includes(peerId),
+    );
     for (const conversation of shared) {
       let before: string | undefined;
       for (let page = 0; page < MEDIA_SCAN_PAGES; page += 1) {
@@ -297,7 +312,14 @@ export class ChatService {
     conversationId: string,
     text: string,
     replyToId?: string,
-    options: { attachmentIds?: string[]; forwardedFromId?: string } = {},
+    options: {
+      attachmentIds?: string[];
+      forwardedFromId?: string;
+      /** Отправленные стикеры: ссылки на картинки, а не на вложения. */
+      stickerIds?: string[];
+      /** Присланный набор стикеров: сообщение без текста, только карточка. */
+      stickerPackId?: string;
+    } = {},
   ): Promise<{ message: MessageView; memberIds: string[] }> {
     // Сокет и HTTP приходят сюда, поэтому одного запрета хватает на оба пути.
     await this.assertAuthorWritable(currentUserId);
@@ -312,13 +334,61 @@ export class ChatService {
       }
     }
     const attachmentIds = [...new Set(options.attachmentIds ?? [])];
-    if (!text.trim() && attachmentIds.length === 0) {
+    const stickerIds = [...new Set(options.stickerIds ?? [])];
+    if (!text.trim() && attachmentIds.length === 0 && stickerIds.length === 0 && options.stickerPackId === undefined) {
       throw new AppError(400, "MESSAGE_EMPTY", "A message must contain text or an attachment");
     }
     if (attachmentIds.length > 10) {
       throw new AppError(400, "TOO_MANY_ATTACHMENTS", "A message may contain at most 10 attachments");
     }
     await this.assertOwnedMessageAttachments(currentUserId, attachmentIds);
+    // 🔥 Стикер доступен, если человек его видит: набор свой либо присланный.
+    // Проверяем по установке, а не «по факту владения набором» — иначе
+    // сослаться можно было бы на любой набор по угаданному id.
+    if (stickerIds.length > 0) {
+      const known = new Set<string>();
+      for (const stickerId of stickerIds) {
+        // 🔥 Встроенные стикеры описаны кодом, а не записаны в базу. Без этой
+        // проверки отправка любого из сорока встроенных стикеров падала бы с
+        // STICKER_NOT_FOUND — самый заметный и самый обидный из багов.
+        if (isBuiltinSticker(stickerId)) {
+          known.add(stickerId);
+          continue;
+        }
+        const sticker = await this.repositories.stickers.findById(stickerId);
+        if (!sticker) {
+          throw new AppError(404, "STICKER_NOT_FOUND", "Sticker was not found");
+        }
+        const pack = await this.repositories.stickerPacks.findById(sticker.packId);
+        if (!pack) throw new AppError(404, "STICKER_NOT_FOUND", "Sticker was not found");
+        if (pack.ownerId === currentUserId) {
+          known.add(sticker.id);
+          continue;
+        }
+        const install = await this.repositories.stickerInstalls.find(currentUserId, sticker.packId);
+        if (install) known.add(sticker.id);
+      }
+      if (known.size !== stickerIds.length) {
+        throw new AppError(403, "STICKER_FORBIDDEN", "This sticker pack is not available to you");
+      }
+    }
+    if (options.stickerPackId !== undefined) {
+      // 🔥 Присланный набор — единственное сообщение, которому не нужен текст.
+      // Проверяем, что он вообще существует и доступен отправителю: иначе в чате
+      // появилась бы карточка, которая никому ничего не открывает.
+      const pack = await this.repositories.stickerPacks.findById(options.stickerPackId);
+      const shared = await this.repositories.stickerInstalls.find(currentUserId, options.stickerPackId);
+      if (!pack || (!shared && pack.ownerId !== currentUserId)) {
+        throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack was not found");
+      }
+      if (attachmentIds.length > 0 || text.trim()) {
+        throw new AppError(
+          400,
+          "STICKER_PACK_MESSAGE_INVALID",
+          "A shared pack is sent on its own, without text or files",
+        );
+      }
+    }
     if (options.forwardedFromId !== undefined) {
       const forwarded = await this.repositories.messages.findById(options.forwardedFromId);
       if (!forwarded) {
@@ -340,6 +410,8 @@ export class ChatService {
       ...(options.forwardedFromId === undefined
         ? {}
         : { forwardedFromId: options.forwardedFromId }),
+      stickerIds,
+      ...(options.stickerPackId === undefined ? {} : { stickerPackId: options.stickerPackId }),
       attachmentIds,
     });
     // A delivered message replaces its own draft.
@@ -361,6 +433,13 @@ export class ChatService {
     text: string;
     keyboard?: BotKeyboard | undefined;
     supportTicket?: SupportTicket | undefined;
+    /**
+     * Вложения, которые бот пересылает от чужого имени. Так обращение уносит
+     * в служебную группу снимок экрана, приложенный человеком: ссылки на файлы
+     * подписываются заново на того, кто смотрит, поэтому владельцы увидят их
+     * как обычные вложения.
+     */
+    attachmentIds?: string[] | undefined;
   }): Promise<{ message: MessageView; memberIds: string[] }> {
     const conversation = await this.repositories.conversations.findById(input.conversationId);
     if (!conversation) {
@@ -373,6 +452,7 @@ export class ChatService {
       kind: "bot",
       ...(input.keyboard === undefined ? {} : { keyboard: input.keyboard }),
       ...(input.supportTicket === undefined ? {} : { supportTicket: input.supportTicket }),
+      ...(input.attachmentIds === undefined ? {} : { attachmentIds: input.attachmentIds }),
     });
     return {
       message: await this.toMessageView(message),
@@ -800,6 +880,9 @@ export class ChatService {
     await this.assertConversationCallable(currentUserId, conversation);
     const call = await this.getConversationCall(conversationId, callId);
     if (call.status !== "ringing") {
+      if (call.status === "active" && call.initiatorId !== currentUserId) {
+        return { call, memberIds: conversation.memberIds };
+      }
       throw new AppError(409, "CALL_NOT_RINGING", "The call is no longer ringing");
     }
     if (call.initiatorId === currentUserId) {
@@ -1014,7 +1097,38 @@ export class ChatService {
     conversation: Conversation,
   ): Promise<void> {
     const otherId = conversation.memberIds.find((id) => id !== currentUserId);
-    if (otherId) await this.assertUsersCanInteract(currentUserId, otherId);
+    if (otherId) {
+      const other = await this.repositories.users.findById(otherId);
+      if (other?.isBot) {
+        throw new AppError(400, "BOT_NOT_CALLABLE", "Звонки ботам недоступны");
+      }
+      await this.assertUsersCanInteract(currentUserId, otherId);
+      if (other) {
+        this.assertCallPrivacyAllowed(currentUserId, other);
+      }
+    }
+  }
+
+  private assertCallPrivacyAllowed(callerId: string, recipient: User): void {
+    // 1. Исключения «Никогда не разрешать» имеют наивысший приоритет
+    if (recipient.callPrivacyDeniedUserIds?.includes(callerId)) {
+      throw new AppError(403, "CALL_FORBIDDEN_BY_PRIVACY", "Пользователь запретил входящие звонки от Вас");
+    }
+    // 2. Исключения «Всегда разрешать»
+    if (recipient.callPrivacyAllowedUserIds?.includes(callerId)) {
+      return;
+    }
+    // 3. Основное правило конфиденциальности
+    const privacy = recipient.callPrivacy ?? "everyone";
+    if (privacy === "nobody") {
+      throw new AppError(403, "CALL_FORBIDDEN_BY_PRIVACY", "Пользователь ограничил круг лиц, которые могут ему звонить");
+    }
+    if (privacy === "contacts") {
+      const isContact = recipient.friendIds?.includes(callerId);
+      if (!isContact) {
+        throw new AppError(403, "CALL_FORBIDDEN_BY_PRIVACY", "Пользователь разрешил звонки только своим контактам");
+      }
+    }
   }
 
   private async assertUsersCanInteract(firstUserId: string, secondUserId: string): Promise<void> {
@@ -1242,12 +1356,19 @@ export class ChatService {
   ): Promise<MessageSnapshot> {
     const [sender, attachments, currentUser] = await Promise.all([
       this.repositories.users.findById(message.senderId),
-      this.repositories.attachments.findManyByIds(message.attachmentIds),
+      this.repositories.attachments.findManyByIds(message.attachmentIds ?? []),
       currentUserId ? this.repositories.users.findById(currentUserId) : Promise.resolve(null),
     ]);
     // Удалённый отправитель не должен ронять переписку: подставляем заглушку.
     if (!sender) return this.placeholderSnapshot(message, attachments, currentUserId);
-    const { attachmentIds: _attachmentIds, reactions, poll, ...safeMessage } = message;
+    // Дефолты на месте: legacy-строки без stickerIds/reactions не должны ронять вью.
+    const {
+      attachmentIds: _attachmentIds,
+      stickerIds = [],
+      reactions = [],
+      poll,
+      ...safeMessage
+    } = message;
     const groupedReactions = new Map<ReactionEmoji, string[]>();
     for (const reaction of reactions) {
       const users = groupedReactions.get(reaction.emoji) ?? [];
@@ -1260,6 +1381,9 @@ export class ChatService {
       // выглядят заглушкой — поэтому toPublicUserFor, а не toPublicUser.
       sender: toPublicUserFor(sender, currentUserId),
       attachments: attachments.map((attachment) => toAttachmentView(attachment, currentUserId)),
+      ...(stickerIds.length > 0
+        ? { stickers: await resolveStickerViews(this.repositories, stickerIds) }
+        : {}),
       reactions: [...groupedReactions].map(([emoji, userIds]) => ({
         emoji,
         userIds,
@@ -1298,11 +1422,22 @@ export class ChatService {
     attachments: Attachment[],
     currentUserId: string | undefined,
   ): Promise<MessageSnapshot> {
-    const { attachmentIds: _attachmentIds, reactions, poll, ...safeMessage } = message;
+    const {
+      attachmentIds: _attachmentIds,
+      stickerIds = [],
+      reactions: _reactions = [],
+      poll,
+      ...safeMessage
+    } = message;
     return {
       ...safeMessage,
       sender: removedUserPlaceholder(message.senderId),
       attachments: attachments.map((attachment) => toAttachmentView(attachment, currentUserId)),
+      // У отправителя-заглушки стикеры всё равно показываем: файл лежит в наборе,
+      // а не в профиле, и удаление аккаунта не стирает сами картинки.
+      ...(stickerIds.length > 0
+        ? { stickers: await resolveStickerViews(this.repositories, stickerIds) }
+        : {}),
       reactions: [],
       ...(currentUserId
         ? {

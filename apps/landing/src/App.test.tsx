@@ -64,13 +64,13 @@ describe('лендинг Yargram', () => {
     expect(faq!.textContent).toContain('Telegram');
   });
 
-  it('рассказывает про версию 0.1.0 ЗБТ и расшифровывает сокращение', () => {
+  it('рассказывает про версию 0.0.1 ЗБТ и расшифровывает сокращение', () => {
     render(<App />);
     const updates = document.getElementById('updates');
     expect(updates).not.toBeNull();
 
     const text = updates!.textContent ?? '';
-    expect(text).toContain('0.1.0');
+    expect(text).toContain('0.0.1');
     expect(text).toContain('ЗБТ');
     // Сокращение знакомо не всем — расшифровка обязана быть на странице.
     expect(text).toContain('закрытое бета-тестирование');
@@ -190,12 +190,12 @@ describe('лендинг Yargram', () => {
     }
   });
 
-  it('переключает язык на английский и обновляет контент и <html lang>', async () => {
+it('переключает язык на английский и обновляет контент и <html lang>', async () => {
     const user = userEvent.setup();
     render(<App />);
 
     // 🔥 По умолчанию — русский, и только русский (браузерное определение
-    // намеренно не берём, чтобы не ломать ожидания владельца).
+// намеренно не берём, чтобы не ломать ожидания владельца).
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('для тех, кто рядом');
     expect(document.documentElement.lang).toBe('ru');
 
@@ -210,5 +210,41 @@ describe('лендинг Yargram', () => {
     expect(screen.getByRole('heading', { level: 1 }).textContent).not.toContain(
       'для тех, кто рядом',
     );
+  });
+
+  it('на сайте есть оговорка про Telegram и ссылка на соглашение', () => {
+    render(<App />);
+    const text = document.body.textContent ?? '';
+
+    // 🔥 Название сходится с Telegram, поэтому оговорку нельзя прятать:
+    // без неё человек решит, что Yargram — это продукт Telegram.
+    expect(text).toContain('не связан с Telegram');
+
+    const terms = screen.getAllByRole('link').filter(
+      (link) => link.getAttribute('href') === '/terms',
+    );
+    // Ссылка в подвале и в блоке призыва: обе заметны, обе ведут на документ.
+    expect(terms.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('шапка ужимается на узком экране, а не выталкивает страницу вбок', () => {
+    render(<App />);
+    const header = document.querySelector('header');
+    expect(header).not.toBeNull();
+
+    // Кнопка перехода в шапке подписана текстом, который на телефоне скрыт.
+    // 🔥 Раньше подпись была всегда, и шапка не влезала в 390 px: сайт уезжал
+    // вбок на 45 px, и это молча ломало всю вёрстку на телефоне. Поэтому у
+    // ссылки остаётся `aria-label` (доступность), а текст живёт под `sm`.
+    const cta = [...(header?.querySelectorAll('a') ?? [])].find(
+      (link) => link.getAttribute('title') !== null && link.textContent?.trim() === '',
+    );
+    expect(cta?.getAttribute('aria-label')).toBeTruthy();
+
+    // Надпись логотипа в шапке — только на широком экране.
+    const wordmark = [...(header?.querySelectorAll('span') ?? [])].find((node) =>
+      node.textContent?.trim() === 'Yargram',
+    );
+    expect(wordmark?.className).toContain('hidden');
   });
 });

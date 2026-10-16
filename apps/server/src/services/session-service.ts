@@ -64,15 +64,29 @@ export async function attachSession(
 ): Promise<Session> {
   const site = context?.site ?? "";
   const device = context?.device ?? "";
+  const deviceId = context?.deviceId;
   const timestamp = new Date().toISOString();
-  const existing = (await sessions.listForUser(userId)).find(
-    (candidate) => !candidate.terminatedAt && candidate.site === site && candidate.device === device,
+  const userSessions = await sessions.listForUser(userId);
+  const existing = userSessions.find(
+    (candidate) =>
+      !candidate.terminatedAt &&
+      (deviceId && candidate.deviceId
+        ? candidate.deviceId === deviceId
+        : candidate.site === site && candidate.device === device),
   );
+
+  let customDeviceName = context?.customDeviceName;
+  if (!customDeviceName && deviceId) {
+    customDeviceName = (await sessions.findDeviceName(deviceId)) ?? undefined;
+  }
+
   if (existing) {
     const hashes = [...new Set([...existing.tokenHashes, tokenHash])];
     return sessions.update(existing.id, {
       tokenHashes: hashes.slice(-MAX_TOKEN_HASHES),
       lastSeenAt: timestamp,
+      ...(deviceId && !existing.deviceId ? { deviceId } : {}),
+      ...(customDeviceName && !existing.customDeviceName ? { customDeviceName } : {}),
     });
   }
   return sessions.create({
@@ -80,6 +94,8 @@ export async function attachSession(
     tokenHashes: [tokenHash],
     site,
     device,
+    ...(deviceId ? { deviceId } : {}),
+    ...(customDeviceName ? { customDeviceName } : {}),
     newDevice: options.newDevice ?? false,
   });
 }
@@ -88,6 +104,8 @@ export type SessionView = {
   id: string;
   site: string;
   device: string;
+  deviceId?: string | undefined;
+  customDeviceName?: string | null | undefined;
   createdAt: string;
   lastSeenAt: string;
   /** Это тот сеанс, с которого смотрят список. */
@@ -116,6 +134,8 @@ function toView(session: Session, current: boolean): SessionView {
     id: session.id,
     site: session.site,
     device: session.device,
+    deviceId: session.deviceId,
+    customDeviceName: session.customDeviceName ?? null,
     createdAt: session.createdAt,
     lastSeenAt: session.lastSeenAt,
     current,
@@ -148,12 +168,19 @@ export class SessionService {
       if (index > 0) views.unshift(...views.splice(index, 1));
     }
 
+    const isOldSession = current ? canTerminateOthers(current) : false;
+    const alertCandidate = isOldSession
+      ? alive
+          .filter((s) => s.id !== current?.id && s.newDevice && !s.acknowledgedAt)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null
+      : null;
+
     return {
       sessions: views,
       currentSessionId: current?.id ?? null,
-      canTerminateOthers: current ? canTerminateOthers(current) : false,
+      canTerminateOthers: isOldSession,
       gateUntil: current ? new Date(Date.parse(current.createdAt) + SESSION_TERMINATION_GATE_MS).toISOString() : null,
-      alert: current && current.newDevice && !current.acknowledgedAt ? toView(current, true) : null,
+      alert: alertCandidate ? toView(alertCandidate, false) : null,
       autoTerminateDays: user?.sessionAutoTerminateDays ?? null,
     };
   }
@@ -212,6 +239,27 @@ export class SessionService {
       throw new AppError(404, "SESSION_NOT_FOUND", "Сеанс не найден");
     }
     await this.sessions.update(sessionId, { acknowledgedAt: new Date().toISOString() });
+    return this.overview(userId, token);
+  }
+
+  /** Переименовать устройство. Новое имя сохраняется на сервере и отображается для всех сеансов с этого устройства. */
+  async rename(
+    userId: string,
+    sessionId: string,
+    rawName: string,
+    token: string | null,
+  ): Promise<SessionOverview> {
+    const session = await this.sessions.findById(sessionId);
+    if (!session || session.userId !== userId || session.terminatedAt) {
+      throw new AppError(404, "SESSION_NOT_FOUND", "Сеанс не найден или уже завершён");
+    }
+    const trimmed = rawName.trim();
+    const finalName = trimmed.length > 0 ? trimmed.slice(0, 100) : null;
+
+    await this.sessions.update(sessionId, { customDeviceName: finalName });
+    if (session.deviceId) {
+      await this.sessions.updateDeviceName(session.deviceId, finalName);
+    }
     return this.overview(userId, token);
   }
 

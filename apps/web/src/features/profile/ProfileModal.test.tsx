@@ -318,10 +318,11 @@ describe('знак приложения Yargram', () => {
     await waitFor(() => screen.getByRole('button', { name: /Снять значок/ }));
   });
 
-  it('обычному человеку кнопки не даёт, а объясняет, кто выдаёт значок', async () => {
+  it('обычному человеку не показывает блок знака приложения', () => {
     renderProfile(me);
     expect(screen.queryByRole('button', { name: /Поставить значок/ })).toBeNull();
-    expect(screen.getByText(/ставит только само приложение/)).toBeDefined();
+    expect(screen.queryByText(/ставит только само приложение/)).toBeNull();
+    expect(screen.queryByText(/Знак приложения/)).toBeNull();
   });
 });
 

@@ -23,6 +23,11 @@ const environmentSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     HOST: z.string().min(1).default("0.0.0.0"),
+    // 🔥 Хостинговые панели (Pterodactyl и другие) часто прокидывают приложению
+    // переменную SERVER_PORT — она важнее нашего PORT. Без этого в панели
+    // приходится руками подставлять номер из Allocations, а с этим — сервер
+    // сам слушает тот порт, который панель считает правильным.
+    SERVER_PORT: z.coerce.number().int().min(1).max(65_535).optional(),
     PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
     HTTPS_PORT: z.preprocess(
       emptyStringToUndefined,
@@ -56,6 +61,22 @@ const environmentSchema = z
      * не должна ронять запуск.
      */
     TRUST_PROXY: z.preprocess(emptyStringToUndefined, z.string().min(1).default("false")),
+    /**
+     * Перенаправлять ли вход по HTTP на тот же адрес по HTTPS.
+     *
+     * 🔥 По умолчанию **выключено**, и это не осторожность, а необходимость.
+     * Флаг имеет смысл только за прокси, который сообщает схему исходного
+     * запроса в `X-Forwarded-Proto`. Если прокси этого не делает (или перед
+     * сервером вообще нет прокси), сервер видит «http» в каждом запросе и
+     * уводит на HTTPS даже того, кто уже пришёл по HTTPS, — получается
+     * бесконечное перенаправление и сайт не открывается вовсе.
+     *
+     * Отдельная ловушка — Cloudflare в режиме SSL/TLS «Flexible»: он сам
+     * ходит к нам по HTTP, поэтому «http» в заголовке — это норма, и редирект
+     * зацикливается. Там перенаправление включает Cloudflare («Always Use
+     * HTTPS»), а этот флаг оставляют выключенным.
+     */
+    FORCE_HTTPS: booleanFlag,
     /**
      * Адрес, по которому Yargram открывают извне, например
      * `https://yargram.example.com`. Сейчас только подсказка: его используют
@@ -154,6 +175,31 @@ function parseTrustProxy(value: string): boolean | string {
   return value.trim();
 }
 
+/**
+ * Список источников, которым `socket.io` разрешает подключиться.
+ *
+ * 🔥 Публичный адрес приложения добавляется сюда **автоматически**, и это не
+ * удобство, а необходимость. За обратным прокси (nginx на хостинге, туннель)
+ * `Host` у запроса часто внутренний — `127.0.0.1:3000` или имя сервиса в
+ * docker-сети, — и тогда правило «источник совпал с хостом» не срабатывает.
+ * `Origin` же всегда настоящий: браузер отправляет адрес страницы, то есть
+ * `PUBLIC_ORIGIN`. Без этой строки realtime-связь пропадала ровно на боевом
+ * адресе: в интерфейсе загоралось «Нет realtime-связи», не приходили живые
+ * сообщения и звонки не начинались — при полностью рабочем HTTP.
+ *
+ * Почему это безопасно: значение берётся из собственной настройки сервера, а
+ * не из запроса, поэтому подделать его снаружи нельзя.
+ */
+function buildCorsOrigins(corsOrigins: string, publicOrigin?: string): string[] {
+  const origins = corsOrigins
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  const own = publicOrigin?.trim().replace(/\/$/, "");
+  if (own && !origins.includes(own)) origins.push(own);
+  return origins;
+}
+
 export type ServerConfig = {
   nodeEnv: "development" | "test" | "production";
   databaseDriver: "json" | "postgres";
@@ -172,6 +218,8 @@ export type ServerConfig = {
   corsOrigins: string[];
   /** Настройка `trust proxy` для Express: `false`, `true` или список подсетей. */
   trustProxy: boolean | string;
+  /** Уводить ли вход по HTTP на HTTPS. По умолчанию выключено. */
+  forceHttps: boolean;
   /** Публичный адрес Yargram, если задан: `https://yargram.example.com`. */
   publicOrigin?: string;
   dataDirectory: string;
@@ -209,6 +257,13 @@ export type ServerConfig = {
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): ServerConfig {
   const parsed = environmentSchema.parse(environment);
+
+  // 🔥 Effective порт: приоритет у прокинутого панелью SERVER_PORT, затем у
+  // нашего PORT. Хостинговые панели (Pterodactyl и подобные) сами сообщают
+  // приложению, на каком порту его ждёт прокси, — с этим SERVER_PORT не нужно
+  // руками переносить номер из раздела Allocations в .env.
+  const effectivePort = parsed.SERVER_PORT !== undefined ? parsed.SERVER_PORT : parsed.PORT;
+
   if (
     parsed.NODE_ENV === "production" &&
     parsed.JWT_SECRET === "yargram-development-secret-change-me"
@@ -221,7 +276,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Server
   ) {
     throw new Error("DB_ENCRYPTION_KEY must be changed before starting in production");
   }
-  if (parsed.HTTPS_PORT && parsed.HTTPS_PORT === parsed.PORT) {
+  if (parsed.HTTPS_PORT && parsed.HTTPS_PORT === effectivePort) {
     throw new Error("HTTPS_PORT must be different from PORT");
   }
 
@@ -242,7 +297,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Server
     ...(parsed.DATABASE_URL ? { databaseUrl: parsed.DATABASE_URL } : {}),
     nodeEnv: parsed.NODE_ENV,
     host: parsed.HOST,
-    port: parsed.PORT,
+    port: effectivePort,
     ...(parsed.HTTPS_PORT
       ? {
           httpsPort: parsed.HTTPS_PORT,
@@ -255,10 +310,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Server
     jwtExpiresIn: parsed.JWT_EXPIRES_IN,
     bcryptRounds: parsed.BCRYPT_ROUNDS,
     mediaTokenTtlSeconds: parsed.MEDIA_TOKEN_TTL_SECONDS,
-    corsOrigins: parsed.CORS_ORIGINS.split(",")
-      .map((origin) => origin.trim().replace(/\/$/, ""))
-      .filter(Boolean),
+    corsOrigins: buildCorsOrigins(parsed.CORS_ORIGINS, parsed.PUBLIC_ORIGIN),
     trustProxy: parseTrustProxy(parsed.TRUST_PROXY),
+    forceHttps: parsed.FORCE_HTTPS,
     ...(parsed.PUBLIC_ORIGIN ? { publicOrigin: parsed.PUBLIC_ORIGIN.replace(/\/$/, "") } : {}),
     dataDirectory: resolve(parsed.DATA_DIR),
     dataFile: resolve(parsed.DATA_DIR, "yargram.json"),

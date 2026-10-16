@@ -20,6 +20,7 @@ import { GroupService } from "../src/services/group-service.js";
 import { ScheduledMessageService } from "../src/services/scheduled-message-service.js";
 import { canTerminateOthers, SessionService } from "../src/services/session-service.js";
 import { SupportBotService } from "../src/services/support-bot-service.js";
+import { StickerService } from "../src/services/sticker-service.js";
 import { JsonDatabase } from "../src/storage/json-database.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -61,6 +62,7 @@ async function harness() {
   const friendService = new FriendService(repositories, events);
   const sessionService = new SessionService(repositories.sessions, repositories.users, events);
   const supportBotService = new SupportBotService(repositories, chatService, events);
+  const stickerService = new StickerService(repositories, events);
   const app = createApp({
     config,
     repositories,
@@ -74,6 +76,7 @@ async function harness() {
     friendService,
     sessionService,
     supportBotService,
+    stickerService,
     events,
     crypto,
   });
@@ -95,7 +98,7 @@ async function signUp(
 }
 
 describe("активные сеансы", () => {
-  it("вход с незнакомого сайта помечается и подтверждается владельцем", async () => {
+  it("вход с незнакомого сайта помечается и показывается только старым сессиям (>=24ч)", async () => {
     const { authService, sessionService } = await harness();
     const home = await signUp(authService, "vasya@example.test", HOME);
     const mirror = await authService.login("vasya@example.test", "password123", MIRROR);
@@ -105,17 +108,32 @@ describe("активные сеансы", () => {
     const first = await sessionService.overview(home.user.id, home.accessToken);
     expect(first.alert).toBeNull();
 
-    const overview = await sessionService.overview(home.user.id, mirror.accessToken);
-    expect(overview.sessions).toHaveLength(2);
-    expect(overview.alert?.site).toBe(MIRROR.site);
-    expect(overview.currentSessionId).toBeTruthy();
+    // Свежий сеанс (< 24ч) не видит предупреждений о входе
+    const mirrorOverview = await sessionService.overview(home.user.id, mirror.accessToken);
+    expect(mirrorOverview.sessions).toHaveLength(2);
+    expect(mirrorOverview.alert).toBeNull();
 
+    // Свежий домашний сеанс (< 24ч) тоже пока не видит предупреждений
+    const homeOverviewYoung = await sessionService.overview(home.user.id, home.accessToken);
+    expect(homeOverviewYoung.alert).toBeNull();
+
+    // Прошло 24 часа с момента создания домашнего сеанса:
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(Date.now() + 25 * 3_600_000);
+
+    // Старый сеанс видит предупреждение о новом входе
+    const homeOverview = await sessionService.overview(home.user.id, home.accessToken);
+    expect(homeOverview.alert?.site).toBe(MIRROR.site);
+    expect(homeOverview.alert?.current).toBe(false);
+
+    const mirrorSessionId = homeOverview.alert?.id as string;
     const acknowledged = await sessionService.acknowledge(
       home.user.id,
-      overview.currentSessionId as string,
-      mirror.accessToken,
+      mirrorSessionId,
+      home.accessToken,
     );
     expect(acknowledged.alert).toBeNull();
+    vi.useRealTimers();
   });
 
   it("повторный вход с того же сайта не плодит сеансы", async () => {
@@ -210,7 +228,7 @@ describe("активные сеансы", () => {
       .expect(200);
     expect(list.body.sessions).toHaveLength(2);
     expect(list.body.canTerminateOthers).toBe(false);
-    expect(list.body.alert.site).toBe(MIRROR.site);
+    expect(list.body.alert).toBeNull();
 
     const homeSessionId = list.body.sessions.find(
       (session: { current: boolean; id: string }) => !session.current,
@@ -249,6 +267,74 @@ describe("активные сеансы", () => {
       .send({ sessionAutoTerminateDays: null })
       .expect(200);
     expect(cleared.body.user.sessionAutoTerminateDays).toBeNull();
+  });
+
+  it("переименовывает устройство и синхронизирует имя на всех аккаунтах и устройствах", async () => {
+    const { app, authService } = await harness();
+    const pcContext = { ...HOME, deviceId: "pc-device-unique-123" };
+    const user1 = await signUp(authService, "user1@example.test", pcContext);
+    const user2 = await signUp(authService, "user2@example.test", pcContext);
+
+    // user1 на компе открывает список сеансов
+    const user1List = await request(app)
+      .get("/api/sessions")
+      .set("Authorization", `Bearer ${user1.accessToken}`)
+      .set("x-device-id", "pc-device-unique-123")
+      .expect(200);
+    const pcSessionId = user1List.body.currentSessionId;
+
+    // user1 переименовывает устройство в "Домашний компьютер"
+    const renamed = await request(app)
+      .patch(`/api/sessions/${pcSessionId}/rename`)
+      .set("Authorization", `Bearer ${user1.accessToken}`)
+      .send({ name: "Домашний компьютер" })
+      .expect(200);
+
+    expect(renamed.body.sessions[0].customDeviceName).toBe("Домашний компьютер");
+
+    // user2 на том же компе заходит в сеансы и видит то же имя
+    const user2List = await request(app)
+      .get("/api/sessions")
+      .set("Authorization", `Bearer ${user2.accessToken}`)
+      .set("x-device-id", "pc-device-unique-123")
+      .expect(200);
+    expect(user2List.body.sessions[0].customDeviceName).toBe("Домашний компьютер");
+
+    // user1 заходит с телефона
+    const phone = await authService.login("user1@example.test", "password123", {
+      site: "https://yargram.test",
+      device: "Safari, iOS",
+      deviceId: "phone-device-456",
+    });
+    if ("status" in phone) throw new Error("Unexpected confirmation");
+
+    // С телефона видит ПК с именем "Домашний компьютер"
+    const phoneView = await request(app)
+      .get("/api/sessions")
+      .set("Authorization", `Bearer ${phone.accessToken}`)
+      .expect(200);
+    const remotePcSession = phoneView.body.sessions.find(
+      (s: { deviceId?: string }) => s.deviceId === "pc-device-unique-123",
+    );
+    expect(remotePcSession.customDeviceName).toBe("Домашний компьютер");
+
+    // С телефона переименовывает ПК в "Рабочий ПК"
+    const fromPhoneRename = await request(app)
+      .patch(`/api/sessions/${remotePcSession.id}/rename`)
+      .set("Authorization", `Bearer ${phone.accessToken}`)
+      .send({ name: "Рабочий ПК" })
+      .expect(200);
+    const updatedRemote = fromPhoneRename.body.sessions.find(
+      (s: { deviceId?: string }) => s.deviceId === "pc-device-unique-123",
+    );
+    expect(updatedRemote.customDeviceName).toBe("Рабочий ПК");
+
+    // user2 на компе тоже видит обновленное имя "Рабочий ПК"
+    const user2Updated = await request(app)
+      .get("/api/sessions")
+      .set("Authorization", `Bearer ${user2.accessToken}`)
+      .expect(200);
+    expect(user2Updated.body.sessions[0].customDeviceName).toBe("Рабочий ПК");
   });
 });
 

@@ -1,6 +1,8 @@
+import type { Language } from './lib/i18n';
+
 export type ThemeMode = 'light' | 'dark';
 
-export type AttachmentKind = 'image' | 'file' | 'avatar' | 'banner' | 'wallpaper';
+export type AttachmentKind = 'image' | 'file' | 'avatar' | 'banner' | 'wallpaper' | 'sticker' | 'gif';
 
 export interface Attachment {
   id: string;
@@ -8,11 +10,37 @@ export interface Attachment {
   kind: AttachmentKind;
   fileName: string;
   mimeType: string;
-  mediaKind?: 'voice' | 'video_circle' | null;
+  mediaKind?: 'voice' | 'video_circle' | 'gif' | null;
   durationSeconds?: number | null;
   size: number;
   url: string;
   createdAt: string;
+}
+
+/** Стикер: картинка или анимация плюс значок для поиска по набору. */
+export interface Sticker {
+  id: string;
+  packId: string;
+  emoji: string;
+  animated: boolean;
+  url: string;
+}
+
+/** Набор стикеров целиком, как его отдаёт сервер. */
+export interface StickerPack {
+  id: string;
+  title: string;
+  emoji: string;
+  /** Растёт при каждом изменении: клиент по нему понимает, что перечитать. */
+  version: number;
+  /** Свой набор: его можно править и удалить. */
+  mine: boolean;
+  /** Встроенный набор Yargram: править нельзя никому. */
+  builtin: boolean;
+  /** Кто прислал набор. Пусто у встроенного и своего. */
+  sharedByUserId?: string;
+  updatedAt: string;
+  stickers: Sticker[];
 }
 
 export interface MessageReaction {
@@ -48,6 +76,8 @@ export interface CallMessageDetails {
   durationSeconds?: number;
 }
 
+export type CallPrivacyRule = 'everyone' | 'contacts' | 'nobody';
+
 export type LastSeenStatus = 'recently' | 'within_week' | 'within_month' | 'long_ago';
 
 export interface User {
@@ -63,6 +93,9 @@ export interface User {
   lastSeenAt?: string | null;
   lastSeenStatus?: LastSeenStatus | null;
   showLastSeen?: boolean;
+  callPrivacy?: CallPrivacyRule;
+  callPrivacyAllowedUserIds?: string[];
+  callPrivacyDeniedUserIds?: string[];
   createdAt?: string;
   themeColor?: string;
   wallpaperUrl?: string;
@@ -94,10 +127,13 @@ export interface User {
   friendship?: FriendshipState;
   /** Это приложение Yargram, а не человек. */
   isApp?: boolean;
-  /** Это бот: рядом с именем рисуется метка «бот», войти в него нельзя. */
+  /** Это бот: рядом с именем рисуется метка «BOT», войти в него нельзя. */
   isBot?: boolean;
   /** Через сколько дней бездействия сеанс завершается сам; `null` — никогда. */
   sessionAutoTerminateDays?: number | null;
+  /** Язык интерфейса: по нему служебный бот поддержки выбирает, на каком
+   *  языке отвечать. Хранится на сервере, а не только на устройстве. */
+  language?: Language;
 }
 
 /**
@@ -110,6 +146,10 @@ export interface Session {
   site: string;
   /** Браузер и система: «Chrome, Windows». */
   device: string;
+  /** Постоянный идентификатор физического устройства / браузера. */
+  deviceId?: string;
+  /** Пользовательское имя устройства. */
+  customDeviceName?: string | null;
   createdAt: string;
   lastSeenAt: string;
   /** Это тот сеанс, с которого смотрят список. */
@@ -247,6 +287,7 @@ export interface Message {
   replyToId?: string;
   replyTo?: Message | null;
   readBy?: string[];
+  readAt?: string | null;
   attachments?: Attachment[];
   reactions?: MessageReaction[];
   forwardedFromId?: string | null;
@@ -255,6 +296,16 @@ export interface Message {
   systemEvent?: string | null;
   call?: CallMessageDetails | null;
   poll?: PollView | null;
+  /**
+   * Присланный набор стикеров. Сообщение без текста: в переписке рисуется
+   * карточка набора, а у получателя он появляется в его списке.
+   */
+  stickerPackId?: string;
+  /**
+   * Отправленные стикеры с готовыми адресами. Сервер сам пересобирает их при
+   * каждой отдаче: подпись на файл недолговечна, и в истории её хранить нельзя.
+   */
+  stickers?: Sticker[];
   /** Кнопки под сообщением бота: по нажатию клиент шлёт `action` серверу. */
   keyboard?: BotKeyboard | null;
   isFavorite?: boolean;
@@ -420,7 +471,7 @@ export interface AdminStats {
 export type AdminAccountsFilter = 'all' | 'active' | 'frozen' | 'deleted';
 
 /** Знак владельца, по которому отсеивается список. Галочки складываются. */
-export type AdminAccountsMark = 'verified' | 'badge' | 'scam' | 'fake' | 'owner';
+export type AdminAccountsMark = 'verified' | 'badge' | 'scam' | 'fake' | 'owner' | 'bot';
 
 /** Где искать введённое: только ник, только @юзернеймы или всё сразу. */
 export type AdminAccountsScope = 'any' | 'name' | 'handle';
@@ -446,6 +497,8 @@ export interface AdminAccount {
   isOwner: boolean;
   isFrozen: boolean;
   isDeleted: boolean;
+  /** Служебный бот: рядом с именем метка «BOT», а войти в него нельзя. */
+  isBot: boolean;
   createdAt: string;
   /** Когда аккаунт удалили; `null`, если он не удалён. */
   deletedAt: string | null;
@@ -493,6 +546,9 @@ export interface LoginInput {
 
 export interface UpdateProfileInput {
   showLastSeen?: boolean;
+  callPrivacy?: CallPrivacyRule;
+  callPrivacyAllowedUserIds?: string[];
+  callPrivacyDeniedUserIds?: string[];
   displayName?: string;
   username?: string;
   bio?: string;
@@ -507,6 +563,12 @@ export interface UpdateProfileInput {
   birthday?: string | null;
   /** Через сколько дней бездействия сеанс завершается сам; `null` — никогда. */
   sessionAutoTerminateDays?: number | null;
+  /**
+   * Язык интерфейса. Сам интерфейс переводится на клиенте, а это поле нужно
+   * серверу: служебный бот поддержки пишет сообщения из сервера и должен
+   * отвечать на том же языке, что и кнопки вокруг.
+   */
+  language?: Language;
 }
 
 export interface ReadReceipt {

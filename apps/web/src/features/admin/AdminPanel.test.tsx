@@ -17,6 +17,8 @@ vi.mock('../../api/client', async (importOriginal) => {
       adminSetFake: vi.fn(),
       adminStats: vi.fn(),
       adminAccounts: vi.fn(),
+      adminBots: vi.fn(),
+      adminSetBot: vi.fn(),
     },
   };
 });
@@ -48,6 +50,7 @@ const liveAccount: AdminAccount = {
   isOwner: false,
   isFrozen: false,
   isDeleted: false,
+  isBot: false,
   createdAt: '2026-01-02T10:00:00.000Z',
   deletedAt: null,
   lastSeenAt: '2026-01-05T10:00:00.000Z',
@@ -67,6 +70,7 @@ const deletedAccount: AdminAccount = {
   isOwner: false,
   isFrozen: false,
   isDeleted: true,
+  isBot: false,
   createdAt: '2026-01-01T10:00:00.000Z',
   deletedAt: '2026-02-03T10:00:00.000Z',
   lastSeenAt: '2026-01-01T10:00:00.000Z',
@@ -136,7 +140,8 @@ describe('админ-панель: список аккаунтов', () => {
 
     // Повторное нажатие сворачивает обратно.
     fireEvent.click(screen.getByRole('button', { name: 'свернуть' }));
-    expect(screen.queryByText('@alice_three')).toBeNull();  });
+    expect(screen.queryByText('@alice_three')).toBeNull();
+  });
 
   it('пишет даты на языке интерфейса, а не всегда по-русски', async () => {
     // Даты рисует `Intl`, и без локали они оставались бы русскими на всех
@@ -442,5 +447,77 @@ describe('админ-панель: знаки группы', () => {
     );
     // После выдачи отметки кнопка предлагает её снять.
     expect(await screen.findByRole('button', { name: 'Снять отметку SCAM' })).toBeInTheDocument();
+  });
+});
+
+describe('админ-панель: боты', () => {
+  /** Служебный бот в перечне: картинка задана ссылкой, метка BOT уже стоит. */
+  const botAccount: AdminAccount = {
+    id: 'bot-1',
+    displayName: 'Yargram Support',
+    username: 'YargramSupport_Bot',
+    usernames: [],
+    avatarUrl: '/app/brand/bot.png',
+    isVerified: true,
+    badge: 'yargram',
+    scam: false,
+    fake: false,
+    isOwner: true,
+    isFrozen: false,
+    isDeleted: false,
+    isBot: true,
+    createdAt: '2026-01-03T10:00:00.000Z',
+    deletedAt: null,
+    lastSeenAt: '2026-01-03T10:00:00.000Z',
+  };
+
+  it('читает перечень служебных ботов только при открытии вкладки', async () => {
+    vi.mocked(api.adminBots).mockResolvedValue([botAccount]);
+    renderPanel();
+
+    // Вкладка «Боты» — не первый экран: до неё запросов к перечню нет.
+    expect(api.adminBots).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Боты' }));
+
+    await waitFor(() => expect(api.adminBots).toHaveBeenCalledWith('token'));
+    expect(await screen.findByText('@YargramSupport_Bot')).toBeInTheDocument();
+  });
+
+  it('ставит метку BOT только после подтверждения', async () => {
+    vi.mocked(api.adminBots).mockResolvedValue([]);
+    vi.mocked(api.adminLookup).mockResolvedValue(owner);
+    vi.mocked(api.adminSetBot).mockResolvedValue({ ...owner, isBot: true });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderPanel();
+    fireEvent.click(screen.getByRole('tab', { name: 'Боты' }));
+    await waitFor(() => expect(api.adminBots).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText('например: top1nuk1'), {
+      target: { value: '@owner' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Показать состояние/ }));
+
+    // Метка закрывает вход в аккаунт, поэтому спрашиваем подтверждение.
+    const set = await screen.findByRole('button', { name: 'Поставить BOT' });
+    fireEvent.click(set);
+    expect(confirm).toHaveBeenCalled();
+    expect(api.adminSetBot).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(set);
+    await waitFor(() => expect(api.adminSetBot).toHaveBeenCalledWith('token', owner.id, true));
+  });
+
+  it('снимает метку BOT у бота из перечня без подтверждения', async () => {
+    vi.mocked(api.adminBots).mockResolvedValue([botAccount]);
+    vi.mocked(api.adminSetBot).mockResolvedValue({ ...botAccount, isBot: false });
+    renderPanel();
+    fireEvent.click(screen.getByRole('tab', { name: 'Боты' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Снять BOT' }));
+
+    // Снятие ничего не закрывает — подтверждать нечего.
+    await waitFor(() => expect(api.adminSetBot).toHaveBeenCalledWith('token', botAccount.id, false));
   });
 });

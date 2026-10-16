@@ -1,0 +1,12 @@
+node_modules
+apps/*/node_modules
+dist
+apps/*/dist
+.git
+.env
+.env.*
+runtime
+media
+*.mp4
+.gemini
+.workbuddy-ai

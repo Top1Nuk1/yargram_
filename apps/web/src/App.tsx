@@ -9,6 +9,7 @@ import { useTheme } from './hooks/useTheme';
 import { useLanguage } from './hooks/useLanguage';
 import {
   clearActiveToken,
+  deduplicateAccounts,
   isOnboardingDone,
   markOnboardingDone,
   readAccounts,
@@ -47,8 +48,10 @@ export default function App() {
   }, [accounts]);
 
   function persistAccounts(next: StoredAccount[]) {
-    writeAccounts(next);
-    setAccounts(next);
+    const clean = deduplicateAccounts(next, token);
+    accountsRef.current = clean;
+    writeAccounts(clean);
+    setAccounts(clean);
   }
 
   /** Делает аккаунт активным и просит профиль заново. */
@@ -155,9 +158,7 @@ export default function App() {
     (next: User) => {
       setUser(next);
       if (!token) return;
-      const merged = upsertAccount(accountsRef.current, { token, user: next });
-      writeAccounts(merged);
-      setAccounts(merged);
+      persistAccounts(upsertAccount(accountsRef.current, { token, user: next }));
     },
     [token],
   );

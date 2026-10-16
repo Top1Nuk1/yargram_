@@ -9,6 +9,7 @@ import type { DatabaseState } from "../src/domain/models.js";
 import { PostgresDatabase } from "../src/storage/postgres-database.js";
 import { createPostgresRepositories } from "../src/repositories/postgres-repositories.js";
 import { RepositoryConflictError } from "../src/repositories/types.js";
+import { ChatService } from "../src/services/chat-service.js";
 
 let cluster: EmbeddedPostgres;
 let directory: string;
@@ -22,7 +23,7 @@ async function fresh() {
   await database.initialize();
   return { database, repos: createPostgresRepositories(database), databaseName };
 }
-const empty = (): DatabaseState => ({ version: 1, users: [], conversations: [], messages: [], attachments: [], reports: [], favoriteNotes: [], calls: [], drafts: [], folders: [], scheduledMessages: [], sessions: [] });
+const empty = (): DatabaseState => ({ version: 1, users: [], conversations: [], messages: [], attachments: [], reports: [], favoriteNotes: [], calls: [], drafts: [], folders: [], scheduledMessages: [], sessions: [], stickerPacks: [], stickers: [], stickerInstalls: [] });
 const registration = (username: string) => ({ email: `${username}@example.test`, username, displayName: username, passwordHash: "preserved-hash" });
 
 beforeAll(async () => {
@@ -248,6 +249,26 @@ describe("PostgreSQL repositories against a real isolated cluster", () => {
     });
   });
 
+  // 🔥 Регрессия: у групп `directKey` — пустая строка, и общий уникальный индекс
+  // по `direct_key` не давал завести **вторую** группу в базе. Из-за этого же не
+  // поднималась служебная группа поддержки, а бот отвечал «не настроен».
+  it("lets a second group exist: the direct key index skips empty keys", async () => {
+    const { repos } = await fresh();
+    const owner = await repos.users.create(registration("groupowner"));
+
+    const first = await repos.conversations.createGroup({ ownerId: owner.id, memberIds: [owner.id], title: "Первая" });
+    const second = await repos.conversations.createGroup({ ownerId: owner.id, memberIds: [owner.id], title: "Вторая" });
+    expect(second.id).not.toBe(first.id);
+
+    // Личные диалоги и «Избранное» остаются уникальными: на них индекс и держится.
+    const bob = await repos.users.create(registration("groupfriend"));
+    const { conversation: direct, created } = await repos.conversations.findOrCreateDirect(owner.id, bob.id);
+    expect(created).toBe(true);
+    const again = await repos.conversations.findOrCreateDirect(bob.id, owner.id);
+    expect(again).toMatchObject({ created: false });
+    expect(again.conversation.id).toBe(direct.id);
+  });
+
   // Поднимает два независимых кластера и переоткрывает пул — под общей нагрузкой
   // прогона этот сценарий не укладывается в дефолтные 5 секунд, поэтому запас
   // побольше. Тест проверяет логику импорта, а не скорость.
@@ -273,5 +294,44 @@ describe("PostgreSQL repositories against a real isolated cluster", () => {
     const repos = createPostgresRepositories(reopened);
     expect(await repos.users.findById(user.id)).toEqual(user);
     expect(await repos.favoriteNotes.list(user.id)).toEqual(state.favoriteNotes);
+  });
+
+  // Регрессия 07.10.2026: строки, записанные до появления стикеров, не содержат
+  // stickerIds/reactions/kind. JSON-драйвер дополняет их через Zod, а Postgres
+  // отдаёт payload как есть — и ChatService падал на stickerIds.length,
+  // роняя /conversations, /favorites и /support с 500.
+  it("normalizes legacy messages written before stickerIds existed", { timeout: 60_000 }, async () => {
+    const { database, repos } = await fresh();
+    const alice = await repos.users.create(registration("legacy_alice"));
+    const bob = await repos.users.create(registration("legacy_bob"));
+    const { conversation } = await repos.conversations.findOrCreateDirect(alice.id, bob.id);
+    const legacy = {
+      id: randomUUID(),
+      conversationId: conversation.id,
+      senderId: alice.id,
+      text: "Сообщение до стикеров",
+      createdAt: new Date().toISOString(),
+    };
+    await database.transaction((client) =>
+      client.query("INSERT INTO messages (payload) VALUES ($1::jsonb)", [JSON.stringify(legacy)]),
+    );
+
+    // Читаем ровно теми путями, которыми пользуется ChatService.
+    const loaded = await repos.messages.findById(legacy.id);
+    expect(loaded).toMatchObject({ kind: "user", stickerIds: [], attachmentIds: [], reactions: [] });
+    expect(loaded?.readBy).toEqual([alice.id]);
+    const listed = await repos.messages.listForConversation(conversation.id, { limit: 10 });
+    expect(listed.find((message) => message.id === legacy.id)).toMatchObject({ stickerIds: [] });
+    expect((await repos.messages.listByIds([legacy.id]))[0]).toMatchObject({ stickerIds: [] });
+
+    // Мутации читают строку тем же find: реакция на legacy-сообщение не должна падать.
+    await expect(repos.messages.setReaction(legacy.id, bob.id, "👍")).resolves.toMatchObject({
+      reactions: [{ userId: bob.id, emoji: "👍" }],
+    });
+
+    // Симптом из продакшена: лента диалогов и избранное падали с TypeError.
+    const chat = new ChatService(repos);
+    await expect(chat.listConversations(alice.id)).resolves.toBeInstanceOf(Array);
+    await expect(chat.listFavorites(alice.id)).resolves.toBeInstanceOf(Array);
   });
 });

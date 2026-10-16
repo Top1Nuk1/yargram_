@@ -17,7 +17,15 @@ describe('iceServers', () => {
 
   it('без настроенного релея оставляет только публичный STUN', () => {
     vi.stubEnv('VITE_TURN_URL', '');
-    expect(iceServers()).toEqual([{ urls: 'stun:stun.l.google.com:19302' }]);
+    expect(iceServers()).toEqual([
+      {
+        urls: [
+          'stun:stun.l.google.com:19302',
+          'stun:stun1.l.google.com:19302',
+          'stun:stun.cloudflare.com:3478',
+        ],
+      },
+    ]);
   });
 
   it('добавляет TURN вместе с логином и паролем', () => {

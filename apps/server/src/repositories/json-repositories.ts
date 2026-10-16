@@ -11,6 +11,9 @@ import type {
   ReactionEmoji,
   ScheduledMessage,
   Session,
+  Sticker,
+  StickerPack,
+  StickerPackInstall,
   User,
   FavoriteNote,
   UserReport,
@@ -32,6 +35,9 @@ import type {
   ScheduledMessageRepository,
   SessionRepository,
   CreateSessionInput,
+  StickerPackInstallRepository,
+  StickerPackRepository,
+  StickerRepository,
   UpdateConversationInput,
   UpdateSessionInput,
   UpdateUserInput,
@@ -68,6 +74,9 @@ class JsonUserRepository implements UserRepository {
         favoriteMessageIds: [],
         notificationSoundEnabled: true,
         showLastSeen: true,
+        callPrivacy: "everyone",
+        callPrivacyAllowedUserIds: [],
+        callPrivacyDeniedUserIds: [],
         createdAt: now,
         // 🔥 Поле обязано доехать до записи: без него «неподтверждённый» аккаунт
         // выглядел бы подтверждённым (отсутствие поля считается `true`), и вся
@@ -135,8 +144,13 @@ class JsonUserRepository implements UserRepository {
       if (input.username !== undefined) user.username = input.username;
       if (input.bio !== undefined) user.bio = input.bio;
       if (input.showLastSeen !== undefined) user.showLastSeen = input.showLastSeen;
+      if (input.callPrivacy !== undefined) user.callPrivacy = input.callPrivacy;
+      if (input.callPrivacyAllowedUserIds !== undefined) user.callPrivacyAllowedUserIds = input.callPrivacyAllowedUserIds;
+      if (input.callPrivacyDeniedUserIds !== undefined) user.callPrivacyDeniedUserIds = input.callPrivacyDeniedUserIds;
       if (input.avatar === null) delete user.avatar;
       else if (input.avatar !== undefined) user.avatar = input.avatar;
+      if (input.avatarUrl === null) delete user.avatarUrl;
+      else if (input.avatarUrl !== undefined) user.avatarUrl = input.avatarUrl;
       if (input.themeColor !== undefined) user.themeColor = input.themeColor;
       if (input.wallpaperUrl !== undefined) user.wallpaperUrl = input.wallpaperUrl;
       if (input.wallpaperMimeType !== undefined) user.wallpaperMimeType = input.wallpaperMimeType;
@@ -163,6 +177,7 @@ class JsonUserRepository implements UserRepository {
       if (input.incomingFriendRequestIds !== undefined) user.incomingFriendRequestIds = input.incomingFriendRequestIds;
       if (input.isApp !== undefined) user.isApp = input.isApp;
       if (input.isBot !== undefined) user.isBot = input.isBot;
+      if (input.language !== undefined) user.language = input.language;
       if (input.birthday !== undefined) {
         if (input.birthday === null) delete user.birthday;
         else user.birthday = input.birthday;
@@ -548,6 +563,8 @@ class JsonMessageRepository implements MessageRepository {
         ...(input.poll === undefined ? {} : { poll: input.poll }),
         ...(input.keyboard === undefined ? {} : { keyboard: input.keyboard }),
         ...(input.supportTicket === undefined ? {} : { supportTicket: input.supportTicket }),
+        stickerIds: [...new Set(input.stickerIds ?? [])],
+        ...(input.stickerPackId === undefined ? {} : { stickerPackId: input.stickerPackId }),
         createdAt: new Date().toISOString(),
         ...(input.replyToId === undefined ? {} : { replyToId: input.replyToId }),
         ...(input.forwardedFromId === undefined ? {} : { forwardedFromId: input.forwardedFromId }),
@@ -1116,6 +1133,8 @@ class JsonSessionRepository implements SessionRepository {
         tokenHashes: [...new Set(input.tokenHashes)],
         site: input.site,
         device: input.device,
+        ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+        ...(input.customDeviceName ? { customDeviceName: input.customDeviceName } : {}),
         createdAt: timestamp,
         lastSeenAt: timestamp,
         ...(input.newDevice === undefined ? {} : { newDevice: input.newDevice }),
@@ -1150,6 +1169,14 @@ class JsonSessionRepository implements SessionRepository {
       if (input.tokenHashes !== undefined) session.tokenHashes = [...new Set(input.tokenHashes)];
       if (input.site !== undefined) session.site = input.site;
       if (input.device !== undefined) session.device = input.device;
+      if (input.deviceId !== undefined) session.deviceId = input.deviceId;
+      if (input.customDeviceName !== undefined) {
+        if (input.customDeviceName === null) {
+          delete session.customDeviceName;
+        } else {
+          session.customDeviceName = input.customDeviceName;
+        }
+      }
       if (input.lastSeenAt !== undefined) session.lastSeenAt = input.lastSeenAt;
       if (input.acknowledgedAt !== undefined) session.acknowledgedAt = input.acknowledgedAt;
       if (input.terminatedAt !== undefined) session.terminatedAt = input.terminatedAt;
@@ -1170,6 +1197,239 @@ class JsonSessionRepository implements SessionRepository {
       state.sessions = state.sessions.filter((session) => session.userId !== userId);
     });
   }
+
+  async updateDeviceName(deviceId: string, name: string | null): Promise<void> {
+    await this.database.transaction((state) => {
+      for (const session of state.sessions) {
+        if (session.deviceId === deviceId) {
+          if (name) {
+            session.customDeviceName = name;
+          } else {
+            delete session.customDeviceName;
+          }
+        }
+      }
+    });
+  }
+
+  async findDeviceName(deviceId: string): Promise<string | null> {
+    return this.database.read((state) => {
+      for (const session of state.sessions) {
+        if (session.deviceId === deviceId && session.customDeviceName) {
+          return session.customDeviceName;
+        }
+      }
+      return null;
+    });
+  }
+}
+
+class JsonStickerPackRepository implements StickerPackRepository {
+  constructor(private readonly database: JsonDatabase) {}
+
+  async listOwnedBy(userId: string): Promise<StickerPack[]> {
+    return this.database.read((state) =>
+      state.stickerPacks
+        .filter((pack) => pack.ownerId === userId)
+        .sort((first, second) => first.createdAt.localeCompare(second.createdAt)),
+    );
+  }
+
+  async findById(id: string): Promise<StickerPack | null> {
+    return this.database.read((state) => state.stickerPacks.find((pack) => pack.id === id) ?? null);
+  }
+
+  async findManyByIds(ids: string[]): Promise<StickerPack[]> {
+    const wanted = new Set(ids);
+    return this.database.read((state) => state.stickerPacks.filter((pack) => wanted.has(pack.id)));
+  }
+
+  async create(input: { ownerId: string; title: string; emoji: string }): Promise<StickerPack> {
+    return this.database.transaction((state) => {
+      const timestamp = new Date().toISOString();
+      const pack: StickerPack = {
+        id: randomUUID(),
+        ownerId: input.ownerId,
+        title: input.title,
+        emoji: input.emoji,
+        version: 1,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      state.stickerPacks.push(pack);
+      return pack;
+    });
+  }
+
+  async update(
+    id: string,
+    ownerId: string,
+    input: { title?: string | undefined; emoji?: string | undefined },
+  ): Promise<StickerPack> {
+    return this.database.transaction((state) => {
+      const pack = state.stickerPacks.find(
+        (candidate) => candidate.id === id && candidate.ownerId === ownerId,
+      );
+      if (!pack) throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack not found");
+      if (input.title !== undefined) pack.title = input.title;
+      if (input.emoji !== undefined) pack.emoji = input.emoji;
+      pack.updatedAt = new Date().toISOString();
+      return pack;
+    });
+  }
+
+  async delete(id: string, ownerId: string): Promise<void> {
+    await this.database.transaction((state) => {
+      const index = state.stickerPacks.findIndex(
+        (pack) => pack.id === id && pack.ownerId === ownerId,
+      );
+      if (index === -1) throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack not found");
+      state.stickerPacks.splice(index, 1);
+    });
+  }
+
+  async bumpVersion(id: string): Promise<StickerPack> {
+    return this.database.transaction((state) => {
+      const pack = state.stickerPacks.find((candidate) => candidate.id === id);
+      if (!pack) throw new AppError(404, "STICKER_PACK_NOT_FOUND", "Sticker pack not found");
+      pack.version += 1;
+      pack.updatedAt = new Date().toISOString();
+      return pack;
+    });
+  }
+}
+
+class JsonStickerRepository implements StickerRepository {
+  constructor(private readonly database: JsonDatabase) {}
+
+  async listForPack(packId: string): Promise<Sticker[]> {
+    return this.database.read((state) =>
+      state.stickers.filter((sticker) => sticker.packId === packId),
+    );
+  }
+
+  async listForPacks(packIds: string[]): Promise<Sticker[]> {
+    const wanted = new Set(packIds);
+    return this.database.read((state) => state.stickers.filter((sticker) => wanted.has(sticker.packId)));
+  }
+
+  async findById(id: string): Promise<Sticker | null> {
+    return this.database.read((state) => state.stickers.find((sticker) => sticker.id === id) ?? null);
+  }
+
+  async countForPack(packId: string): Promise<number> {
+    return this.database.read(
+      (state) => state.stickers.filter((sticker) => sticker.packId === packId).length,
+    );
+  }
+
+  async create(input: {
+    packId: string;
+    attachmentId: string;
+    emoji: string;
+    animated: boolean;
+  }): Promise<Sticker> {
+    return this.database.transaction((state) => {
+      const sticker: Sticker = {
+        id: randomUUID(),
+        packId: input.packId,
+        attachmentId: input.attachmentId,
+        emoji: input.emoji,
+        animated: input.animated,
+        createdAt: new Date().toISOString(),
+      };
+      state.stickers.push(sticker);
+      return sticker;
+    });
+  }
+
+  async delete(id: string, packId: string): Promise<Sticker | null> {
+    return this.database.transaction((state) => {
+      const index = state.stickers.findIndex(
+        (sticker) => sticker.id === id && sticker.packId === packId,
+      );
+      if (index === -1) return null;
+      return state.stickers.splice(index, 1)[0] ?? null;
+    });
+  }
+
+  async deleteForPack(packId: string): Promise<void> {
+    await this.database.transaction((state) => {
+      state.stickers = state.stickers.filter((sticker) => sticker.packId !== packId);
+    });
+  }
+}
+
+class JsonStickerPackInstallRepository implements StickerPackInstallRepository {
+  constructor(private readonly database: JsonDatabase) {}
+
+  async listForUser(userId: string): Promise<StickerPackInstall[]> {
+    return this.database.read((state) =>
+      state.stickerInstalls
+        .filter((install) => install.userId === userId)
+        .sort((first, second) => first.installedAt.localeCompare(second.installedAt)),
+    );
+  }
+
+  async find(userId: string, packId: string): Promise<StickerPackInstall | null> {
+    return this.database.read(
+      (state) =>
+        state.stickerInstalls.find(
+          (install) => install.userId === userId && install.packId === packId,
+        ) ?? null,
+    );
+  }
+
+  async install(input: {
+    userId: string;
+    packId: string;
+    sharedByUserId: string;
+  }): Promise<{ install: StickerPackInstall; created: boolean }> {
+    return this.database.transaction((state) => {
+      const existing = state.stickerInstalls.find(
+        (install) => install.userId === input.userId && install.packId === input.packId,
+      );
+      if (existing) return { install: existing, created: false };
+      const install: StickerPackInstall = {
+        id: randomUUID(),
+        userId: input.userId,
+        packId: input.packId,
+        sharedByUserId: input.sharedByUserId,
+        installedAt: new Date().toISOString(),
+      };
+      state.stickerInstalls.push(install);
+      return { install, created: true };
+    });
+  }
+
+  async uninstall(userId: string, packId: string): Promise<boolean> {
+    return this.database.transaction((state) => {
+      const index = state.stickerInstalls.findIndex(
+        (install) => install.userId === userId && install.packId === packId,
+      );
+      if (index === -1) return false;
+      state.stickerInstalls.splice(index, 1);
+      return true;
+    });
+  }
+
+  async listForPack(packId: string): Promise<StickerPackInstall[]> {
+    return this.database.read((state) =>
+      state.stickerInstalls.filter((install) => install.packId === packId),
+    );
+  }
+
+  async deleteForPack(packId: string): Promise<void> {
+    await this.database.transaction((state) => {
+      state.stickerInstalls = state.stickerInstalls.filter((install) => install.packId !== packId);
+    });
+  }
+
+  async deleteForUser(userId: string): Promise<void> {
+    await this.database.transaction((state) => {
+      state.stickerInstalls = state.stickerInstalls.filter((install) => install.userId !== userId);
+    });
+  }
 }
 
 export function createJsonRepositories(database: JsonDatabase): Repositories {
@@ -1185,5 +1445,8 @@ export function createJsonRepositories(database: JsonDatabase): Repositories {
     folders: new JsonFolderRepository(database),
     scheduledMessages: new JsonScheduledMessageRepository(database),
     sessions: new JsonSessionRepository(database),
+    stickerPacks: new JsonStickerPackRepository(database),
+    stickers: new JsonStickerRepository(database),
+    stickerInstalls: new JsonStickerPackInstallRepository(database),
   };
 }

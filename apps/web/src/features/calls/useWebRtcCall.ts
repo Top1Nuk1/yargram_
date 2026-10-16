@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import { useTranslation, type TranslateFn } from '../../hooks/useLanguage';
+import { showBrowserNotification } from '../../lib/notifications';
 import { playSound } from '../../lib/sounds';
 import type { User } from '../../types';
 import {
@@ -298,11 +299,29 @@ export function useWebRtcCall(socket: Socket | null, token?: string) {
   const incomingOfferRef = useRef<IncomingCallPayload | null>(null);
   const invitePayloadRef = useRef<InviteIncomingPayload | null>(null);
   const pendingCandidatesRef = useRef<Map<string, BufferedCandidates>>(new Map());
+  const signaledCallsRef = useRef<Set<string>>(new Set());
+  const pendingOutgoingIceRef = useRef<Map<string, Array<{ toUserId: string; candidate: unknown }>>>(new Map());
   const iceRestartRef = useRef<Map<string, number>>(new Map());
   const operationRef = useRef(0);
   const outgoingTimeoutRef = useRef<number | null>(null);
   const localVideoElementRef = useRef<HTMLVideoElement | null>(null);
   const primaryRemoteElementRef = useRef<HTMLVideoElement | null>(null);
+  const incomingNotificationRef = useRef<Notification | null>(null);
+
+  const flushOutgoingIce = useCallback((callId: string, conversationId: string) => {
+    signaledCallsRef.current.add(callId);
+    const queued = pendingOutgoingIceRef.current.get(callId);
+    if (!queued || queued.length === 0) return;
+    pendingOutgoingIceRef.current.delete(callId);
+    for (const item of queued) {
+      socketRef.current?.emit('call:ice', {
+        callId,
+        conversationId,
+        toUserId: item.toUserId,
+        candidate: item.candidate,
+      });
+    }
+  }, []);
 
   const updateCall = useCallback((next: ActiveCall | null) => {
     callRef.current = next;
@@ -585,10 +604,20 @@ const cleanupLinks = useCallback(() => {
     operationRef.current += 1;
     clearOutgoingTimeout();
     updateCall(null);
+    incomingNotificationRef.current?.close();
+    incomingNotificationRef.current = null;
     incomingOfferRef.current = null;
     invitePayloadRef.current = null;
     pendingCandidatesRef.current.clear();
     reportedModeRef.current = null;
+    if (active) {
+      signaledCallsRef.current.delete(active.callId);
+      pendingOutgoingIceRef.current.delete(active.callId);
+    }
+    if (expectedCallId) {
+      signaledCallsRef.current.delete(expectedCallId);
+      pendingOutgoingIceRef.current.delete(expectedCallId);
+    }
 
     if (notifyPeer && active && socketRef.current?.connected) {
       socketRef.current.emit('call:end', {
@@ -827,6 +856,12 @@ const cleanupLinks = useCallback(() => {
       ) {
         return;
       }
+      if (!signaledCallsRef.current.has(callId)) {
+        const list = pendingOutgoingIceRef.current.get(callId) ?? [];
+        list.push({ toUserId: link.userId, candidate: event.candidate.toJSON() });
+        pendingOutgoingIceRef.current.set(callId, list);
+        return;
+      }
       socketRef.current.emit('call:ice', {
         callId,
         conversationId,
@@ -1013,6 +1048,7 @@ const cleanupLinks = useCallback(() => {
         mode,
         offer: { type: 'offer', sdp: localDescription.sdp },
       });
+      flushOutgoingIce(next.callId, conversationId);
       scheduleOutgoingTimeout(next.callId, conversationId);
     } catch (reason) {
       if (!isCurrentOperation(next.callId, conversationId, operation)) return;
@@ -1025,6 +1061,7 @@ const cleanupLinks = useCallback(() => {
     createLinkEntry,
     ensureAudioContext,
     ensureMedia,
+    flushOutgoingIce,
     installLocalStream,
     isCurrentOperation,
     patchMatchingCall,
@@ -1048,6 +1085,8 @@ const cleanupLinks = useCallback(() => {
 
     setError('');
     ensureAudioContext();
+    incomingNotificationRef.current?.close();
+    incomingNotificationRef.current = null;
     patchMatchingCall(active.callId, active.conversationId, { status: 'connecting' });
     const operation = operationRef.current + 1;
     operationRef.current = operation;
@@ -1088,6 +1127,7 @@ const cleanupLinks = useCallback(() => {
         conversationId: active.conversationId,
         answer: { type: 'answer', sdp: localDescription.sdp },
       });
+      flushOutgoingIce(active.callId, active.conversationId);
     } catch (reason) {
       if (!isCurrentOperation(active.callId, active.conversationId, operation)) return;
       setError(reason instanceof Error ? reason.message : tRef.current('calls.acceptFailed'));
@@ -1099,6 +1139,7 @@ const cleanupLinks = useCallback(() => {
     ensureAudioContext,
     ensureMedia,
     flushCandidates,
+    flushOutgoingIce,
     installLocalStream,
     isCurrentOperation,
     patchMatchingCall,
@@ -1148,6 +1189,8 @@ const cleanupLinks = useCallback(() => {
     setError('');
     ensureAudioContext();
     invitePayloadRef.current = null;
+    incomingNotificationRef.current?.close();
+    incomingNotificationRef.current = null;
     patchMatchingCall(active.callId, active.conversationId, { status: 'connecting' });
     const operation = operationRef.current + 1;
     operationRef.current = operation;
@@ -1173,6 +1216,7 @@ const cleanupLinks = useCallback(() => {
         callId: active.callId,
         conversationId: active.conversationId,
       });
+      flushOutgoingIce(active.callId, active.conversationId);
 
       const participants = [invite.fromUser, ...invite.participants.map((participant) => ({
         id: participant.id,
@@ -1197,6 +1241,7 @@ const cleanupLinks = useCallback(() => {
     cleanup,
     ensureAudioContext,
     ensureMedia,
+    flushOutgoingIce,
     installLocalStream,
     isCurrentOperation,
     offerToParticipants,
@@ -1555,7 +1600,11 @@ const cleanupLinks = useCallback(() => {
     }
 
     const onIncoming = (payload: IncomingCallPayload) => {
-      if (callRef.current) {
+      const current = callRef.current;
+      if (current && current.callId === payload.callId) {
+        return;
+      }
+      if (current && (current.status === 'active' || current.status === 'connecting')) {
         pendingCandidatesRef.current.delete(payload.callId);
         if (socket.connected) {
           socket.emit('call:end', {
@@ -1564,6 +1613,10 @@ const cleanupLinks = useCallback(() => {
           });
         }
         return;
+      }
+
+      if (current) {
+        cleanup(false);
       }
 
       operationRef.current += 1;
@@ -1588,16 +1641,38 @@ const cleanupLinks = useCallback(() => {
         mediaReady: false,
         startedAt: null,
       });
+
+      incomingNotificationRef.current?.close();
+      incomingNotificationRef.current = showBrowserNotification({
+        title: payload.fromUser.displayName || tRef.current('calls.incomingCall'),
+        body: payload.mode === 'video' ? 'Входящий видеозвонок' : 'Входящий звонок',
+        avatarUrl: payload.fromUser.avatarUrl,
+        conversationId: payload.conversationId,
+        tag: `yargram-call-${payload.callId}`,
+        requireInteraction: true,
+        onlyWhenHidden: false,
+        onClick: () => {
+          window.focus();
+        },
+      });
     };
 
     const onInviteIncoming = (payload: InviteIncomingPayload) => {
-      if (callRef.current) {
+      const current = callRef.current;
+      if (current && current.callId === payload.callId) {
+        return;
+      }
+      if (current && (current.status === 'active' || current.status === 'connecting')) {
         socket.emit('call:decline', {
           callId: payload.callId,
           conversationId: payload.conversationId,
         });
         return;
       }
+      if (current) {
+        cleanup(false);
+      }
+
       operationRef.current += 1;
       setError('');
       invitePayloadRef.current = payload;
@@ -1619,6 +1694,20 @@ const cleanupLinks = useCallback(() => {
         connectionQuality: 'unknown',
         mediaReady: false,
         startedAt: null,
+      });
+
+      incomingNotificationRef.current?.close();
+      incomingNotificationRef.current = showBrowserNotification({
+        title: payload.fromUser.displayName || tRef.current('calls.incomingCall'),
+        body: payload.mode === 'video' ? 'Входящий видеозвонок' : 'Входящий звонок',
+        avatarUrl: payload.fromUser.avatarUrl,
+        conversationId: payload.conversationId,
+        tag: `yargram-call-${payload.callId}`,
+        requireInteraction: true,
+        onlyWhenHidden: false,
+        onClick: () => {
+          window.focus();
+        },
       });
     };
 

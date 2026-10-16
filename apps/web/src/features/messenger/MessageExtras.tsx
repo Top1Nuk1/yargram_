@@ -1,22 +1,38 @@
 import { Pin, PinOff, SmilePlus, X } from 'lucide-react';
-import { memo, useEffect, useRef, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import { IconButton } from '../../components/ui';
 import { useTranslation } from '../../hooks/useLanguage';
 import type { Message, MessageReaction } from '../../types';
-import { COMPOSER_EMOJIS, MESSAGE_REACTIONS } from './messengerUtils';
+import { COMPOSER_EMOJIS, EMOJI_CATEGORIES, MESSAGE_REACTIONS } from './messengerUtils';
+import { tokenizeText } from '../../lib/linkify';
 
 interface EmojiPickerProps {
   mode?: 'composer' | 'reaction';
   onSelect: (emoji: string) => void;
   onClose: () => void;
   className?: string;
+  isDocked?: boolean;
+  onToggleDock?: () => void;
 }
 
-export function EmojiPicker({ mode = 'composer', onSelect, onClose, className = '' }: EmojiPickerProps) {
+export function EmojiPicker({
+  mode = 'composer',
+  onSelect,
+  onClose,
+  className = '',
+  isDocked = false,
+  onToggleDock,
+}: EmojiPickerProps) {
   const t = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
-  const emojis = mode === 'reaction' ? MESSAGE_REACTIONS : COMPOSER_EMOJIS;
+  const [activeCategory, setActiveCategory] = useState<string>('smileys');
+
+  const emojis = mode === 'reaction'
+    ? MESSAGE_REACTIONS
+    : (EMOJI_CATEGORIES.find((cat) => cat.id === activeCategory)?.emojis ?? COMPOSER_EMOJIS);
+
   useEffect(() => {
+    if (isDocked) return;
     const closeOnOutside = (event: PointerEvent) => {
       if (!ref.current?.contains(event.target as Node)) onClose();
     };
@@ -28,18 +44,67 @@ export function EmojiPicker({ mode = 'composer', onSelect, onClose, className = 
       document.removeEventListener('pointerdown', closeOnOutside);
       document.removeEventListener('keydown', closeOnEscape);
     };
-  }, [onClose]);
+  }, [onClose, isDocked]);
 
   return (
-    // w-max обязателен: панель абсолютная, и без него ширина сжимается до ширины
-    // кнопки, у которой открылась — значки вылезали за край и наезжали друг на друга.
     <div
       ref={ref}
-      className={`z-50 w-max max-w-[min(92vw,22rem)] animate-slide-up rounded-2xl border border-line bg-elevated p-2 shadow-float ${className}`}
+      className={isDocked
+        ? `flex h-full w-full flex-col bg-surface p-3 ${className}`
+        : `z-50 flex w-max w-[320px] max-w-[min(92vw,22rem)] flex-col animate-slide-up rounded-2xl border border-line bg-elevated p-2.5 shadow-float ${className}`}
       role="dialog"
       aria-label={mode === 'reaction' ? t('modals.reactionPickerLabel') : t('modals.emojiPickerLabel')}
     >
-      <div className="grid grid-cols-7 gap-1">
+      {/* Шапка с категориями и кнопками закрепления/закрытия */}
+      {mode === 'composer' && (
+        <div className="mb-2 flex items-center justify-between gap-1 border-b border-line/60 pb-2">
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+            {EMOJI_CATEGORIES.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => setActiveCategory(category.id)}
+                className={`grid h-8 w-8 shrink-0 place-items-center rounded-xl text-base transition ${
+                  activeCategory === category.id
+                    ? 'bg-brand text-white shadow-sm'
+                    : 'text-muted hover:bg-canvas hover:text-ink'
+                }`}
+                title={category.id}
+                aria-label={category.id}
+              >
+                <span className="emoji">{category.icon}</span>
+              </button>
+            ))}
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            {onToggleDock && (
+              <button
+                type="button"
+                onClick={onToggleDock}
+                className={`grid h-7 w-7 place-items-center rounded-lg text-muted transition hover:bg-canvas hover:text-ink ${
+                  isDocked ? 'bg-brand-soft text-brand' : ''
+                }`}
+                title={isDocked ? t('extras.undockEmoji') ?? 'Открепить панель' : t('extras.dockEmoji') ?? 'Закрепить панель справа'}
+                aria-label={isDocked ? 'Undock emoji picker' : 'Dock emoji picker'}
+              >
+                <Pin className={`h-3.5 w-3.5 ${isDocked ? 'rotate-45 text-brand' : ''}`} />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="grid h-7 w-7 place-items-center rounded-lg text-muted transition hover:bg-danger/10 hover:text-danger"
+              title={t('common.close') ?? 'Закрыть'}
+              aria-label="Close emoji picker"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Сетка эмодзи */}
+      <div className={`grid grid-cols-7 gap-1 overflow-y-auto ${isDocked ? 'flex-1 max-h-none pr-1' : 'max-h-64'}`}>
         {emojis.map((emoji) => (
           <button
             key={emoji}
@@ -56,25 +121,77 @@ export function EmojiPicker({ mode = 'composer', onSelect, onClose, className = 
   );
 }
 
-export function HighlightedText({ text, query, className = '' }: { text: string; query: string; className?: string }) {
-  const normalizedQuery = query.trim().toLocaleLowerCase('ru-RU');
-  if (!normalizedQuery) return <span className={className}>{text}</span>;
+function renderHighlightedSlice(
+  textSlice: string,
+  normalizedQuery: string,
+  keyPrefix: string,
+): ReactNode[] {
+  if (!normalizedQuery) return [textSlice];
   const parts: ReactNode[] = [];
-  const normalizedText = text.toLocaleLowerCase('ru-RU');
+  const normalizedText = textSlice.toLocaleLowerCase('ru-RU');
   let cursor = 0;
   let match = normalizedText.indexOf(normalizedQuery, cursor);
   while (match !== -1) {
-    if (match > cursor) parts.push(text.slice(cursor, match));
+    if (match > cursor) {
+      parts.push(textSlice.slice(cursor, match));
+    }
     parts.push(
-      <mark key={`${match}-${cursor}`} className="rounded bg-[#ffe66d] px-0.5 text-[#332b00]">
-        {text.slice(match, match + normalizedQuery.length)}
+      <mark
+        key={`${keyPrefix}-${match}-${cursor}`}
+        className="rounded bg-[#ffe66d] px-0.5 text-[#332b00]"
+      >
+        {textSlice.slice(match, match + normalizedQuery.length)}
       </mark>,
     );
     cursor = match + normalizedQuery.length;
     match = normalizedText.indexOf(normalizedQuery, cursor);
   }
-  if (cursor < text.length) parts.push(text.slice(cursor));
-  return <span className={className}>{parts}</span>;
+  if (cursor < textSlice.length) {
+    parts.push(textSlice.slice(cursor));
+  }
+  return parts;
+}
+
+export function HighlightedText({
+  text,
+  query = '',
+  className = '',
+}: {
+  text: string;
+  query?: string;
+  className?: string;
+}) {
+  if (!text) return null;
+  const normalizedQuery = (query ?? '').trim().toLocaleLowerCase('ru-RU');
+  const tokens = tokenizeText(text);
+
+  const elements: ReactNode[] = tokens.map((token, index) => {
+    if (token.type === 'link') {
+      return (
+        <a
+          key={`token-link-${index}`}
+          href={token.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="cursor-pointer break-all font-medium text-brand underline decoration-brand/40 underline-offset-2 transition hover:text-brand-dark hover:decoration-brand"
+          onClick={(event) => {
+            // Клик по ссылке открывает её в новой вкладке браузера и не переключает
+            // текущий диалог/экран мессенджера (предотвращаем всплытие клика к пузырю сообщения).
+            event.stopPropagation();
+          }}
+        >
+          {renderHighlightedSlice(token.value, normalizedQuery, `tok-${index}`)}
+        </a>
+      );
+    }
+    return (
+      <Fragment key={`token-txt-${index}`}>
+        {renderHighlightedSlice(token.value, normalizedQuery, `tok-${index}`)}
+      </Fragment>
+    );
+  });
+
+  return <span className={className}>{elements}</span>;
 }
 
 interface ReactionBarProps {
@@ -125,7 +242,7 @@ export function PinnedMessagesBar({ messages, activeIndex, onChangeIndex, onJump
   const message = messages[Math.min(activeIndex, messages.length - 1)];
   if (!message) return null;
   return (
-    <div className="flex items-center gap-3 border-b border-line/75 bg-surface/95 px-4 py-2.5 sm:px-6">
+    <div className="animate-slide-down flex items-center gap-3 border-b border-line/75 bg-surface/95 px-4 py-2.5 sm:px-6 transition-all duration-200">
       <Pin className="h-4 w-4 shrink-0 text-brand" />
       <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onJump(message.id)}>
         <span className="block text-[11px] font-bold text-brand">

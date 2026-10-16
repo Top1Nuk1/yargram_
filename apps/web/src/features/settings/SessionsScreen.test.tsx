@@ -13,6 +13,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       sessions: vi.fn(),
       terminateSession: vi.fn(),
       terminateOtherSessions: vi.fn(),
+      renameSession: vi.fn(),
     },
   };
 });
@@ -83,6 +84,9 @@ beforeEach(() => {
   localStorage.clear();
   vi.mocked(api.terminateSession).mockResolvedValue(overview({ sessions: [home] }));
   vi.mocked(api.terminateOtherSessions).mockResolvedValue(overview({ sessions: [home] }));
+  vi.mocked(api.renameSession).mockResolvedValue(
+    overview({ sessions: [{ ...home, customDeviceName: 'Мой Компьютер' }, mirror] }),
+  );
 });
 
 afterEach(cleanup);
@@ -248,5 +252,39 @@ describe('экран «Активные сеансы»', () => {
 
     await waitFor(() => expect(screen.getByText('Активні сеанси')).toBeTruthy());
     expect(screen.getAllByRole('button', { name: 'Завершити' })).toHaveLength(2);
+  });
+
+  it('отображает пользовательское имя устройства и позволяет переименовать его', async () => {
+    renderScreen({
+      overview: overview({
+        sessions: [
+          { ...home, customDeviceName: 'Рабочий ПК' },
+          mirror,
+        ],
+      }),
+    });
+
+    await waitFor(() => expect(screen.getByText('Рабочий ПК')).toBeTruthy());
+    expect(screen.getByText('Chrome, Windows • yargram.test')).toBeTruthy();
+
+    // Кликаем по кнопке редактирования устройства
+    const renameButtons = screen.getAllByRole('button', { name: 'Переименовать устройство' });
+    fireEvent.click(renameButtons[0]);
+
+    // Появляется диалоговое окно переименования
+    const input = screen.getByPlaceholderText('Например: Компьютер дома') as HTMLInputElement;
+    expect(input.value).toBe('Рабочий ПК');
+
+    fireEvent.change(input, { target: { value: 'Мой Компьютер' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => {
+      expect(api.renameSession).toHaveBeenCalledWith('token', home.id, 'Мой Компьютер');
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Имя устройства сохранено.')).toBeTruthy();
+      expect(screen.getByText('Мой Компьютер')).toBeTruthy();
+    });
   });
 });

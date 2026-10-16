@@ -98,13 +98,13 @@ describe('UserName', () => {
     expect(labels).toContain('Подтверждено');
   });
 
-  it('renders the «бот» box next to the name of the service bot', () => {
+  it('renders the BOT box next to the name of the service bot', () => {
     const { container } = render(<UserName name="Yargram Support" user={{ isBot: true }} />);
     const box = container.querySelector('[role="img"]');
     expect(box).not.toBeNull();
-    expect(box?.textContent).toBe('бот');
+    expect(box?.textContent).toBe('BOT');
     expect(box?.getAttribute('aria-label')).toBe('Служебный аккаунт бота');
-    expect(container.textContent).toBe('Yargram Supportбот');
+    expect(container.textContent).toBe('Yargram SupportBOT');
   });
 
   it('renders no SCAM box for a plain or explicitly unmarked account', () => {

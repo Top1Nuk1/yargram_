@@ -447,6 +447,15 @@ define('auth.terms', {
   uk: 'Продовжуючи, ви погоджуєтеся дбайливо ставитися до співрозмовників.',
   be: 'Працягваючы, вы пагаджаецеся беражна ставіцца да суразмоўцаў.',
 });
+// Соглашение живёт на отдельной странице лендинга (`/terms`), а не внутри
+// приложения: документ должен иметь свой адрес, который можно процитировать.
+define('auth.termsLink', {
+  ru: 'Пользовательское соглашение',
+  en: 'User agreement',
+  bg: 'Потребителско споразумение',
+  uk: 'Угода користувача',
+  be: 'Карыстальніцкае дагавор',
+});
 
 // ---- Код подтверждения из письма ----
 define('auth.codeTitle', { ru: 'Код из письма', en: 'Email code', bg: 'Код от имейл', uk: 'Код з листа', be: 'Код з ліста' 
@@ -610,10 +619,7 @@ define('badge.fakeTitle', {
 });
 define('badge.frozenAria', { ru: 'Аккаунт заморожен', en: 'Account frozen', bg: 'Профилът е замразен', uk: 'Акаунт заморожен', be: 'Акаўнт заморожен' 
 });
-define('badge.bot', { ru: 'бот', en: 'bot', bg: 'бот', uk: 'бот', be: 'бот' 
-});
-define('badge.botAria', {
-  ru: 'Служебный аккаунт бота',
+define('badge.botAria', {  ru: 'Служебный аккаунт бота',
   en: 'Service bot account',
   bg: 'Служебен профил на бот',
   uk: 'Службовий акаунт бота',
@@ -659,6 +665,9 @@ define('fake.groupWarning', {
 define('presence.online', { ru: 'В сети', en: 'Online', bg: 'На линия', uk: 'У мережі', be: 'У сетцы' 
 });
 define('presence.offline', { ru: 'Не в сети', en: 'Offline', bg: 'Извън линия', uk: 'Не у мережі', be: 'Не ў сетцы' 
+});
+// У бота присутствия нет: он не «в сети» и не «был(а) недавно» — он просто бот.
+define('presence.bot', { ru: 'бот', en: 'bot', bg: 'бот', uk: 'бот', be: 'бот' 
 });
 // Подписи «был(а) …» — собираются в formatLastSeen из lib/presence.ts.
 define('presence.unknown', { ru: 'Статус неизвестен', en: 'Status unknown', bg: 'Статусът е неизвестен', uk: 'Статус неизвестен', be: 'Статус неизвестен' 
@@ -758,6 +767,20 @@ define('sidebar.blocked', { ru: 'Заблокированные', en: 'Blocked u
 });
 // Вкладки списка бесед: «Чаты» и «Архив».
 define('sidebar.chats', { ru: 'Чаты', en: 'Chats', bg: 'Разговори', uk: 'Чати', be: 'Чаты' 
+});
+define('sidebar.filterAll', { ru: 'Все', en: 'All', bg: 'Всички', uk: 'Всі', be: 'Усе' 
+});
+define('sidebar.filterDirect', { ru: 'Личные', en: 'Direct', bg: 'Лични', uk: 'Особисті', be: 'Асабістыя' 
+});
+define('sidebar.filterGroups', { ru: 'Группы', en: 'Groups', bg: 'Групи', uk: 'Групи', be: 'Групы' 
+});
+define('sidebar.filterUnread', { ru: 'Непрочитанные', en: 'Unread', bg: 'Непрочетени', uk: 'Непрочитані', be: 'Непрачытаныя' 
+});
+define('sidebar.pinChat', { ru: 'Закрепить чат', en: 'Pin chat', bg: 'Закачи разговор', uk: 'Закріпити чат', be: 'Замацаваць чат' 
+});
+define('sidebar.unpinChat', { ru: 'Открепить чат', en: 'Unpin chat', bg: 'Откачи разговор', uk: 'Відкріпити чат', be: 'Адмацаваць чат' 
+});
+define('sidebar.pinnedLimit', { ru: 'Можно закрепить не более 5 чатов', en: 'You can pin up to 5 chats', bg: 'Можете да закачите до 5 разговора', uk: 'Можна закріпити щонайбільше 5 чатів', be: 'Можна замацаваць не больш за 5 чатаў' 
 });
 define('sidebar.archive', { ru: 'Архив', en: 'Archive', bg: 'Архив', uk: 'Архів', be: 'Архіў' 
 });
@@ -1543,6 +1566,38 @@ define('profile.fakeFailed', {
   uk: 'Не вдалося змінити позначку FAKE.',
   be: 'Не ўдалося змяніць адзнаку FAKE.',
 });
+define('profile.setBot', { ru: 'Выдать отметку BOT', en: 'Set BOT mark', bg: 'Постави отметка BOT', uk: 'Видати позначку BOT', be: 'Выдаць адзнаку BOT'
+});
+define('profile.clearBot', { ru: 'Снять отметку BOT', en: 'Clear BOT mark', bg: 'Махни отметката BOT', uk: 'Зняти позначку BOT', be: 'Зняць адзнаку BOT'
+});
+define('profile.confirmBot', {
+  ru: 'Пометить аккаунт {handle} ботом? Войти в него больше нельзя, а письма для входа и сброса пароля перестанут работать. Снять метку можно здесь же.',
+  en: 'Mark the account {handle} as a bot? Nobody will be able to sign in, and sign-in and password-reset emails will stop working. The label can be removed here as well.',
+  bg: 'Да отбележим ли {handle} като бот? Влизането в този профил ще стане невъзможно, а писмата за вход и смяна на парола ще спрат да работят. Отметката може да се свали оттук.',
+  uk: 'Позначити акаунт {handle} ботом? Увійти в нього більше не можна, а листи для входу та скидання пароля перестануть працювати. Зняти позначку можна тут же.',
+  be: 'Пазначыць акаўнт {handle} ботам? Увайсці ў яго больш нельга, а лісты для ўваходу і скідання пароля перастануць працаваць. Зняць пазначку можна тут жа.',
+});
+define('profile.botSet', {
+  ru: 'Отметка BOT выдана: войти в этот аккаунт нельзя.',
+  en: 'The BOT mark has been set: nobody can sign in to this account.',
+  bg: 'Отметката BOT е поставена: влизането в този профил е невъзможно.',
+  uk: 'Позначку BOT видано: увійти в цей акаунт не можна.',
+  be: 'Адзнака BOT выдадзена: увайсці ў гэты акаўнт нельга.',
+});
+define('profile.botCleared', {
+  ru: 'Отметка BOT снята, вход в аккаунт снова открыт.',
+  en: 'The BOT mark has been cleared: sign-in works again.',
+  bg: 'Отметката BOT е махната, влизането отново работи.',
+  uk: 'Позначку BOT знято, вхід в акаунт знову відкрито.',
+  be: 'Адзнака BOT знята, уваход у акаўнт зноў адкрыты.',
+});
+define('profile.botFailed', {
+  ru: 'Не удалось изменить отметку BOT.',
+  en: 'Could not change the BOT mark.',
+  bg: 'Отметката BOT не беше променена.',
+  uk: 'Не вдалося змінити позначку BOT.',
+  be: 'Не ўдалося змяніць адзнаку BOT.',
+});
 define('profile.accountRestored', { ru: 'Аккаунт возвращён.', en: 'The account has been restored.', bg: 'Профилът е върнат.', uk: 'Акаунт возвращён.', be: 'Акаўнт возвращён.' 
 });
 define('profile.restoreFailed', {
@@ -1913,6 +1968,9 @@ define('admin.markFake', { ru: 'FAKE', en: 'FAKE', bg: 'FAKE', uk: 'FAKE', be: '
 });
 define('admin.markOwner', { ru: 'Владельцы', en: 'Owners', bg: 'Собственици', uk: 'Власники', be: 'Уладальнікі' 
 });
+// Метка бота ищется тем же отбором, что и остальные знаки владельца.
+define('admin.markBot', { ru: 'BOT', en: 'BOT', bg: 'BOT', uk: 'BOT', be: 'BOT' 
+});
 define('admin.scopeAny', { ru: 'Везде', en: 'Everywhere', bg: 'Навсякъде', uk: 'Скрізь', be: 'Усюды' 
 });
 define('admin.scopeName', { ru: 'По нику', en: 'By name', bg: 'По име', uk: 'За Нік', be: 'Па Нік' 
@@ -1955,6 +2013,51 @@ define('admin.accountsHint', {
 define('admin.account', { ru: 'Аккаунт', en: 'Account', bg: 'Профил', uk: 'Акаунт', be: 'Акаўнт' 
 });
 define('admin.group', { ru: 'Группа', en: 'Group', bg: 'Група', uk: 'Група', be: 'Група' 
+});
+define('admin.bot', { ru: 'Боты', en: 'Bots', bg: 'Ботове', uk: 'Боти', be: 'Боты' 
+});
+define('admin.botsIntro', {
+  ru: 'Служебные аккаунты Yargram. Такой аккаунт не человек: рядом с именем у него горит метка BOT, а войти в него нельзя — пароля у него нет.',
+  en: 'Yargram service accounts. Such an account is not a person: it carries the BOT label next to its name, and nobody can sign in to it — it has no password.',
+  bg: 'Служебни профили на Yargram. Такъв профил не е човек: до името му стои отметка BOT, а влизане в него е невъзможно — той няма парола.',
+  uk: 'Службові акаунти Yargram. Такий акаунт не людина: поруч з іменем у нього горить метка BOT, а увійти в нього не можна — пароля в нього немає.',
+  be: 'Службовыя акаўнты Yargram. Такі акаўнт не чалавек: побач з імем у яго гарыць метка BOT, а ўвайсці ў яго нельга — пароля ў яго няма.',
+});
+define('admin.botsListLabel', { ru: 'Служебные боты', en: 'Service bots', bg: 'Служебни ботове', uk: 'Службові боти', be: 'Службовыя боты' 
+});
+define('admin.botsLoading', { ru: 'Загружаем список…', en: 'Loading the list…', bg: 'Списъкът се зарежда…', uk: 'Завантажуємо список…', be: 'Загружаем спіс…' 
+});
+define('admin.botsFailed', { ru: 'Не удалось загрузить список ботов.', en: 'Could not load the bot list.', bg: 'Списъкът с ботове не се зареди.', uk: 'Не вдалося завантажити список ботів.', be: 'Не ўдалося загрузіць спіс ботаў.' 
+});
+define('admin.botsEmpty', { ru: 'Служебных ботов пока нет.', en: 'There are no service bots yet.', bg: 'Още няма служебни ботове.', uk: 'Службових ботів поки немає.', be: 'Службовых ботаў пакуль няма.' 
+});
+define('admin.botUsernameLabel', { ru: 'Кому поставить метку BOT', en: 'Who to mark as a bot', bg: 'Кого да отбележим като бот', uk: 'Кому поставити метку BOT', be: 'Каму паставіць метку BOT' 
+});
+define('admin.botStateOn', { ru: 'Метка BOT стоит: войти в этот аккаунт нельзя.', en: 'The BOT label is set: nobody can sign in to this account.', bg: 'Отметката BOT е поставена: влизане в този профил е невъзможно.', uk: 'Метка BOT стоїть: увійти в цей акаунт не можна.', be: 'Метка BOT стаіць: увайсці ў гэты акаўнт нельга.' 
+});
+define('admin.botStateOff', { ru: 'Обычный аккаунт: вход по паролю работает.', en: 'A regular account: signing in with a password works.', bg: 'Обикновен профил: влизането с парола работи.', uk: 'Звичайний акаунт: вхід за паролем працює.', be: 'Звычайны акаўнт: уваход па паролі працуе.' 
+});
+define('admin.botSet', { ru: 'Поставить BOT', en: 'Set BOT', bg: 'Постави BOT', uk: 'Поставити BOT', be: 'Паставіць BOT' 
+});
+define('admin.botClear', { ru: 'Снять BOT', en: 'Clear BOT', bg: 'Махни BOT', uk: 'Зняти BOT', be: 'Зняць BOT' 
+});
+define('admin.botSetDone', { ru: 'Аккаунт {handle} помечен ботом. Войти в него больше нельзя.', en: '{handle} is now marked as a bot. Nobody can sign in to it anymore.', bg: 'Профилът {handle} е отбелязан като бот. Влизане в него вече е невъзможно.', uk: 'Акаунт {handle} позначений ботом. Увійти в нього більше не можна.', be: 'Акаўнт {handle} пазначаны ботам. Увайсці ў яго больш нельга.' 
+});
+define('admin.botClearedDone', { ru: 'С аккаунта {handle} метка бота снята.', en: 'The bot label has been removed from {handle}.', bg: 'Отметката бот е свалена от профила {handle}.', uk: 'З акаунта {handle} метку бота знято.', be: 'З акаўнта {handle} метка бота знята.' 
+});
+define('admin.confirmBot', {
+  ru: 'Пометить {handle} ботом? Войти в этот аккаунт больше нельзя, а письма для входа и сброса пароля перестанут работать. Снять метку можно здесь же.',
+  en: 'Mark {handle} as a bot? Nobody will be able to sign in to this account, and sign-in and password-reset emails will stop working. The label can be removed here as well.',
+  bg: 'Да отбележим ли {handle} като бот? Влизането в този профил ще стане невъзможно, а писмата за вход и смяна на парола ще спрат да работят. Отметката може да се свали оттук.',
+  uk: 'Позначити {handle} ботом? Увійти в цей акаунт більше не можна, а листи для входу та скидання пароля перестануть працювати. Зняти метку можна тут же.',
+  be: 'Пазначыць {handle} ботам? Увайсці ў гэты акаўнт больш нельга, а лісты для ўваходу і скіду пароля перастануць працаваць. Зняць метку можна тут жа.',
+});
+define('admin.botWarning', {
+  ru: 'Своему аккаунту метку поставить нельзя: снять её было бы уже некому. Метка не стирает аккаунт и не удаляет переписку — она только закрывает вход.',
+  en: 'You cannot mark your own account: there would be nobody left to remove the label. The label does not erase the account or the chats — it only closes the sign-in.',
+  bg: 'На собствения си профил не можете да поставите отметка: нямаше да остане кой да я свали. Отметката не изтрива профила и разговорите — само затваря влизането.',
+  uk: 'Своєму акаунту метку поставити не можна: зняти її було б уже нікому. Метка не стирає акаунт і не видаляє переписку — вона лише закриває вхід.',
+  be: 'Свайму акаўнту метку паставіць нельга: зняць яе было б ужо некаму. Метка не сцірае акаўнт і не выдаляе перапіску — яна толькі закрывае ўваход.',
 });
 define('admin.groupLabel', { ru: 'Группа', en: 'Group', bg: 'Група', uk: 'Група', be: 'Група' 
 });
@@ -2527,6 +2630,187 @@ define('extras.removeReaction', { ru: 'Убрать реакцию', en: 'Remove
 define('extras.addReaction', { ru: 'Поставить реакцию', en: 'Add reaction', bg: 'Добави реакция', uk: 'Поставити реакцію', be: 'Паставіць рэакцыю' 
 });
 define('extras.addReactionAria', { ru: 'Добавить реакцию', en: 'Add reaction', bg: 'Добави реакция', uk: 'Додати реакцію', be: 'Дадаць рэакцыю' 
+}); 
+
+// ---- Стикеры, наборы и гифки ----
+define('stickers.pickerLabel', { ru: 'Стикеры и гифки', en: 'Stickers and GIFs', bg: 'Стикери и GIF-та', uk: 'Стікери та GIF-ки', be: 'Сцікера і GIF-і' });
+define('stickers.tabStickers', { ru: 'Стикеры', en: 'Stickers', bg: 'Стикери', uk: 'Стікери', be: 'Сцікеры' });
+define('stickers.tabGifs', { ru: 'Гифки', en: 'GIFs', bg: 'GIF-та', uk: 'GIF-ки', be: 'GIF-і' });
+define('stickers.favorites', { ru: 'Избранное', en: 'Favorites', bg: 'Любими', uk: 'Обране', be: 'Абранае' });
+define('stickers.recent', { ru: 'Недавние', en: 'Recent', bg: 'Наскорошни', uk: 'Нещодавні', be: 'Нядаўнія' });
+define('stickers.addFavorite', { ru: 'В избранное', en: 'Add to favorites', bg: 'Добави в любими', uk: 'В обране', be: 'У абранае' });
+define('stickers.removeFavorite', { ru: 'Убрать из избранного', en: 'Remove from favorites', bg: 'Махни от любими', uk: 'Прибрати з обраного', be: 'Прыбраць з абранага' });
+define('stickers.managePacks', { ru: 'Мои стикеры', en: 'My stickers', bg: 'Моите стикери', uk: 'Мої стікери', be: 'Мае стікеры' });
+define('stickers.close', { ru: 'Закрыть', en: 'Close', bg: 'Затвори', uk: 'Закрити', be: 'Закрыць' });
+define('stickers.back', { ru: 'Назад', en: 'Back', bg: 'Назад', uk: 'Назад', be: 'Назад' });
+define('stickers.sendSticker', { ru: 'Отправить стикер', en: 'Send sticker', bg: 'Изпрати стикер', uk: 'Надіслати стікер', be: 'Даслаць стікер' });
+define('stickers.sendGif', { ru: 'Отправить гифку', en: 'Send GIF', bg: 'Изпрати GIF', uk: 'Надіслати GIF', be: 'Даслаць GIF' });
+define('stickers.noRecent', {
+  ru: 'Здесь появятся стикеры, которые вы отправляли. Выберите любой в наборе — и он запомнится.',
+  en: 'Stickers you send will show up here. Pick one from any pack and it will be remembered.',
+  bg: 'Тук ще се появят стикерите, които сте изпращали. Изберете такъв от комплект и той ще бъде запомнен.',
+  uk: 'Тут з’являтимуться стікери, які ви надсилали. Оберіть будь-який із набору — і він запам’ятається.',
+  be: 'Тут будуць з’яўляцца стікеры, якія вы дасылалі. Абярыце адзін з набору — і ён запомніцца.',
+});
+define('stickers.noGifs', {
+  ru: 'Гифок пока нет. Загрузите фото или короткое видео — они останутся в библиотеке.',
+  en: 'No GIFs yet. Upload a photo or a short video — they stay in your library.',
+  bg: 'Все още няма GIF-та. Качете снимка или кратко видео — те остават в библиотеката.',
+  uk: 'GIF-ків ще немає. Завантажте фото або коротке відео — вони залишаться у бібліотеці.',
+  be: 'GIF-ў пакуль няма. Загрузіце фота або кароткае відэа — яны застануцца ў бібліятэцы.',
+});
+define('stickers.packEmpty', {
+  ru: 'В наборе «{title}» пока пусто. Добавьте стикеры в разделе «Мои стикеры».',
+  en: 'The “{title}” pack is empty for now. Add stickers in “My stickers”.',
+  bg: 'Комплектът „{title}“ все още е празен. Добавете стикери в „Моите стикери“.',
+  uk: 'Набір «{title}» поки що порожній. Додайте стікери в розділі «Мої стікери».',
+  be: 'Набор «{title}» пакуль пусты. Дадайце стікеры ў раздзеле «Мае стікеры».',
+});
+define('stickers.packCount', {
+  ru: '{count} из 200',
+  en: '{count} of 200',
+  bg: '{count} от 200',
+  uk: '{count} з 200',
+  be: '{count} з 200',
+});
+define('stickers.packFull', {
+  ru: 'В наборе уже 200 стикеров — это предел.',
+  en: 'The pack already holds 200 stickers — that is the limit.',
+  bg: 'Комплектът вече съдържа 200 стикера — това е границата.',
+  uk: 'У наборі вже 200 стікерів — це межа.',
+  be: 'У наборы ўжо 200 стікераў — гэта мяжа.',
+});
+define('stickers.newPack', { ru: 'Новый набор', en: 'New pack', bg: 'Нов комплект', uk: 'Новий набір', be: 'Новы набор' });
+define('stickers.create', { ru: 'Создать', en: 'Create', bg: 'Създай', uk: 'Створити', be: 'Стварыць' });
+define('stickers.cancel', { ru: 'Отмена', en: 'Cancel', bg: 'Отказ', uk: 'Скасувати', be: 'Скасаваць' });
+define('stickers.packTitlePlaceholder', { ru: 'Название набора', en: 'Pack name', bg: 'Име на комплекта', uk: 'Назва набору', be: 'Назва набору' });
+define('stickers.packEmoji', { ru: 'Значок набора', en: 'Pack icon', bg: 'Значка на комплекта', uk: 'Значок набору', be: 'Значок набору' });
+define('stickers.myPacks', { ru: 'Мои наборы', en: 'My packs', bg: 'Моите комплекти', uk: 'Мої набори', be: 'Мае наборы' });
+define('stickers.noOwnPacks', {
+  ru: 'Наборов пока нет. Создайте первый — и стикеры можно будет складывать в него по одному.',
+  en: 'No packs yet. Create the first one — then you can add stickers to it one by one.',
+  bg: 'Все още няма комплекти. Създайте първия — и стикерите може да се слагат в него един по един.',
+  uk: 'Наборів ще немає. Створіть перший — і стікери можна буде додавати до нього по одному.',
+  be: 'Набораў пакуль няма. Стварыце першы — і стікеры можна будзе дадаваць у яго па адным.',
+});
+define('stickers.addStickers', { ru: 'Добавить стикеры', en: 'Add stickers', bg: 'Добави стикери', uk: 'Додати стікери', be: 'Дадаць стікеры' });
+define('stickers.removeSticker', { ru: 'Убрать стикер', en: 'Remove sticker', bg: 'Махни стикера', uk: 'Прибрати стікер', be: 'Прыбраць стікер' });
+define('stickers.deletePack', { ru: 'Удалить набор', en: 'Delete pack', bg: 'Изтрий комплекта', uk: 'Видалити набір', be: 'Выдаліць набор' });
+define('stickers.deletePackConfirm', {
+  ru: 'Удалить набор «{title}» вместе со стикерами?',
+  en: 'Delete the “{title}” pack with all its stickers?',
+  bg: 'Да изтрием ли комплекта „{title}“ заедно със стикерите?',
+  uk: 'Видалити набір «{title}» разом зі стікерами?',
+  be: 'Выдаліць набор «{title}» разам са сцікерамі?',
+});
+define('stickers.gifLibrary', { ru: 'Мои гифки', en: 'My GIFs', bg: 'Моите GIF-та', uk: 'Мої GIF-ки', be: 'Мае GIF-і' });
+define('stickers.addGifs', { ru: 'Загрузить фото или видео', en: 'Upload photo or video', bg: 'Качи снимка или видео', uk: 'Завантажити фото або відео', be: 'Загрузіць фота або відэа' });
+define('stickers.gifHint', {
+  ru: 'Загруженное отправляется много раз и без звука. Сейчас {count} из {limit}.',
+  en: 'What you upload can be sent as many times as you like, without sound. Now {count} of {limit}.',
+  bg: 'Каченото се изпраща много пъти и без звук. Сега {count} от {limit}.',
+  uk: 'Завантажене можна надсилати скільки завгодно раз і без звуку. Зараз {count} з {limit}.',
+  be: 'Загружанае можна дасылаць колькі захочаце раз і без гуку. Зараз {count} з {limit}.',
+});
+define('stickers.gifLimit', {
+  ru: 'В библиотеке уже {limit} гифок — освободите место, чтобы добавить новые.',
+  en: 'Your library already holds {limit} GIFs — free up space to add more.',
+  bg: 'В библиотеката вече има {limit} GIF-та — освободете място за нови.',
+  uk: 'У бібліотеці вже {limit} GIF-ків — звільніть місце для нових.',
+  be: 'У бібліятэцы ўжо {limit} GIF-ў — вызвабіце месца для новых.',
+});
+define('stickers.packInChat', {
+  ru: 'Набор «{title}»',
+  en: 'Pack “{title}”',
+  bg: 'Комплект „{title}“',
+  uk: 'Набір «{title}»',
+  be: 'Набор «{title}»',
+});
+define('stickers.packSharedNotice', {
+  ru: 'Набор «{title}» добавлен в ваши стикеры',
+  en: 'Pack “{title}” added to your stickers',
+  bg: 'Комплектът „{title}“ е добавен във вашите стикери',
+  uk: 'Набір «{title}» додано до ваших стікерів',
+  be: 'Набор «{title}» дададзены да вашых стікераў',
+});
+define('stickers.sharePack', { ru: 'Прислать набор', en: 'Share pack', bg: 'Изпрати комплекта', uk: 'Надіслати набір', be: 'Даслаць набор' });
+define('stickers.removePack', { ru: 'Убрать набор', en: 'Remove pack', bg: 'Махни комплекта', uk: 'Прибрати набір', be: 'Прыбраць набор' });
+define('stickers.saveSticker', {
+  ru: 'Сохранить в мои стикеры',
+  en: 'Save to my stickers',
+  bg: 'Запази в моите стикери',
+  uk: 'Зберегти в мої стікери',
+  be: 'Захаваць у мае стікеры',
+});
+define('stickers.packTitleLabel', {
+  ru: 'Набор стикеров',
+  en: 'Sticker pack',
+  bg: 'Комплект стикери',
+  uk: 'Набір стікерів',
+  be: 'Набор стікераў',
+});
+define('stickers.packRemoved', {
+  ru: 'Набор «{title}» убран из ваших стикеров',
+  en: 'Pack “{title}” removed from your stickers',
+  bg: 'Комплектът „{title}“ е махнат от вашите стикери',
+  uk: 'Набір «{title}» прибрано з ваших стікерів',
+  be: 'Набор «{title}» прыбраны з вашых стікераў',
+});
+define('stickers.packActionFailed', {
+  ru: 'Не удалось изменить набор',
+  en: 'Could not change the pack',
+  bg: 'Комплектът не се промени',
+  uk: 'Не вдалося змінити набір',
+  be: 'Не ўдалося змяніць набор',
+});
+define('stickers.stickerSaved', {
+  ru: 'Стикер сохранён в набор «{title}»',
+  en: 'Sticker saved to “{title}”',
+  bg: 'Стикерът е запазен в „{title}“',
+  uk: 'Стікер збережено в набір «{title}»',
+  be: 'Сцікер захаваны ў набор «{title}»',
+});
+define('stickers.stickerSaveFailed', {
+  ru: 'Не удалось сохранить стикер',
+  en: 'Could not save the sticker',
+  bg: 'Стикерът не се запази',
+  uk: 'Не вдалося зберегти стікер',
+  be: 'Не ўдалося захаваць стікер',
+});
+define('stickers.needOwnPackFirst', {
+  ru: 'Сначала создайте свой набор',
+  en: 'Create your own pack first',
+  bg: 'Първо си направете свой комплект',
+  uk: 'Спершу створіть свій набір',
+  be: 'Спачатку стварыце свой набор',
+});
+define('stickers.stickerButton', {
+  ru: 'Стикеры',
+  en: 'Stickers',
+  bg: 'Стикери',
+  uk: 'Стікери',
+  be: 'Сцікеры',
+});
+define('stickers.sharePickChat', {
+  ru: 'Кому прислать набор',
+  en: 'Send the pack to',
+  bg: 'На кого да изпратиш комплекта',
+  uk: 'Кому надіслати набір',
+  be: 'Каму даслаць набор',
+});
+define('stickers.shareNeedsChat', {
+  ru: 'Сначала начните хотя бы один чат',
+  en: 'Start at least one chat first',
+  bg: 'Първо започнете поне един чат',
+  uk: 'Спершу почніть хоча б один чат',
+  be: 'Спачатку пачніце хоць адзін чат',
+});
+define('stickers.packLimitHint', {
+  ru: 'В наборе не больше 200 стикеров.',
+  en: 'A pack holds at most 200 stickers.',
+  bg: 'В комплекта има най-много 200 стикера.',
+  uk: 'У наборі не більше 200 стікерів.',
+  be: 'У наборы не больш за 200 стікераў.',
 });
 define('extras.pinnedMessages', {
   ru: 'Закреплённые сообщения · {index} из {total}',
@@ -2540,6 +2824,16 @@ define('extras.attachment', { ru: 'Вложение', en: 'Attachment', bg: 'П�
 define('extras.nextPinned', { ru: 'Следующее закреплённое сообщение', en: 'Next pinned message', bg: 'Следващо закачено съобщение', uk: 'Наступне закріплене Повідомлення', be: 'Наступнае замацаванае Паведамленне' 
 });
 define('extras.unpin', { ru: 'Открепить сообщение', en: 'Unpin message', bg: 'Откачи съобщение', uk: 'Відкріпити Повідомлення', be: 'Адмацаваць Паведамленне' 
+});
+define('extras.undockEmoji', { ru: 'Открепить панель', en: 'Undock panel', bg: 'Откачи панела', uk: 'Відкріпити панель', be: 'Адмацаваць панэль' 
+});
+define('extras.dockEmoji', { ru: 'Закрепить панель справа', en: 'Dock panel to the right', bg: 'Закачи панела вдясно', uk: 'Закріпити панель праворуч', be: 'Замацаваць панэль справа' 
+});
+define('extras.unpinConfirmTitle', { ru: 'Открепить сообщение?', en: 'Unpin message?', bg: 'Откачане на съобщение?', uk: 'Відкріпити повідомлення?', be: 'Адмацаваць паведамленне?' 
+});
+define('extras.unpinConfirmHint', { ru: 'Вы уверены, что хотите открепить это сообщение для всех участников?', en: 'Are you sure you want to unpin this message for all participants?', bg: 'Сигурни ли сте, че искате да откачите това съобщение за всички?', uk: 'Ви впевнені, що хочете відкріпити це повідомлення для всіх учасників?', be: 'Ці ўпэўненыя вы, што хочаце адмацаваць гэта паведамленне для ўсіх удзельнікаў?' 
+});
+define('msgr.readAt', { ru: 'Прочитано', en: 'Read', bg: 'Прочетено', uk: 'Прочитано', be: 'Прачытана' 
 });
 define('extras.systemEvent', { ru: 'Системное событие', en: 'System event', bg: 'Системно събитие', uk: 'Системна подія', be: 'Сістэмная падзея' 
 });
@@ -2598,6 +2892,13 @@ define('attach.pauseVoice', { ru: 'Остановить голосовое со�
 });
 define('attach.seekVoice', { ru: 'Перемотка голосового сообщения', en: 'Seek voice message', bg: 'Превъртане на гласовото съобщение', uk: 'Перемотка голосового Повідомлення', be: 'Перемотка голосового Паведамленне' 
 });
+define('attach.playbackSpeed', {
+  ru: 'Скорость {speed}',
+  en: 'Speed {speed}',
+  bg: 'Скорост {speed}',
+  uk: 'Швидкість {speed}',
+  be: 'Хуткасць {speed}',
+});
 define('attach.downloadPhoto', { ru: 'Скачать фотографию', en: 'Download photo', bg: 'Свали снимката', uk: 'Завантажити фотографию', be: 'Загрузіць фотографию' 
 });
 define('attach.previousPhoto', { ru: 'Предыдущее фото', en: 'Previous photo', bg: 'Предишна снимка', uk: 'Попереднє фото', be: 'Папярэдняе фото' 
@@ -2636,6 +2937,10 @@ define('msgr.openDialogFailed', { ru: 'Не удалось открыть диа
 define('msgr.openSupportFailed', { ru: 'Не удалось открыть поддержку.', en: 'Could not open support.', bg: 'Поддръжката не можа да се отвори.', uk: 'Не вдалося відкрити підтримку.', be: 'Не ўдалося адкрыць падтрымку.' 
 });
 define('msgr.supportActionFailed', { ru: 'Не удалось выполнить действие.', en: 'Could not perform the action.', bg: 'Действието не можа да се изпълни.', uk: 'Не вдалося виконати дію.', be: 'Не ўдалося выканаць дзеянне.' 
+});
+// Кнопка под пустой перепиской с ботом: пока её не нажать, бот молчит.
+// Слово пишется заглавными буквами средствами вёрстки, а не в переводе.
+define('msgr.botStart', { ru: 'Старт', en: 'Start', bg: 'Старт', uk: 'Старт', be: 'Старт' 
 });
 define('msgr.leftGroup', { ru: 'Вы вышли из группы.', en: 'You left the group.', bg: 'Напуснахте групата.', uk: 'Ви вийшли з Групи.', be: 'Вы выйшлі з Групы.' 
 });
@@ -2831,6 +3136,34 @@ define('msgr.confirmFolderDelete', { ru: 'Нажмите ещё раз для у
 define('msgr.deleteFolder', { ru: 'Удалить папку', en: 'Delete folder', bg: 'Изтрий папката', uk: 'Видалити Папку', be: 'Выдаліць Папку' 
 });
 define('msgr.searchMessages', { ru: 'Поиск по сообщениям', en: 'Search messages', bg: 'Търсене в съобщенията', uk: 'Пошук по повідомленням', be: 'Пошук па паведамленням' 
+});
+define('msgr.searchPrev', {
+  ru: 'Предыдущее совпадение',
+  en: 'Previous match',
+  bg: 'Предишно съвпадение',
+  uk: 'Попередній збіг',
+  be: 'Папярэдняе супадзенне',
+});
+define('msgr.searchNext', {
+  ru: 'Следующее совпадение',
+  en: 'Next match',
+  bg: 'Следващо съвпадение',
+  uk: 'Наступний збіг',
+  be: 'Наступнае супадзенне',
+});
+define('msgr.searchCounter', {
+  ru: '{index} из {total}',
+  en: '{index} of {total}',
+  bg: '{index} от {total}',
+  uk: '{index} з {total}',
+  be: '{index} з {total}',
+});
+define('msgr.searchNoMatches', {
+  ru: 'Нет совпадений',
+  en: 'No matches',
+  bg: 'Няма съвпадения',
+  uk: 'Немає збігів',
+  be: 'Няма супадзенняў',
 });
 define('msgr.closeSearch', { ru: 'Закрыть поиск', en: 'Close search', bg: 'Затвори търсенето', uk: 'Закрити Пошук', be: 'Закрыць Пошук' 
 });
@@ -3069,6 +3402,49 @@ define('privacy.callsHint', {
   uk: 'Хто може дзвонити вам.',
   be: 'Хто можа званіць вам.',
 });
+define('privacy.whoCanCallMe', {
+  ru: 'Кто может звонить мне',
+  en: 'Who can call me',
+  bg: 'Кой може да ми звъни',
+  uk: 'Хто може дзвонити мені',
+  be: 'Хто можа званіць мне',
+});
+define('privacy.ruleEveryone', { ru: 'Все', en: 'Everybody', bg: 'Всички', uk: 'Усі', be: 'Усе' });
+define('privacy.ruleContacts', { ru: 'Мои контакты', en: 'My Contacts', bg: 'Моите контакти', uk: 'Мої контакти', be: 'Мае кантакты' });
+define('privacy.ruleNobody', { ru: 'Никто', en: 'Nobody', bg: 'Никой', uk: 'Ніхто', be: 'Ніхто' });
+define('privacy.addExceptions', {
+  ru: 'Добавить исключения',
+  en: 'Add exceptions',
+  bg: 'Добавяне на изключения',
+  uk: 'Додати винятки',
+  be: 'Дадаць выключэнні',
+});
+define('privacy.alwaysAllow', {
+  ru: 'Всегда разрешать',
+  en: 'Always allow',
+  bg: 'Винаги разрешавай',
+  uk: 'Завжди дозволяти',
+  be: 'Заўсёды дазваляць',
+});
+define('privacy.neverAllow', {
+  ru: 'Никогда не разрешать',
+  en: 'Never allow',
+  bg: 'Никога не разрешавай',
+  uk: 'Ніколи не дозволяти',
+  be: 'Ніколі не дазваляць',
+});
+define('privacy.exceptionsHint', {
+  ru: 'Этим пользователям будет разрешено или запрещено звонить Вам независимо от настроек выше.',
+  en: 'These users will or will not be allowed to call you regardless of the settings above.',
+  bg: 'Тези потребители ще имат или няма да имат разрешение да ви се обаждат независимо от настройките по-горе.',
+  uk: 'Цим користувачам буде дозволено або заборонено дзвонити Вам незалежно від налаштувань вище.',
+  be: 'Гэтым карыстальнікам будзе дазволена або забаронена званіць Вам незалежна ад налад вышэй.',
+});
+define('privacy.nobodyCount', { ru: 'Никого', en: 'Nobody', bg: 'Никой', uk: 'Нікого', be: 'Нікога' });
+define('privacy.addExceptionBtn', { ru: 'Добавить', en: 'Add', bg: 'Добави', uk: 'Додати', be: 'Дадаць' });
+define('privacy.userCountOne', { ru: '{count} пользователь', en: '{count} user', bg: '{count} потребител', uk: '{count} користувач', be: '{count} карыстальнік' });
+define('privacy.userCountFew', { ru: '{count} пользователя', en: '{count} users', bg: '{count} потребители', uk: '{count} користувачі', be: '{count} карыстальнікі' });
+define('privacy.userCountMany', { ru: '{count} пользователей', en: '{count} users', bg: '{count} потребители', uk: '{count} користувачів', be: '{count} карыстальнікаў' });
 define('privacy.messages', {
   ru: 'Сообщения',
   en: 'Messages',
@@ -3230,6 +3606,34 @@ define('sessions.terminatedAll', {
   be: 'Астатнія сеансы завершаны.',
 });
 define('sessions.loading', { ru: 'Загружаю…', en: 'Loading…', bg: 'Зареждам…', uk: 'Завантажую…', be: 'Загружаю…' });
+define('sessions.renameDevice', {
+  ru: 'Переименовать устройство',
+  en: 'Rename device',
+  bg: 'Преименувай устройството',
+  uk: 'Перейменувати пристрій',
+  be: 'Перайменаваць прыладу',
+});
+define('sessions.renamePrompt', {
+  ru: 'Новое имя устройства:',
+  en: 'New device name:',
+  bg: 'Ново име на устройството:',
+  uk: "Нове ім'я пристрою:",
+  be: 'Новае імя прылады:',
+});
+define('sessions.renamePlaceholder', {
+  ru: 'Например: Компьютер дома',
+  en: 'e.g. Home computer',
+  bg: 'Например: Домашен компютър',
+  uk: "Наприклад: Комп'ютер вдома",
+  be: 'Напрыклад: Камп’ютар дома',
+});
+define('sessions.nameUpdated', {
+  ru: 'Имя устройства сохранено.',
+  en: 'Device name saved.',
+  bg: 'Името на устройството е запазено.',
+  uk: "Ім'я пристрою збережено.",
+  be: 'Імя прылады захавана.',
+});
 
 // Окно «новый вход»: показываем сразу после входа с незнакомого сайта.
 define('sessions.alert.title', {
@@ -3493,6 +3897,67 @@ define('themes.gradientAnimatedHint', {
   bg: 'Цветовете плавно преливат един в друг. Изключено — стоят на място.',
   uk: 'Кольори плавно перетікають один в одного. Вимкнено — стоять на місці.',
   be: 'Колеры плаўна перацякаюць адзін у аднаго. Выключана — стаяць на месцы.',
+});
+
+// ---- Установка приложения (PWA) ----
+define('settings.install', { ru: 'Установить приложение', en: 'Install the app', bg: 'Инсталиране на приложението', uk: 'Встановити застосунок', be: 'Усталяваць дастасунак' });
+define('install.title', { ru: 'Установить приложение', en: 'Install the app', bg: 'Инсталиране на приложението', uk: 'Встановити застосунок', be: 'Усталяваць дастасунак' });
+define('install.lead', {
+  ru: 'Yargram можно установить как обычную программу: значок появится на рабочем столе или в меню, а окно браузера с адресной строкой больше не понадобится.',
+  en: 'Yargram can be installed like a regular program: an icon appears on your desktop or in the menu, and the browser window with the address bar is no longer needed.',
+  bg: 'Yargram може да се инсталира като обикновена програма: иконата се появява на работния плот или в менюто, а прозорецът на браузъра с адресната лента вече не е нужен.',
+  uk: 'Yargram можна встановити як звичайну програму: значок з’явиться на робочому столі або в меню, а вікно браузера з адресним рядком більше не знадобиться.',
+  be: 'Yargram можна ўсталяваць як звычайную праграму: значок з’явіцца на працоўным стале або ў меню, а акно браўзера з адрасным радком больш не спатрэбіцца.',
+});
+define('install.button', { ru: 'Установить', en: 'Install', bg: 'Инсталирай', uk: 'Встановити', be: 'Усталяваць' });
+define('install.browserAsks', {
+  ru: 'Дальше браузер сам спросит подтверждение — согласиться или отказаться решаете вы.',
+  en: 'Your browser will ask you to confirm next — whether to agree or decline is up to you.',
+  bg: 'След това браузърът сам ще поиска потвърждение — да се съгласите или да откажете решавате вие.',
+  uk: 'Далі браузер сам запита підтвердження — погодитися чи відмовитися вирішуєте ви.',
+  be: 'Далей браўзер сам запытае пацверджанне — пагадзіцца ці адмовіцца вырашаеце вы.',
+});
+define('install.alreadyInstalled', {
+  ru: 'Приложение уже установлено — открывайте его со значка.',
+  en: 'The app is already installed — open it from its icon.',
+  bg: 'Приложението вече е инсталирано — отваряйте го от иконата.',
+  uk: 'Застосунок уже встановлено — відкривайте його зі значка.',
+  be: 'Дастасунак ужо ўсталяваны — адкрывайце яго са значка.',
+});
+define('install.manualTitle', {
+  ru: 'Этот браузер не предлагает установку сам',
+  en: 'This browser does not offer installation on its own',
+  bg: 'Този браузър не предлага инсталиране сам',
+  uk: 'Цей браузер не пропонує встановлення сам',
+  be: 'Гэты браўзер не прапануе ўсталяванне сам',
+});
+define('install.manualHint', {
+  ru: 'На компьютере откройте меню браузера и выберите «Установить приложение» — или найдите значок установки справа в адресной строке.',
+  en: 'On a computer, open the browser menu and choose “Install app” — or look for the install icon on the right of the address bar.',
+  bg: 'На компютър отворете менюто на браузъра и изберете „Инсталиране на приложение“ — или потърсете иконата за инсталиране вдясно в адресната лента.',
+  uk: 'На комп’ютері відкрийте меню браузера та виберіть «Встановити застосунок» — або знайдіть значок встановлення праворуч в адресному рядку.',
+  be: 'На камп’ютары адкрыйце меню браўзера і выберыце «Усталяваць дастасунак» — або знайдзіце значок усталявання справа ў адрасным радку.',
+});
+define('install.manualIos', {
+  ru: 'На iPhone и iPad: кнопка «Поделиться», затем «На экран „Домой“».',
+  en: 'On iPhone and iPad: the Share button, then “Add to Home Screen”.',
+  bg: 'На iPhone и iPad: бутонът „Споделяне“, след това „На началния екран“.',
+  uk: 'На iPhone та iPad: кнопка «Поділитися», потім «На екран „Домівка“».',
+  be: 'На iPhone і iPad: кнопка «Падзяліцца», потым «На экран „Дом“».',
+});
+define('install.failed', {
+  ru: 'Браузер уже не предлагает установку. Обновите страницу и попробуйте снова.',
+  en: 'The browser no longer offers installation. Reload the page and try again.',
+  bg: 'Браузърът вече не предлага инсталиране. Презаредете страницата и опитайте пак.',
+  uk: 'Браузер уже не пропонує встановлення. Оновіть сторінку та спробуйте знову.',
+  be: 'Браўзер ужо не прапануе ўсталяванне. Абнавіце старонку і паспрабуйце зноў.',
+});
+define('install.why', {
+  ru: 'Установка бесплатна и занимает пару секунд. Приложение обновляется само — обновлять вручную не нужно.',
+  en: 'Installation is free and takes a couple of seconds. The app updates itself — no manual updating needed.',
+  bg: 'Инсталирането е безплатно и отнема няколко секунди. Приложението се обновява само — не е нужно ръчно обновяване.',
+  uk: 'Встановлення безкоштовне й займає пару секунд. Застосунок оновлюється сам — оновлювати вручну не потрібно.',
+  be: 'Усталяванне бясплатнае і займае пару секунд. Дастасунак абнаўляецца сам — абнаўляць уручную не трэба.',
 });
 
 export interface TranslateModule {

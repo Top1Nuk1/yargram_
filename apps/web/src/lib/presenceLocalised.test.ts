@@ -33,6 +33,24 @@ describe('localised presence', () => {
     // Без переводчика — русская подпись.
     expect(presenceBucketLabel('online')).toBe('В сети');
   });
+
+  it('у бота вместо «был(а) давно» — «бот», и на языке интерфейса тоже', () => {
+    // 🔥 У служебного аккаунта `showLastSeen: false`, поэтому без отдельной ветки
+    // в шапке чата висело бы «Был(а) давно». Присутствия у бота нет вовсе —
+    // и «в сети» он не показывается, даже если пришло обновление с `online`.
+    const bot: User = {
+      id: 'bot',
+      displayName: 'Yargram Support',
+      isBot: true,
+      showLastSeen: false,
+      lastSeenAt: null,
+    };
+
+    expect(formatLastSeen(bot)).toBe('бот');
+    expect(formatLastSeen(bot, createTranslator('en'))).toBe('bot');
+    expect(formatLastSeen(bot, createTranslator('bg'))).toBe('бот');
+    expect(formatLastSeen({ ...bot, online: true }, createTranslator('en'))).toBe('bot');
+  });
 });
 
 describe('localised scam warning', () => {

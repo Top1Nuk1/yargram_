@@ -5,6 +5,7 @@ import { Logo } from '../../components/Logo';
 import { Button, IconButton } from '../../components/ui';
 import { useTranslation } from '../../hooks/useLanguage';
 import { nearestImageFamily, variantForMode, yargramImageUrl } from '../../lib/yargramImages';
+import { termsUrl } from '../../lib/links';
 import type { AuthResult, EmailCodeChallenge, ThemeMode } from '../../types';
 
 interface AuthScreenProps {
@@ -475,6 +476,19 @@ export function AuthScreen({ onAuthenticated, theme, onToggleTheme, accent, noti
 
               <p className="mt-6 text-center text-xs leading-5 text-muted">
                 {t('auth.terms')}
+              </p>
+              <p className="mt-1.5 text-center text-xs">
+                {/* Соглашение — отдельная страница с собственным адресом, а не
+                    блок текста внутри приложения: на него можно дать ссылку.
+                    В новой вкладке, иначе человек потеряет заполненную форму. */}
+                <a
+                  href={termsUrl()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-brand underline decoration-brand/30 underline-offset-4 transition hover:decoration-brand"
+                >
+                  {t('auth.termsLink')}
+                </a>
               </p>
             </>
           )}

@@ -19,6 +19,7 @@ import { ScheduledMessageService } from "./services/scheduled-message-service.js
 import { RegistrationCleanupService } from "./services/registration-cleanup-service.js";
 import { FriendService } from "./services/friend-service.js";
 import { SessionService } from "./services/session-service.js";
+import { StickerService } from "./services/sticker-service.js";
 import { SupportBotService } from "./services/support-bot-service.js";
 
 type ApplicationServer =
@@ -75,6 +76,9 @@ async function main(): Promise<void> {
   // Бот поддержки: слушает поток сообщений — обращения в своей переписке и
   // ответы владельцев в служебной группе.
   const supportBotService = new SupportBotService(repositories, chatService, events);
+  // Стикеры, наборы и библиотека гифок. Встроенные наборы описаны в самом
+  // сервисе, поэтому база о них ничего не знает и раздавать их не нужно.
+  const stickerService = new StickerService(repositories, events);
   const app = createApp({
     config,
     repositories,
@@ -87,6 +91,7 @@ async function main(): Promise<void> {
     scheduledMessageService,
     friendService,
     sessionService,
+    stickerService,
     supportBotService,
     events,
     crypto,

@@ -85,4 +85,27 @@ describe('voice metadata and playback', () => {
     fireEvent.click(screen.getByRole('button'));
     expect(play).toHaveBeenCalled();
   });
+
+  it('changes playback speed when clicking the speed indicator', () => {
+    const { container } = render(<VoiceMessage attachment={{ ...attachment, durationSeconds: 20 } as Attachment} mine />);
+    const audio = container.querySelector('audio')!;
+    const speedBadge = screen.getByText('1x');
+    expect(speedBadge).toBeDefined();
+    fireEvent.click(speedBadge);
+    expect(screen.getByText('1.5x')).toBeDefined();
+    expect(audio.playbackRate).toBe(1.5);
+    fireEvent.click(screen.getByText('1.5x'));
+    expect(screen.getByText('2x')).toBeDefined();
+    expect(audio.playbackRate).toBe(2);
+    fireEvent.click(screen.getByText('2x'));
+    expect(screen.getByText('1x')).toBeDefined();
+    expect(audio.playbackRate).toBe(1);
+  });
+
+  it('pauses when another voice message starts playing', () => {
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, 'pause');
+    render(<VoiceMessage attachment={{ ...attachment, id: 'voice-1' } as Attachment} mine />);
+    window.dispatchEvent(new CustomEvent('yargram:voice-play', { detail: { id: 'voice-2' } }));
+    expect(pauseSpy).toHaveBeenCalled();
+  });
 });

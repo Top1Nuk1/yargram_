@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { IconButton, Spinner } from '../../components/ui';
 import { useTranslation } from '../../hooks/useLanguage';
 import type { Attachment } from '../../types';
-import { formatFileSize, isImageAttachment, isVoiceAttachment, type UploadKind } from './messengerUtils';
+import { formatFileSize, isImageAttachment, isVideoGifAttachment, isVoiceAttachment, type UploadKind } from './messengerUtils';
 import { discoverAudioDuration, finiteDuration, seekTime } from './mediaDuration';
 
 type MediaAttachment = Attachment & { mediaKind?: string; durationSeconds?: number };
@@ -102,19 +102,31 @@ export function MessageAttachments({ attachments, mine, onOpenImage }: MessageAt
   const files = attachments.filter(
     (attachment) => !isVideoCircle(attachment) && !isImageAttachment(attachment) && !isVoiceAttachment(attachment),
   );
+  // 🔥 Видео-гифка не должна превращаться в картинку со скриншотом первого
+  // кадра: рисуем `<video>` с автозапуском по кругу, иначе человек увидел бы
+  // неподвижную картинку и решил, что гифка не работает.
+  const videoGifs = images.filter(isVideoGifAttachment);
+  const plainImages = images.filter((attachment) => !isVideoGifAttachment(attachment));
   return (
     <div className={attachments.length ? 'mb-1.5 space-y-2' : ''}>
       {circles.map((attachment) => <VideoCircle key={attachment.id} attachment={attachment} />)}
       {voice.map((attachment) => (
         <VoiceMessage key={attachment.id} attachment={attachment} mine={mine} />
       ))}
-      {images.length > 0 && (
-        <div className={`grid max-w-[420px] gap-1 overflow-hidden rounded-xl ${images.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
-          {images.map((attachment, index) => (
+      {videoGifs.length > 0 && (
+        <div className="grid max-w-[420px] gap-1 overflow-hidden rounded-xl">
+          {videoGifs.map((attachment) => (
+            <GifInBubble key={attachment.id} attachment={attachment} />
+          ))}
+        </div>
+      )}
+      {plainImages.length > 0 && (
+        <div className={`grid max-w-[420px] gap-1 overflow-hidden rounded-xl ${plainImages.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+          {plainImages.map((attachment, index) => (
             <button
               key={attachment.id}
               type="button"
-              className={`group relative overflow-hidden bg-black/10 ${images.length === 1 ? 'max-h-[390px]' : 'h-36 sm:h-44'} ${images.length === 3 && index === 0 ? 'row-span-2 h-full' : ''}`}
+              className={`group relative overflow-hidden bg-black/10 ${plainImages.length === 1 ? 'max-h-[390px]' : 'h-36 sm:h-44'} ${plainImages.length === 3 && index === 0 ? 'row-span-2 h-full' : ''}`}
               onClick={() => onOpenImage(attachment)}
               aria-label={t('attach.openFile', { name: attachment.fileName })}
             >
@@ -123,7 +135,7 @@ export function MessageAttachments({ attachments, mine, onOpenImage }: MessageAt
                 alt={attachment.fileName}
                 loading="lazy"
                 decoding="async"
-                className={`${images.length === 1 ? 'max-h-[390px] w-full object-contain' : 'h-full w-full object-cover'} transition duration-200 group-hover:scale-[1.02]`}
+                className={`${plainImages.length === 1 ? 'max-h-[390px] w-full object-contain' : 'h-full w-full object-cover'} transition duration-200 group-hover:scale-[1.02]`}
               />
               <span className="absolute bottom-1.5 right-1.5 rounded-full bg-black/55 px-2 py-0.5 text-[10px] text-white backdrop-blur">
                 {formatFileSize(attachment.size)}
@@ -159,6 +171,28 @@ function formatAudioTime(seconds: number): string {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
   const remainder = Math.floor(seconds % 60).toString().padStart(2, '0');
   return `${minutes}:${remainder}`;
+}
+
+/**
+ * Видео-гифка прямо в пузыре: играет сама, по кругу и без звука.
+ *
+ * 🔥 `muted` обязателен: браузер не даёт запускать звук без жеста, и гифка
+ * просто не поехала бы. `playsInline` — иначе на телефоне видео развернулось бы
+ * на весь экран поверх переписки.
+ */
+function GifInBubble({ attachment }: { attachment: Attachment }) {
+  return (
+    <video
+      src={attachment.url}
+      data-gif-in-bubble="true"
+      autoPlay
+      loop
+      muted
+      playsInline
+      preload="metadata"
+      className="max-h-[390px] w-full bg-black/10 object-contain"
+    />
+  );
 }
 
 function waveformHeights(seed: string, count: number): number[] {
@@ -258,12 +292,27 @@ export function VoiceMessage(props: { attachment: Attachment; mine: boolean }) {
 function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boolean }) {
   const t = useTranslation();
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const waveformRef = useRef<HTMLDivElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const recordedDuration = finiteDuration((attachment as MediaAttachment).durationSeconds);
   const [duration, setDuration] = useState<number | undefined>(recordedDuration);
   const [error, setError] = useState(false);
+  const [speed, setSpeed] = useState<1 | 1.5 | 2>(1);
   const bars = useMemo(() => waveformHeights(attachment.id, 26), [attachment.id]);
+
+  useEffect(() => {
+    const onOtherVoicePlay = (event: Event) => {
+      const custom = event as CustomEvent<{ id: string }>;
+      if (custom.detail?.id && custom.detail.id !== attachment.id) {
+        audioRef.current?.pause();
+      }
+    };
+    window.addEventListener('yargram:voice-play', onOtherVoicePlay);
+    return () => {
+      window.removeEventListener('yargram:voice-play', onOtherVoicePlay);
+    };
+  }, [attachment.id]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -276,6 +325,7 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
     const onMeta = () => {
       const known = finiteDuration(audio.duration) ?? recordedDuration ?? recoveredDuration;
       setDuration(known);
+      audio.playbackRate = speed;
       const unseekableWebm = /webm/i.test(attachment.mimeType) && !recordedDuration
         && (!audio.seekable.length || audio.seekable.end(audio.seekable.length - 1) === 0);
       if ((!known || unseekableWebm) && !probing && audio.readyState >= 1) {
@@ -289,7 +339,10 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
             recoveredUrl = URL.createObjectURL(value.blob);
             const restore = () => {
               if (controller.signal.aborted) return;
-              try { audio.currentTime = seekTime(position, value.duration) ?? 0; } catch { setError(true); }
+              try {
+                audio.currentTime = seekTime(position, value.duration) ?? 0;
+                audio.playbackRate = speed;
+              } catch { setError(true); }
               if (resume) void audio.play().catch(() => {
                 if (!controller.signal.aborted) { setPlaying(false); setError(true); }
               });
@@ -302,7 +355,11 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
         });
       }
     };
-    const onPlay = () => { setPlaying(true); setError(false); };
+    const onPlay = () => {
+      setPlaying(true);
+      setError(false);
+      window.dispatchEvent(new CustomEvent('yargram:voice-play', { detail: { id: attachment.id } }));
+    };
     const onPause = () => setPlaying(false);
     const onError = () => { setPlaying(false); setError(true); };
     const onEnded = () => {
@@ -323,7 +380,7 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
       audio.pause();
       if (recoveredUrl) URL.revokeObjectURL(recoveredUrl);
     };
-  }, [attachment.url, attachment.size, attachment.mimeType, recordedDuration]);
+  }, [attachment.url, attachment.size, attachment.mimeType, recordedDuration, speed]);
 
   const togglePlayback = () => {
     const audio = audioRef.current;
@@ -334,11 +391,37 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
     }
     setError(false);
     if (audio.ended) audio.currentTime = 0;
+    audio.playbackRate = speed;
     void audio.play().catch(() => {
       if (audioRef.current !== audio) return;
       setPlaying(false);
       setError(true);
     });
+  };
+
+  const cycleSpeed = () => {
+    const nextSpeed = speed === 1 ? 1.5 : speed === 1.5 ? 2 : 1;
+    setSpeed(nextSpeed);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = nextSpeed;
+    }
+  };
+
+  const seekFromPointer = (clientX: number) => {
+    const audio = audioRef.current;
+    const element = waveformRef.current;
+    if (!audio || !element || !duration || duration <= 0) return;
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const target = seekTime(ratio * duration, duration);
+    if (target === undefined) return;
+    try {
+      audio.currentTime = target;
+      setCurrent(target);
+    } catch {
+      setError(true);
+    }
   };
 
   const progress = duration ? Math.min(1, current / duration) : 0;
@@ -356,13 +439,27 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
         {playing ? <Pause className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4" />}
       </button>
       <div className="min-w-0 flex-1">
-        <div className={`flex h-8 items-center gap-[2px] ${mine ? '' : 'text-brand'}`} aria-hidden="true">
+        <div
+          ref={waveformRef}
+          role="presentation"
+          onPointerDown={(event) => {
+            if (!duration) return;
+            try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+            seekFromPointer(event.clientX);
+          }}
+          onPointerMove={(event) => {
+            if (event.buttons !== 1 || !duration) return;
+            seekFromPointer(event.clientX);
+          }}
+          className={`group flex h-8 cursor-pointer select-none items-center gap-[2px] ${mine ? '' : 'text-brand'}`}
+          title={duration ? t('attach.seekVoice') : undefined}
+        >
           {bars.map((height, index) => {
             const active = progress > 0 && index / bars.length <= progress;
             return (
               <span
                 key={`${attachment.id}-${index}`}
-                className={`w-[2.5px] shrink-0 rounded-full transition-colors bg-brand ${active ? 'opacity-100' : 'opacity-35'}`}
+                className={`w-[2.5px] shrink-0 rounded-full transition-colors bg-brand ${active ? 'opacity-100' : 'opacity-35'} group-hover:opacity-90`}
                 style={{ height: `${Math.round(height * 30)}px` }}
               />
             );
@@ -387,10 +484,26 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
           className="h-1 w-full cursor-pointer accent-[#8c7cff] disabled:cursor-default disabled:opacity-40"
           aria-label={t('attach.seekVoice')}
         />
-        <p className="mt-0.5 flex justify-between text-[10px] font-semibold text-muted">
+        <div className="mt-0.5 flex items-center justify-between text-[10px] font-semibold text-muted">
           <span>{formatAudioTime(current)}</span>
-          <span>{duration ? formatAudioTime(duration) : '—:—'}</span>
-        </p>
+          <div className="flex items-center gap-1.5">
+            <span
+              tabIndex={0}
+              onClick={cycleSpeed}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  cycleSpeed();
+                }
+              }}
+              title={t('attach.playbackSpeed', { speed: `${speed}x` })}
+              className="cursor-pointer select-none rounded px-1.5 py-0.5 text-[10px] font-bold tracking-tight transition bg-brand-soft text-brand hover:bg-brand-soft/80"
+            >
+              {speed}x
+            </span>
+            <span>{duration ? formatAudioTime(duration) : '—:—'}</span>
+          </div>
+        </div>
         {error && <p role="status" className="text-[10px] text-danger">{t('attach.playFailed')}</p>}
       </div>
     </div>

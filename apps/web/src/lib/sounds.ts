@@ -91,9 +91,10 @@ function soundPattern(sound: YargramSound): Array<{
       ];
     case 'call':
       return [
-        { offset: 0, frequency: 440, duration: 0.16, volume: 0.05 },
-        { offset: 0.2, frequency: 554, duration: 0.16, volume: 0.05 },
-        { offset: 0.4, frequency: 659, duration: 0.22, volume: 0.045 },
+        { offset: 0, frequency: 523.25, duration: 0.28, volume: 0.22 },
+        { offset: 0.02, frequency: 659.25, duration: 0.28, volume: 0.22 },
+        { offset: 0.45, frequency: 523.25, duration: 0.32, volume: 0.22 },
+        { offset: 0.47, frequency: 659.25, duration: 0.35, volume: 0.22 },
       ];
     case 'message':
     default:
@@ -122,4 +123,19 @@ function scheduleTone(
   gain.connect(context.destination);
   oscillator.start(startAt);
   oscillator.stop(startAt + duration + 0.02);
+}
+
+if (typeof window !== 'undefined') {
+  const unlockAudio = () => {
+    const ctx = getAudioContext();
+    if (ctx && ctx.state === 'suspended') {
+      void ctx.resume();
+    }
+    window.removeEventListener('click', unlockAudio);
+    window.removeEventListener('touchstart', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+  };
+  window.addEventListener('click', unlockAudio, { once: true, passive: true });
+  window.addEventListener('touchstart', unlockAudio, { once: true, passive: true });
+  window.addEventListener('keydown', unlockAudio, { once: true, passive: true });
 }

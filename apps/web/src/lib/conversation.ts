@@ -100,6 +100,11 @@ function participantUser(participant: Participant): User | null {
     isFrozen: participant.isFrozen,
     // Флаг удалённого нужен владельцу, чтобы показать «Вернуть аккаунт»: без него профиль удалённого в листе выглядел бы как живой.
     isDeleted: participant.isDeleted,
+    // 🔥 Метка BOT едет тем же путём, что и остальные значки. Без этой строки
+    // у бота в шапке чата не было ни метки BOT, ни подписи «бот»: сервер
+    // присылает `isBot` в `members`, а до собеседника он не доходил — и вместо
+    // «бот» висело «Был(а) недавно».
+    isBot: participant.isBot,
   };
 }
 

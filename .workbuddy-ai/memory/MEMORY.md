@@ -1,102 +1,76 @@
 # Yargram — заметки о проекте
 
-`0.1.0` (в UI «0.1.0 ЗБТ»; `package.json` не bump'аем). Док-я: `Функции Yargram.txt`, `ТЗ 0.2 —
-Обновление Communication.txt`, `docs/API.md`, `docs/DEPLOY.md`. Сервер поднимает пользователь
-(`Запустить Yargram.bat`). Перед коммитом `npm run verify` (typecheck + lint + test), затем
-`npm run build`. Очередь: каналы → Web Push → устройства.
+`0.0.1` (в UI «0.0.1 ЗБТ»; `package.json` не bump'аем). Док-я: `Функции Yargram.txt`, `ТЗ 0.2`, `docs/DEPLOY.md`. Сервер поднимает пользователь (`Запустить Yargram.bat`).
+Перед коммитом `npm run verify`, затем `npm run build` (если падает на
+`SAFE_DELETE_BULK_CONFIRM_REQUIRED` — перенести `apps/*/dist` в `runtime/`).
+Очередь: каналы → Web Push → устройства.
 
-**Всё остальное вынесено в файлы** (читать при работе с темой вопроса):
-архитектура/шифрование/запуск/сборка и **полный список граблей** — `memory/arch.md`;
-темы, фон, баннер, картинки Yargram, ссылки оформления — `memory/themes.md`;
-**лендинг и разводка двух сайтов** — `memory/landing.md`;
-**семантика состояний, знаки владельца, админка** — `memory/semantics.md`;
-почта — `memory/mail.md`; сеансы — `memory/sessions.md`; разборы и дневники — `memory/ДАТА.md`.
+**Боевой адрес — `https://yargram.site`** (свой домен на Raven, прокси Cloudflare).
+HTTPS заканчивает Cloudflare, поэтому режим SSL/TLS обязан быть **Flexible**,
+а `FORCE_HTTPS` в приложении — **false** (иначе цикл редиректов). Симптом ошибки:
+502 на домене при живом origin → сравнить `http://147.124.213.50/` и
+`https://147.124.213.50/` с `-H "Host: yargram.site"`.
+
+**Тематические файлы** (читать по теме): архитектура, сборка, хостинг, хранилище, **все
+грабли** — `arch.md`; стикеры, гифки, бот поддержки, клиент, локализация — `features.md`;
+темы/фон/баннер — `themes.md`; лендинг — `landing.md`; состояния, знаки, админка — `semantics.md`;
+почта — `mail.md`; сеансы — `sessions.md`; разборы — `ДАТА.md`.
 
 ## 🔥 Хранилище (проверять ПЕРВЫМ делом)
 
-Боевое — **PostgreSQL**: `.env` `DATABASE_DRIVER=postgres`, URL в `runtime/postgres/database.env`,
-кластер `127.0.0.1:55432` (поднимает лаунчер). `apps/server/data/yargram.json` — **устаревший слепок,
-никто не читает**. Схема: `id`, `payload` jsonb + генерируемые колонки `users.email_key`
-(= `lower(payload->>'email')`, уникальная), `users.username_key`, `conversations.member_ids`
-(`@> to_jsonb($1)`), `attachments.owner_id`, `drafts.user_id`, `messages.conversation_id`.
-⚠️ Колонки `created_at` **НЕТ** → сортировать по `payload->>'createdAt'`. Миграции не нужны.
-🔥 **JSON-драйвер валидирует записи Zod-схемой** (`storage/json-database.ts`) и **молча вырезает**
-незнакомые поля: новое поле надо добавлять и туда, иначе оно «работает» и пропадает после чтения
-(симптом — `400 VALIDATION_ERROR` при чтении истории). На Postgres этого нет (jsonb как есть).
+Боевое — **PostgreSQL**: `DATABASE_DRIVER=postgres`, URL в `runtime/postgres/database.env`,
+кластер `127.0.0.1:55432` (поднимает лаунчер). `data/yargram.json` — устаревший слепок, никто не читает.
+Колонки `created_at` **НЕТ** → сортировать по `payload->>'createdAt'`.
+🔥 `direct_key` — **частичный** уникальный индекс (`WHERE direct_key <> ''`), в `ON CONFLICT`
+повторять условие. 🔥 **JSON-драйвер валидирует Zod-схемой и молча вырезает незнакомые поля** —
+новое поле добавлять и в `storage/json-database.ts`, иначе пропадает (400).
 
-## 🔥 Бот поддержки
+## 🔥 Ошибки сервера (оба исправлены 07.10.2026)
 
-Служебный аккаунт `@YargramSupport_Bot` (`isBot`, значок Yargram, вход закрыт → `403 BOT_ACCOUNT`;
-в поиске/блокировке/жалобе не участвует). Меню кнопками (`Message.keyboard`), нажатие уходит
-`POST /api/support/actions` кодом, а не сообщением. Обращение пересылается в **служебную группу**
-(`Conversation.isSupportInbox`, вне поиска и статистики); ответ владельца **на сообщение бота**
-возвращается человеку как «Ответ от <имя>» — адресат берётся из `Message.supportTicket`. Код:
-`services/support-bot-service.ts`, `services/support-bot-texts.ts` (тексты русские, на сервере),
-`ChatService.sendBotMessage`. Заводится `npm run bot:create`. Подробности — `2026-10-04.md`.
+**«An unexpected server error occurred»** — две независимые причины. (1) percent-код в пути:
+Express бросает `URIError` (400), старый `errorHandler` шёл в 500 → лечено в `lib/errors.ts`
+(4xx отдаются своим кодом). (2) 500 на `/conversations`/`/favorites`/`/support`:
+legacy-строки без `stickerIds` → `stickerIds.length` в `toMessageSnapshot` →
+лечено нормализацией в `postgres-repositories.ts::select` (JSON спасал Zod),
+регрессия — `postgres.test.ts`. Свипы `runtime/bug500/` + трассировка in-process. Разбор — `2026-10-07.md`.
 
-## 🔥 Доступ, копии, почта
+## 🔥 Частые грабли (подробно — `arch.md`)
 
-- **Друг** заходит по HTTP `http://26.53.76.128:3000` (Radmin VPN); HTTPS `:3443` — только для звонков.
-  **CORS пропускает любой публичный домен** (`isOriginAllowed` сравнивает hostname `Origin` с `Host`)
-  → туннель работает без правок `.env`. `TRUST_PROXY` по умолчанию **false** и правильно:
-  `X-Forwarded-For` подделывается, а по адресу работает ограничитель входа.
-- **Копии** — `scripts/backup.mjs`: раз в сутки (лаунчер, шаг `[4/4]`) + кнопка `Сделать копию
-  Yargram.bat` + `npm run backup`. Старше **7 дней** удаляются сами. 🔥 `pg_dump` нет → дамп логический;
-  вложения — дополняемое зеркало `runtime/backups/uploads`. Рядом `КЛЮЧ.txt` (`DB_ENCRYPTION_KEY`) —
-  без него копия нечитаема. ⚠️ Копии **на том же диске**, что данные: от ошибки и порчи базы спасают,
-  **от смерти диска — нет**. Подробности — `arch.md`.
-- **Почта** — `mail.accounts` (`yargram.support@gmail.com`, `yarikgram@gmail.com`). 🔥 Два разных
-  отказа: **ящик отказал** — письмо уходит со следующего **в том же запросе**; **ящик принял, письмо не
-  дошло** (спам) — **повтор** идёт со следующего ящика. Подробности — `mail.md`.
-- ⚠️ `app.ts`: `upgrade-insecure-requests: null` в CSP включено **намеренно** — на публичном HTTPS это
-  ослабление; пересмотреть при своих доменах.
-- **Своя база умеет Linux** → VPS без замены БД. 🔥 **`runtime/` в `.gitignore`** → на чистом сервере
-  `ensure-postgres.mjs` молча пропускается: нужен ручной `node scripts/local-postgres.mjs` при первом
-  развёртывании. 🔥 `embedded-postgres` — **в `dependencies`** (был в dev): иначе `--omit=dev`
-  оставил бы сервер без базы.
-- 🔥 **Перенос на другой сервер: `DB_ENCRYPTION_KEY` переносить, не генерировать** (импорт кладёт
-  `payload` как есть, без перешифровки; с новым ключом всё переедет, но не прочитается). Источник
-  данных — копия `runtime/backups/<stamp>/database.json`, не `data/yargram.json`.
-- 🔥 **У проекта нет `git remote`** — код на сервер уедет только после коммита и пуша.
-- **Хостинг выбран — Raven Host, бесплатный apps-тариф** (03.10.2026, до этого
-  рассматривался Oracle Cloud Always Free): адрес **`https://yargram.app.ravenhost.space`**
-  (лендинг на `/`, приложение на `/app`). 🔥 Следствия выбора: **нет UDP → звонков не будет**;
-  **нет PostgreSQL → `DATABASE_DRIVER=json`**; свой домен не привязать (нужен VPS $3.99/мес).
-  Инструкция — `docs/ИНСТРУКЦИЯ_RAVEN.md`. Про Oracle (на случай возврата) — `docs/DEPLOY.md`:
-  ARM 2 OCPU / 12 ГБ, 🔥 простаивающий инстанс могут забрать (7 дней, всё < 20 %), PAYG не
-  отменяет; порты — в Security List **и** в `iptables` (`ufw` не перебивает).
-
-## 🔥 Два сайта: лендинг и приложение
-
-**`/`** — лендинг `apps/landing` (`@yargram/landing`, свой Vite/Tailwind, порт dev **5174**);
-**`/app`** — приложение `apps/web` (`base: env.VITE_BASE || '/app/'` — иначе белый экран). 🔥 Порядок
-маршрутов в Express — порядок разбора: `app.get("/app", …)` стоит **до** `app.use("/app",
-express.static(…))`, иначе 301 на `/app/`. Без лендинга корень отдаёт приложение. 🔥 Знак Yargram —
-**V на круге**, не Y (`components/Logo.tsx` по `logo-plate.svg`). 🔥 Тема лендинга — свои CSS-переменные
-(`data-theme` на `<html>`), в Tailwind цвета **через `rgb(var(--…))`**. Код разводки, тесты, снимки,
-грабли — **`memory/landing.md`**.
-
-## Клиент и локализация
-
-Мультиаккаунт (`lib/accounts.ts`), `MessengerScreen` с `key={token}`. **Предел аккаунтов** —
-`accountLimit()`/`canAddAccount()`: 3 обычному, 4 с `badge`/`isVerified`, `Infinity` владельцу
-(проверка только в `AppSidebar` — правило интерфейса, не защита). **Масштаб** 50–300 % —
-`lib/uiScale.ts` (`zoom` на `<html>`, не `transform`), применяется в `main.tsx` до первого кадра.
-
-`apps/web/src/lib/i18n.ts`: ключи `namespace.name`, `define(key,{ru,en,bg,uk,be,el?})`, хуки
-`useLanguage()`/`useTranslation()`; язык — `localStorage['yargram.lang']`. **`uk` и `be` обязательны**
-(иначе протечёт русский); `el` падает на `en`. 🔧 Скилл `yargram-i18n` (`uk`/`be` сгенерированы, **не
-вычитаны носителем**). `t` мемоизирован — **немемоизированный переводчик даёт цикл эффектов**.
-🔥 **Даты/числа переводит `Intl`** (локаль — `LANGUAGE_LOCALES`): в `lib/format.ts` два форматтера
-захардкожены на `ru-RU`, `formatShortDate(value, locale?)` берёт локаль параметром;
-`formatDayLabel`/`formatConversationTime` — **ещё нет**. 🔒 Приватность — только `showLastSeen`.
+- Стенд: `NODE_ENV=production` обязателен; с дефолтными секретами не стартует; `dotenv` ищет `.env`
+  от cwd (запускать из корня). `tsc -p tsconfig.json` у веба пуст — нужен `-p tsconfig.app.json`,
+  у сервера ещё `-p tsconfig.test.json`.
+- Новый знак аккаунта — **три места**: `toPublicUser`, `Participant`, `participantUser`
+  (иначе не доезжает — `features.md`).
+- `runtime/` и `dist/` в `.gitignore`; **remote `github.com/Yargram/yargram` есть, но ~118 файлов
+  не закоммичено**; `npm run build` у агента рвётся на `SAFE_DELETE_BULK_CONFIRM_REQUIRED`
+  (перенести папку); `DB_ENCRYPTION_KEY` при переносе — **переносить, не генерировать**.
+- **Хостинг — Raven Host** (`yargram.app.ravenhost.space`): **владелец подтвердил звонки — UDP
+  есть**, PostgreSQL тоже (пока `DATABASE_DRIVER=json`); свой домен нельзя; **08.10 — 502**;
+  CSP `upgrade-insecure-requests: null` намеренно. Друг и Oracle — `arch.md`.
+  🔥 **Панель = Pterodactyl**: SFTP `/` = корень сервера (команды `cd ~`, не `cd ~/yargram`);
+  панель прокидывает `SERVER_PORT` (важнее `PORT` — слушать его, иначе 502);
+  `TRUST_PROXY=true`, а не `loopback` (за wings-прокси иначе общий лимит входа на всех);
+  переписку на json можно перенести через `scripts/backup-to-json.mjs` (копия → живой формат).
+- 🔥 **ОПРОВЕРГНУТО 12.10.2026: свой домен на Raven РАБОТАЕТ.** `yargram.site` уже
+  направлен на Raven (NS = Cloudflare, A = `147.124.213.50`), и nginx Raven имеет
+  для него отдельный vhost (отдаёт `502`, а не общий `301`) → домен привязан в панели.
+  Утверждение «свой домен нельзя» из доков Raven устарело. Тогда же: **приложение
+  было ВЫКЛЮЧЕНО** (порт 19378 refused) — все 502 из-за этого, а не из-за домена.
+  Разбор и команды проверки — `2026-10-12.md`.
+- 🔥 **Прокси Cloudflare включён → HTTPS 502.** Причина: режим SSL/TLS **Full**
+  стучится на origin:443, а он отдаёт **502 ЛЮБОМУ хосту** (даже родному
+  поддомену Raven!) — TLS на origin не работает вообще, дело не в нашем домене.
+  Поэтому рабочий режим тут только **Flexible** + «Always Use HTTPS».
+  Наш `FORCE_HTTPS` при этом обязан остаться **false** — в Flexible Cloudflare
+  всегда ходит по HTTP и включённый редирект зацикливает сайт. Вход не сломается:
+  токен идёт заголовком `Bearer`, cookie в проекте нет. Проверка — `npm run check:host`.
+  Разбор — `docs/ИНСТРУКЦИЯ_RAVEN.md`.
+- **PWA-установка готова** (12.10): `useInstallPrompt` + `InstallScreen` +
+  раздел в настройках; манифест и `sw.js` были и раньше.
+- **Автонастройка Cloudflare и РФ (13.10):** `Настроить Cloudflare.bat` (скрипт `scripts/setup-cloudflare.mjs`, `npm run cf:setup`). Отключает ECH (`settings/ech: off`, снимая блокировку ТСПУ в РФ без VPN/запретов), отключает `http3` (QUIC), включает `min_tls_version: 1.2`, `websockets: on`, `ssl: flexible`, `always_use_https: on`, `brotli: on`, `early_hints: on`. Токен хранится локально в `runtime/cloudflare.token` (.gitignore).
 
 ## Оговорки
 
-- Защита от копирования текста SCAM — **не сокрытие** (видно во вкладке «Сеть»). Предел аккаунтов —
-  правило интерфейса. `el` падает на `en`. `PeerProfileModal` в `MessengerModals.tsx` — мёртвый код.
-- Остальные грабли (тихие Zod-фильтры, невакуозность, `<button>` в `<button>`, `<fieldset>`,
-  `.bat`/`.ps1`, `SAFE_DELETE_BULK_CONFIRM_REQUIRED` при сборке) — в `memory/arch.md`, «Грабли».
-- **Готовность к ЗБТ (разбор 03.10.2026)** — в `memory/2026-10-03.md`. Кратко: блокеры сняты (копии
-  есть, инструкция честная); на 3–7 друзей можно открываться. Остаются риски: копия на том же диске,
-  почта — единая точка отказа входа, Web Push нет.
+SCAM — защита от копирования, не сокрытие; предел аккаунтов — правило интерфейса; `el` → `en`.
+Готовность к ЗБТ — `2026-10-03.md`: блокеры сняты; риски — копия на диске, почта — единая точка
+входа, нет Web Push.

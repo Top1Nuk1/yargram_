@@ -70,6 +70,22 @@ export type SessionTerminatedEvent = {
   tokenHashes: string[];
 };
 
+/**
+ * Набор стикеров изменился или его прислали.
+ *
+ * 🔥 Набор остаётся общим: добавили стикер в набор один раз, и он появился у
+ * всех, кому этот набор прислали. Поэтому событие уходит не автору, а **всем,
+ * у кого набор есть** — иначе у получателей остались бы старые картинки до
+ * перезагрузки страницы.
+ */
+export type StickerPackEvent = {
+  packId: string;
+  /** Новая версия содержимого: клиент перечитывает набор, если не совпала. */
+  version: number;
+  /** Набор только что прислали — клиент добавляет его в список наборов. */
+  sharedWithUserId?: string | undefined;
+};
+
 export class RealtimeEvents {
   private readonly emitter = new EventEmitter();
 
@@ -183,6 +199,14 @@ export class RealtimeEvents {
 
   onSessionTerminated(listener: (event: SessionTerminatedEvent) => void): () => void {
     return this.subscribe("session:terminated", listener);
+  }
+
+  publishStickerPack(event: StickerPackEvent): void {
+    this.emitter.emit("stickerPack:updated", event);
+  }
+
+  onStickerPack(listener: (event: StickerPackEvent) => void): () => void {
+    return this.subscribe("stickerPack:updated", listener);
   }
 
   private subscribe<T>(eventName: string, listener: (event: T) => void): () => void {

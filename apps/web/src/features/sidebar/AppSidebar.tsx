@@ -16,10 +16,15 @@ import {
   UsersRound,
   X,
 } from 'lucide-react';
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useMemo, type ReactNode } from 'react';
 import { Avatar } from '../../components/ui';
 import { UserName } from '../../components/UserName';
-import { accountLimit, accountSubtitle, type StoredAccount } from '../../lib/accounts';
+import {
+  accountLimit,
+  accountSubtitle,
+  deduplicateAccounts,
+  type StoredAccount,
+} from '../../lib/accounts';
 import { avatarProps } from '../../lib/user';
 import { useTranslation } from '../../hooks/useLanguage';
 import type { User } from '../../types';
@@ -45,6 +50,7 @@ interface SidebarProps {
   accounts: StoredAccount[];
   /** Токен активного аккаунта — по нему отмечаем галочкой. */
   activeToken: string;
+  connected?: boolean;
   theme: 'light' | 'dark';
   onAction: (action: SidebarAction) => void;
   onSwitchAccount: (token: string) => void;
@@ -61,6 +67,7 @@ export function AppSidebar({
   currentUser,
   accounts,
   activeToken,
+  connected,
   theme,
   onAction,
   onSwitchAccount,
@@ -76,11 +83,15 @@ export function AppSidebar({
     return () => document.removeEventListener('keydown', close);
   }, [onClose]);
 
-  const online = currentUser.isOnline ?? currentUser.online;
+  const online = connected !== undefined ? connected : (currentUser.isOnline ?? currentUser.online ?? true);
+  const visibleAccounts = useMemo(
+    () => deduplicateAccounts(accounts, activeToken),
+    [accounts, activeToken],
+  );
   // Предел считаем по сохранённым аккаунтам: значок «Yargram» или галочка
   // поднимают его с трёх до четырёх, у владельца предела нет.
-  const limit = accountLimit(accounts);
-  const limitReached = accounts.length >= limit;
+  const limit = accountLimit(visibleAccounts);
+  const limitReached = visibleAccounts.length >= limit;
 
   return (
     <div
@@ -125,7 +136,7 @@ export function AppSidebar({
 
         {/* Аккаунты: список сохранённых на устройстве + «Добавить аккаунт». */}
         <ul className="mx-5 mt-1 space-y-1">
-          {accounts.map((account) => {
+          {visibleAccounts.map((account) => {
             const isActive = account.token === activeToken;
             const accountOnline = account.user.isOnline ?? account.user.online;
             return (
@@ -135,7 +146,7 @@ export function AppSidebar({
                   aria-current={isActive}
                   onClick={() => (isActive ? onAction('profile') : onSwitchAccount(account.token))}
                   className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${
-                    accounts.length > 1 ? 'pr-11' : ''
+                    visibleAccounts.length > 1 ? 'pr-11' : ''
                   } ${isActive ? 'bg-brand-soft/70' : 'bg-canvas hover:bg-brand-soft/35'}`}
                 >
                   <Avatar
@@ -159,7 +170,7 @@ export function AppSidebar({
                   </div>
                   {isActive && <Check className="h-4 w-4 shrink-0 text-brand" aria-label={t('sidebar.activeAccount')} />}
                 </button>
-                {accounts.length > 1 && (
+                {visibleAccounts.length > 1 && (
                   <button
                     type="button"
                     aria-label={t('sidebar.logoutAccount', { name: account.user.displayName })}
@@ -205,7 +216,6 @@ export function AppSidebar({
           <MenuRow icon={<ShieldBan className="h-5 w-5" />} label={t('sidebar.blocked')} onClick={() => onAction('blocked')} />
           <MenuRow icon={<Phone className="h-5 w-5" />} label={t('sidebar.calls')} muted onClick={() => onAction('calls')} />
           <MenuRow icon={<Bookmark className="h-5 w-5" />} label={t('sidebar.favorites')} onClick={() => onAction('favorites')} />
-          <MenuRow icon={<Star className="h-5 w-5" />} label={t('sidebar.notes')} onClick={() => onAction('favorites-notes')} />
           <MenuRow icon={<Settings className="h-5 w-5" />} label={t('sidebar.settings')} onClick={() => onAction('settings')} />
           {/* Поддержка — рядом с настройками: это тоже про «помогите мне». */}
           <MenuRow icon={<LifeBuoy className="h-5 w-5" />} label={t('sidebar.support')} onClick={() => onAction('support')} />
@@ -252,7 +262,7 @@ export function AppSidebar({
         <footer className="border-t border-line/70 px-5 py-3 text-[12px] leading-5 text-muted">
           <p className="font-semibold text-ink">Yargram Web</p>
           {/* ЗБТ — закрытое бета-тестирование: сокращение, расшифровка в подсказке. */}
-          <p title={t('sidebar.betaTip')}>{t('sidebar.version', { version: '0.1.0', channel: 'ЗБТ' })}</p>
+          <p title={t('sidebar.betaTip')}>{t('sidebar.version', { version: '0.0.1', channel: 'ЗБТ' })}</p>
           <button type="button" className="mt-0.5 font-semibold text-brand transition hover:text-brand-strong">
             {t('sidebar.about')}
           </button>

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
 import type { User } from '../../types';
 import { UserProfileSheet } from './UserProfileSheet';
 
@@ -15,6 +15,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       addFriend: vi.fn(),
       acceptFriend: vi.fn(),
       removeFriend: vi.fn(),
+      adminSetBot: vi.fn(),
     },
   };
 });
@@ -196,5 +197,123 @@ describe('кнопка дружбы в профиле', () => {
 
     await waitFor(() => screen.getByRole('dialog'));
     expect(screen.queryByRole('button', { name: /Добавить в друзья/ })).toBeNull();
+  });
+});
+
+describe('выдача отметки BOT из профиля', () => {
+  beforeEach(() => {
+    vi.mocked(api.user).mockResolvedValue(honest);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.mocked(window.confirm).mockRestore();
+  });
+
+  it('кнопка видна только владельцу', () => {
+    const { unmount } = render(
+      <UserProfileSheet
+        token="token"
+        user={honest}
+        mode="peer"
+        viewerIsOwner
+        onClose={() => undefined}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /Выдать отметку BOT/ })).toBeDefined();
+    unmount();
+
+    render(<UserProfileSheet token="token" user={honest} mode="peer" onClose={() => undefined} />);
+    expect(screen.queryByRole('button', { name: /Выдать отметку BOT/ })).toBeNull();
+  });
+
+  it('в своём профиле кнопки нет — себе метку поставить нельзя', () => {
+    render(
+      <UserProfileSheet
+        token="token"
+        user={honest}
+        mode="own"
+        viewerIsOwner
+        onEdit={() => undefined}
+        onClose={() => undefined}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /Выдать отметку BOT/ })).toBeNull();
+  });
+
+  it('после подтверждения ставит метку и переключает кнопку на снятие', async () => {
+    vi.mocked(api.adminSetBot).mockResolvedValue({ ...honest, isBot: true });
+    render(
+      <UserProfileSheet
+        token="token"
+        user={honest}
+        mode="peer"
+        viewerIsOwner
+        onClose={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Выдать отметку BOT/ }));
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() => expect(api.adminSetBot).toHaveBeenCalledWith('token', honest.id, true));
+    // Кнопка сразу показывает новое состояние: метка стоит, дальше — снимать.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Снять отметку BOT/ })).toBeDefined(),
+    );
+  });
+
+  it('отмена подтверждения ничего не отправляет', () => {
+    vi.mocked(window.confirm).mockReturnValue(false);
+    render(
+      <UserProfileSheet
+        token="token"
+        user={honest}
+        mode="peer"
+        viewerIsOwner
+        onClose={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Выдать отметку BOT/ }));
+    expect(api.adminSetBot).not.toHaveBeenCalled();
+  });
+
+  it('отказ сервера показывает ошибку и оставляет кнопку', async () => {
+    vi.mocked(api.adminSetBot).mockRejectedValue(
+      new ApiError('Нельзя пометить ботом свой аккаунт', 400),
+    );
+    render(
+      <UserProfileSheet
+        token="token"
+        user={honest}
+        mode="peer"
+        viewerIsOwner
+        onClose={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Выдать отметку BOT/ }));
+    // Ошибка рендерится обычным абзацем, без роли alert — ищем по тексту.
+    await waitFor(() =>
+      expect(screen.getByText('Нельзя пометить ботом свой аккаунт')).toBeDefined(),
+    );
+    expect(screen.getByRole('button', { name: /Выдать отметку BOT/ })).toBeDefined();
+  });
+
+  it('у удалённого аккаунта метку не выдают — сначала возврат', () => {
+    const removed: User = { ...honest, isDeleted: true };
+    vi.mocked(api.user).mockResolvedValue(removed);
+    render(
+      <UserProfileSheet
+        token="token"
+        user={removed}
+        mode="peer"
+        viewerIsOwner
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: /Выдать отметку BOT/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /Вернуть аккаунт/ })).toBeDefined();
   });
 });

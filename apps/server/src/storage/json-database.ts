@@ -4,12 +4,12 @@ import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import { allowedReactionEmojis, groupPermissions, type DatabaseState } from "../domain/models.js";
 
-const attachmentKindSchema = z.enum(["image", "file", "avatar", "banner", "wallpaper"]);
+const attachmentKindSchema = z.enum(["image", "file", "avatar", "banner", "wallpaper", "sticker", "gif"]);
 const attachmentSchema = z.object({
   id: z.string(),
   ownerId: z.string(),
   kind: attachmentKindSchema,
-  mediaKind: z.enum(["voice", "video_circle"]).optional(),
+  mediaKind: z.enum(["voice", "video_circle", "gif"]).optional(),
   durationSeconds: z.number().finite().positive().optional(),
   fileName: z.string(),
   storedFileName: z.string(),
@@ -35,6 +35,9 @@ const userSchema = z
     favoriteMessageIds: z.array(z.string()).default([]),
     notificationSoundEnabled: z.boolean().default(true),
     showLastSeen: z.boolean().default(true),
+    callPrivacy: z.enum(["everyone", "contacts", "nobody"]).default("everyone"),
+    callPrivacyAllowedUserIds: z.array(z.string()).default([]),
+    callPrivacyDeniedUserIds: z.array(z.string()).default([]),
     themeColor: z.string().optional(),
     wallpaperUrl: z.string().optional(),
     // Тип фона: без этой строки хранилище молча вырезало бы поле при чтении,
@@ -45,6 +48,10 @@ const userSchema = z
     bannerColor: z.string().optional(),
     banner: attachmentViewSchema.optional(),
     bannerUrl: z.string().optional(),
+    // Аватар ссылкой: так оформлен служебный бот. Без этой строки хранилище
+    // молча вырезало бы поле при чтении, и бот остался бы без картинки.
+    avatarUrl: z.string().optional(),
+    language: z.string().optional(),
     isVerified: z.boolean().optional(),
     badge: z.enum(["yargram"]).nullable().optional(),
     scam: z.boolean().optional(),
@@ -136,6 +143,9 @@ const supportTicketSchema = z.object({
   userId: z.string(),
   category: z.string(),
   topic: z.string().optional(),
+  // Номер обращения. Без него Zod выбросил бы поле при чтении, и продолжение
+  // обращения завело бы новое — молча и незаметно.
+  code: z.string().optional(),
 });
 
 const conversationSchema = z
@@ -220,6 +230,8 @@ const messageSchema = z
     poll: pollSchema.optional(),
     keyboard: botKeyboardSchema.optional(),
     supportTicket: supportTicketSchema.optional(),
+    stickerPackId: z.string().optional(),
+    stickerIds: z.array(z.string()).default([]),
     createdAt: z.string(),
     editedAt: z.string().optional(),
     replyToId: z.string().optional(),
@@ -317,11 +329,41 @@ const sessionSchema = z.object({
   tokenHashes: z.array(z.string()).default([]),
   site: z.string().default(""),
   device: z.string().default(""),
+  deviceId: z.string().optional(),
+  customDeviceName: z.string().nullable().optional(),
   createdAt: z.string(),
   lastSeenAt: z.string(),
   newDevice: z.boolean().optional(),
   acknowledgedAt: z.string().nullable().optional(),
   terminatedAt: z.string().nullable().optional(),
+});
+
+const stickerPackSchema = z.object({
+  id: z.string(),
+  ownerId: z.string(),
+  title: z.string(),
+  emoji: z.string(),
+  version: z.number().int().nonnegative(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const stickerSchema = z.object({
+  id: z.string(),
+  packId: z.string(),
+  attachmentId: z.string().optional(),
+  imageUrl: z.string().optional(),
+  emoji: z.string(),
+  animated: z.boolean(),
+  createdAt: z.string(),
+});
+
+const stickerInstallSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  packId: z.string(),
+  sharedByUserId: z.string(),
+  installedAt: z.string(),
 });
 
 export const databaseSchema = z.object({
@@ -337,6 +379,9 @@ export const databaseSchema = z.object({
   folders: z.array(folderSchema).default([]),
   scheduledMessages: z.array(scheduledMessageSchema).default([]),
   sessions: z.array(sessionSchema).default([]),
+  stickerPacks: z.array(stickerPackSchema).default([]),
+  stickers: z.array(stickerSchema).default([]),
+  stickerInstalls: z.array(stickerInstallSchema).default([]),
 });
 
 const emptyState = (): DatabaseState => ({
@@ -352,6 +397,9 @@ const emptyState = (): DatabaseState => ({
   folders: [],
   scheduledMessages: [],
   sessions: [],
+  stickerPacks: [],
+  stickers: [],
+  stickerInstalls: [],
 });
 
 export class JsonDatabase {

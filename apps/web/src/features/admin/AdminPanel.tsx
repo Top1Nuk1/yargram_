@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
+  Bot,
   ChevronDown,
   RefreshCw,
   Search,
@@ -40,8 +41,11 @@ interface AdminPanelProps {
   onChanged?: () => void;
 }
 
-/** Что администрируем: аккаунт или группу. Знаки у них одни и те же. */
-type AdminMode = 'account' | 'group';
+/**
+ * Что администрируем: аккаунт, группу или ботов. Знаки у аккаунта и группы
+ * одинаковые, но ищутся по-разному; боты — отдельная полка со своим списком.
+ */
+type AdminMode = 'account' | 'group' | 'bot';
 
 function adminErrorMessage(t: TranslateFn, reason: unknown): string {
   return reason instanceof ApiError ? reason.message : t('admin.actionFailed');
@@ -87,6 +91,16 @@ export function AdminPanel({ token, viewer, onClose, onChanged }: AdminPanelProp
   const [accountsFailed, setAccountsFailed] = useState(false);
   /** Чей список юзернеймов раскрыт: у остальных ники подрезаны по ширине. */
   const [expandedHandles, setExpandedHandles] = useState<string | null>(null);
+  /**
+   * Служебные боты: перечень целиком, отдельно от общего списка аккаунтов.
+   * Ботов на установке единицы, и владельцу нужен именно список, а не поиск.
+   */
+  const [bots, setBots] = useState<AdminAccount[]>([]);
+  const [botsLoading, setBotsLoading] = useState(false);
+  const [botsFailed, setBotsFailed] = useState(false);
+  /** Кому владелец ставит или снимает метку «BOT»: ищется по нику. */
+  const [botQuery, setBotQuery] = useState('');
+  const [botTarget, setBotTarget] = useState<User | null>(null);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
@@ -137,6 +151,26 @@ export function AdminPanel({ token, viewer, onClose, onChanged }: AdminPanelProp
     const timer = window.setTimeout(loadAccounts, accountSearch ? 250 : 0);
     return () => window.clearTimeout(timer);
   }, [accountsOpen, loadAccounts, accountSearch]);
+
+  /**
+   * Перечень служебных ботов. Читаем при открытии вкладки «Боты» — она нужна
+   * редко, и держать этот список загруженным всё время незачем. Ошибка списка
+   * не трогает общий `error`: это справка, и метку поставить она не мешает.
+   */
+  const loadBots = useCallback(() => {
+    setBotsLoading(true);
+    setBotsFailed(false);
+    api
+      .adminBots(token)
+      .then((result) => setBots(result))
+      .catch(() => setBotsFailed(true))
+      .finally(() => setBotsLoading(false));
+  }, [token]);
+
+  useEffect(() => {
+    if (mode !== 'bot') return;
+    loadBots();
+  }, [mode, loadBots]);
 
   /** Включает и выключает знак в отборе, не трогая остальные. */
   function toggleMark(mark: AdminAccountsMark) {
@@ -316,6 +350,69 @@ export function AdminPanel({ token, viewer, onClose, onChanged }: AdminPanelProp
             ? t('admin.fakeSet', { handle })
             : t('admin.fakeCleared', { handle }),
         );
+      })
+      .catch(fail)
+      .finally(() => setBusy(false));
+  }
+
+  /**
+   * Точный поиск аккаунта, которому владелец ставит или снимает метку «BOT».
+   * Через `adminLookup`, как и остальные карточки: строка списка — обзорная
+   * выжимка, а метку надо ставить по полному профилю.
+   */
+  function findBotTarget() {
+    const wanted = botQuery.trim().replace(/^@/, '').toLowerCase();
+    if (!wanted) {
+      setError(t('admin.noUsername'));
+      return;
+    }
+    setError('');
+    setNotice('');
+    setBusy(true);
+    api
+      .adminLookup(token, wanted)
+      .then((found) => {
+        if (!found) {
+          setBotTarget(null);
+          setError(t('admin.userNotFound', { name: wanted }));
+          return;
+        }
+        setBotTarget(found);
+      })
+      .catch(fail)
+      .finally(() => setBusy(false));
+  }
+
+  /**
+   * Метка «BOT»: аккаунт становится служебным ботом.
+   *
+   * 🔥 Метка не косметическая — войти в такой аккаунт больше нельзя. Поэтому
+   * перед постановкой спрашиваем подтверждение, а после — перечитываем перечень
+   * ботов и трогаем `onChanged`, чтобы метка появилась в открытых чатах сразу.
+   */
+  function toggleBot(user: User | null) {
+    if (!user) return;
+    const next = !user.isBot;
+    const handle = user.username ? `@${user.username}` : user.displayName;
+    if (next && !window.confirm(t('admin.confirmBot', { handle }))) return;
+    setError('');
+    setNotice('');
+    setBusy(true);
+    api
+      .adminSetBot(token, user.id, next)
+      .then((updated) => {
+        setNotice(next ? t('admin.botSetDone', { handle }) : t('admin.botClearedDone', { handle }));
+        const patch = (current: User | null) =>
+          current && current.id === updated.id ? { ...current, ...updated } : current;
+        setBotTarget(patch);
+        setTarget(patch);
+        setAccounts((current) =>
+          current.map((account) =>
+            account.id === updated.id ? { ...account, isBot: updated.isBot ?? false } : account,
+          ),
+        );
+        loadBots();
+        onChanged?.();
       })
       .catch(fail)
       .finally(() => setBusy(false));
@@ -557,11 +654,12 @@ export function AdminPanel({ token, viewer, onClose, onChanged }: AdminPanelProp
         )}
 
         {/* Что администрируем: набор знаков одинаковый, а поиск разный. */}
-        <div className="mt-4 grid grid-cols-2 gap-2" role="tablist" aria-label={t('admin.modeLabel')}>
+        <div className="mt-4 grid grid-cols-3 gap-2" role="tablist" aria-label={t('admin.modeLabel')}>
           {(
             [
               ['account', t('admin.account'), UserRound],
               ['group', t('admin.group'), UsersRound],
+              ['bot', t('admin.bot'), Bot],
             ] as const
           ).map(([value, label, Icon]) => (
             <button
@@ -586,7 +684,118 @@ export function AdminPanel({ token, viewer, onClose, onChanged }: AdminPanelProp
           ))}
         </div>
 
-        {mode === 'group' ? (
+        {mode === 'bot' ? (
+          <div className="mt-4 space-y-3">
+            <p className="text-xs leading-5 text-muted">{t('admin.botsIntro')}</p>
+
+            {/* Перечень целиком: владелец видит, какие служебные аккаунты заведены. */}
+            <section
+              className="rounded-xl border border-line bg-canvas p-3"
+              aria-label={t('admin.botsListLabel')}
+            >
+              <p className="text-xs font-semibold uppercase tracking-[0.1em] text-muted">
+                {t('admin.botsListLabel')}
+              </p>
+              {botsFailed ? (
+                <p className="mt-2 text-xs text-muted">
+                  {t('admin.botsFailed')}{' '}
+                  <button
+                    type="button"
+                    className="font-semibold text-brand hover:underline"
+                    onClick={loadBots}
+                  >
+                    {t('common.retry')}
+                  </button>
+                </p>
+              ) : botsLoading && bots.length === 0 ? (
+                <p className="mt-2 text-xs text-muted">{t('admin.botsLoading')}</p>
+              ) : bots.length === 0 ? (
+                <p className="mt-2 text-xs text-muted">{t('admin.botsEmpty')}</p>
+              ) : (
+                <ul className="mt-2 space-y-1">
+                  {bots.map((bot) => (
+                    <li key={bot.id} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
+                      <Avatar
+                        name={bot.displayName}
+                        src={bot.avatarUrl}
+                        size="sm"
+                        seed={avatarProps(bot).seed}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold text-ink">
+                          <UserName name={bot.displayName} user={bot} size="sm" />
+                        </span>
+                        {bot.username && (
+                          <span className="block truncate text-xs text-muted">@{bot.username}</span>
+                        )}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="shrink-0 text-xs"
+                        disabled={busy}
+                        onClick={() => toggleBot(bot)}
+                      >
+                        {t('admin.botClear')}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-ink">
+                {t('admin.botUsernameLabel')}
+              </span>
+              <input
+                className={inputClass}
+                value={botQuery}
+                placeholder={t('admin.usernamePlaceholder')}
+                onChange={(event) => setBotQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return;
+                  event.preventDefault();
+                  findBotTarget();
+                }}
+              />
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                className="text-xs"
+                loading={busy}
+                onClick={findBotTarget}
+              >
+                <Search className="h-3.5 w-3.5" />
+                {t('admin.showState')}
+              </Button>
+            </div>
+
+            {botTarget && (
+              <div className="rounded-xl border border-line bg-canvas p-3">
+                <p className="text-sm font-semibold text-ink">
+                  <UserName name={botTarget.displayName} user={botTarget} size="sm" />
+                </p>
+                <p className="mt-1 text-xs leading-5 text-muted">
+                  {botTarget.isBot ? t('admin.botStateOn') : t('admin.botStateOff')}
+                </p>
+                <Button
+                  type="button"
+                  variant={botTarget.isBot ? 'secondary' : 'primary'}
+                  className="mt-2 text-xs"
+                  disabled={busy}
+                  onClick={() => toggleBot(botTarget)}
+                >
+                  {botTarget.isBot ? t('admin.botClear') : t('admin.botSet')}
+                </Button>
+              </div>
+            )}
+
+            <p className="text-xs leading-5 text-muted">{t('admin.botWarning')}</p>
+          </div>
+        ) : mode === 'group' ? (
           <div className="mt-4 space-y-3">
             <label className="block">
               <span className="mb-1.5 block text-sm font-semibold text-ink">{t('admin.groupLabel')}</span>
@@ -1057,6 +1266,7 @@ function AccountList({
     ['scam', t('admin.markScam')],
     ['fake', t('admin.markFake')],
     ['owner', t('admin.markOwner')],
+    ['bot', t('admin.markBot')],
   ];
   const scopeOptions: Array<[AdminAccountsScope, string]> = [
     ['any', t('admin.scopeAny')],

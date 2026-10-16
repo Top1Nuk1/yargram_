@@ -123,6 +123,10 @@ export function formatLastSeen(
   const tr = (key: string, params?: Record<string, string | number>) =>
     t ? t(key, params) : interpolate(RU_LAST_SEEN[key] ?? key, params);
   if (!user) return tr('presence.unknown');
+  // 🔥 У бота нет присутствия: он не «в сети» и не «был(а) недавно» — он бот.
+  // Без этой ветки в шапке висело бы «Был(а) давно»: у служебного аккаунта
+  // `showLastSeen: false`, и до ветки «онлайн» дело не доходит.
+  if (user.isBot) return tr('presence.bot');
   if (user.lastSeenStatus) {
     return tr(
       {
@@ -165,6 +169,7 @@ function localeOf(t?: TranslateFn): string {
 /** Русские подписи присутствия — фолбэк, когда переводчик не передан. */
 const RU_LAST_SEEN: Record<string, string> = {
   'presence.unknown': 'Статус неизвестен',
+  'presence.bot': 'бот',
   'presence.onlineShort': 'В сети',
   'presence.wasRecently': 'Был(а) недавно',
   'presence.wasWeek': 'Был(а) на прошлой неделе',

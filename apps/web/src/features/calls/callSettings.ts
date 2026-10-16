@@ -162,7 +162,15 @@ export async function enumerateCallDevices(): Promise<CallDevices> {
  * (`turnCredentials.ts`), и здесь они добавляются к тем, что из сборки.
  */
 export function iceServers(): RTCIceServer[] {
-  const servers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const servers: RTCIceServer[] = [
+    {
+      urls: [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:stun.cloudflare.com:3478',
+      ],
+    },
+  ];
   const turnUrl = (import.meta.env.VITE_TURN_URL ?? '').trim();
   if (turnUrl) {
     const username = (import.meta.env.VITE_TURN_USERNAME ?? '').trim();

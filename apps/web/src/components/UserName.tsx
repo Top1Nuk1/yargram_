@@ -116,6 +116,7 @@ function FakeBadge({ subject, className }: { subject: 'account' | 'group'; class
  * Метка «бот» сразу после имени. Сделана ровно как SCAM и FAKE — рамкой, а не
  * заливкой: это узнаваемая метка рядом с ником, а не слово в предложении.
  * Цвет — фирменный, чтобы отличалась от красного SCAM и янтарного FAKE.
+ * Надпись латиницей, как у SCAM и FAKE: это метка, а не слово интерфейса.
  */
 function BotBadge({ className }: { className: string }) {
   const t = useTranslation();
@@ -126,7 +127,7 @@ function BotBadge({ className }: { className: string }) {
       title={t('badge.botAria')}
       className={`inline-flex shrink-0 items-center justify-center rounded-[0.3rem] border-[1.5px] border-brand/70 font-black uppercase leading-none tracking-[0.02em] text-brand ${className}`}
     >
-      {t('badge.bot')}
+      BOT
     </span>
   );
 }

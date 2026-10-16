@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Check, CheckCircle2, Plus, Square, SquareCheck, XCircle } from 'lucide-react';
 import { useTranslation } from '../../hooks/useLanguage';
 import type { PollOption, PollView, User } from '../../types';
+import { HighlightedText } from '../messenger/MessageExtras';
 
 interface PollMessageProps {
   poll: PollView;
@@ -77,7 +78,7 @@ export function PollMessage({
       </p>
       {poll.description && (
         <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-muted">
-          {poll.description}
+          <HighlightedText text={poll.description} />
         </p>
       )}
 

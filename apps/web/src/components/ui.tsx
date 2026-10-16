@@ -89,10 +89,10 @@ export function Avatar({ name, src, size = 'md', online, className = '', seed, p
           initials(name)
         )}
       </span>
-      {online !== undefined && (
+      {Boolean(online) && (
         <span
-          className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-[3px] border-surface ${online ? 'bg-success' : 'bg-muted/45'}`}
-          title={online ? t('presence.online') : t('presence.offline')}
+          className="absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-[2.5px] border-surface bg-success shadow-sm"
+          title={t('presence.online')}
         />
       )}
     </span>

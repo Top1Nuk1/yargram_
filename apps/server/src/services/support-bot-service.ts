@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { BotKeyboard, Conversation, PublicUser, User } from "../domain/models.js";
 import { toPublicUser } from "../domain/models.js";
 import { AppError } from "../lib/errors.js";
@@ -9,15 +10,31 @@ import {
   SUPPORT_BOT_USERNAME,
   SUPPORT_ERROR_TOPICS,
   SUPPORT_INBOX_TITLE,
+  isSupportCancelCommand,
+  isSupportCommand,
+  isSupportHelpCommand,
+  isSupportStartCommand,
+  parseAskAction,
   supportCancelKeyboard,
   supportErrorKeyboard,
+  supportLanguageOf,
   supportMenuKeyboard,
+  supportReplyKeyboard,
   supportSectionLabel,
   supportTexts,
+  type SupportLanguage,
 } from "./support-bot-texts.js";
 
 /** Человек уже выбрал раздел кнопкой и сейчас напишет описание. */
-type PendingTicket = { category: string; topic?: string | undefined };
+type PendingTicket = {
+  category: string;
+  topic?: string | undefined;
+  /**
+   * Номер обращения, если человек дополняет прежнее («Спросить ещё»). Пусто —
+   * обращение новое, и номер ему выдают при отправке.
+   */
+  code?: string | undefined;
+};
 
 /**
  * Бот поддержки Yargram.
@@ -28,13 +45,30 @@ type PendingTicket = { category: string; topic?: string | undefined };
  * бот пересылает обращение в **служебную группу** с владельцами; ответ владельца
  * на сообщение бота возвращается человеку с именем того, кто ответил.
  *
- * Бот не пишет первым и не рассылает ничего: он реагирует либо на нажатие
- * кнопки, либо на сообщение в своей переписке, либо на ответ владельца в
- * служебной группе.
+ * 🔥 Бот не пишет первым. Пустая переписка — это пустая переписка: клиент
+ * показывает в ней кнопку «СТАРТ», человек нажимает её, уходит `/start`, и
+ * только тогда появляется приветствие с меню.
+ *
+ * 🔥 Бот говорит на языке человека (`User.language`) — на том же, на котором у
+ * него кнопки интерфейса. Ответ владельца тоже уходит на языке человека, а не
+ * владельца: читает его человек.
+ *
+ * 🔥 Подсказка бота — не переписка, а один живой экран. Каждая следующая
+ * подсказка **удаляет** предыдущую: иначе на каждый нажатый пункт в истории
+ * копилось бы по сообщению, и через десяток нажатий переписка читалась бы
+ * сверху вниз как протокол. Удаляем только то, что бот сам прислал как
+ * подсказку: ответ владельца и подтверждение обращения остаются на месте.
  */
 export class SupportBotService {
   /** Кто чего ждёт: раздел выбирается кнопкой, а описание человек пишет сам. */
   private readonly pending = new Map<string, PendingTicket>();
+  /**
+   * Подсказка, которую бот прислал последней: беседа → id сообщения. Её и
+   * удаляем, когда приходит время показать следующую. Карта живёт до
+   * перезапуска сервера: после него удалять будет нечего, и подсказка просто
+   * останется в истории — потеря мелкая, а лишней сложности не заводим.
+   */
+  private readonly prompts = new Map<string, string>();
   private unsubscribe: (() => void) | null = null;
 
   constructor(
@@ -68,9 +102,12 @@ export class SupportBotService {
   }
 
   /**
-   * Открыть переписку с поддержкой: создаёт её при первом обращении и один раз
-   * показывает приветствие с меню. Возвращает готовый вид беседы, чтобы клиент
-   * сразу её открыл.
+   * Открыть переписку с поддержкой: заводит её при первом обращении и отдаёт
+   * готовый вид беседы, чтобы клиент сразу её открыл.
+   *
+   * 🔥 Ничего не отправляет. Раньше бот здоровался здесь же, и переписка
+   * начиналась с сообщения, которого человек не просил; теперь первым шагом
+   * идёт кнопка «СТАРТ» в клиенте, а за ней — `/start` от человека.
    */
   async openFor(
     userId: string,
@@ -80,12 +117,6 @@ export class SupportBotService {
       throw new AppError(400, "SUPPORT_SELF", "Бот не может написать сам себе");
     }
     const result = await this.repositories.conversations.findOrCreateDirect(bot.id, userId);
-    const history = await this.repositories.messages.listForConversation(result.conversation.id, {
-      limit: 1,
-    });
-    if (history.length === 0) {
-      await this.send(bot, result.conversation.id, supportTexts.welcome, supportMenuKeyboard());
-    }
     return {
       conversation: await this.chatService.viewConversation(userId, result.conversation.id),
       bot: toPublicUser(bot),
@@ -96,30 +127,78 @@ export class SupportBotService {
   /**
    * Нажатие кнопки бота. Действие приходит кодом, а не текстом: так в истории
    * не остаётся служебных «нажатий», и заодно нельзя прислать что-то лишнее.
+   *
+   * Каждый шаг заменяет прошлую подсказку — см. `replacePrompt`.
    */
   async handleAction(userId: string, conversationId: string, action: string): Promise<void> {
     const bot = await this.requireBot();
     const conversation = await this.getBotConversation(userId, conversationId, bot);
+    const language = await this.languageOf(userId);
+    const texts = supportTexts(language);
+
+    // «Спросить ещё»: номер и раздел обращения приехали в самой кнопке, поэтому
+    // состояние не нужно — старая кнопка в истории работает и после перезапуска.
+    const ask = parseAskAction(action);
+    if (ask) {
+      this.pending.set(userId, {
+        category: ask.category,
+        ...(ask.topic === undefined ? {} : { topic: ask.topic }),
+        code: ask.code,
+      });
+      await this.replacePrompt(
+        bot,
+        conversation.id,
+        texts.askPrompt(ask.code),
+        supportCancelKeyboard(language),
+      );
+      return;
+    }
+
     switch (action) {
       case SUPPORT_ACTION.menu:
         this.pending.delete(userId);
-        await this.send(bot, conversation.id, supportTexts.menu, supportMenuKeyboard());
+        await this.replacePrompt(
+          bot,
+          conversation.id,
+          texts.menu,
+          supportMenuKeyboard(language),
+        );
         return;
       case SUPPORT_ACTION.error:
         this.pending.delete(userId);
-        await this.send(bot, conversation.id, supportTexts.errorPrompt, supportErrorKeyboard());
+        await this.replacePrompt(
+          bot,
+          conversation.id,
+          texts.errorPrompt,
+          supportErrorKeyboard(language),
+        );
         return;
       case SUPPORT_ACTION.idea:
         this.pending.set(userId, { category: "idea" });
-        await this.send(bot, conversation.id, supportTexts.ideaPrompt, supportCancelKeyboard());
+        await this.replacePrompt(
+          bot,
+          conversation.id,
+          texts.ideaPrompt,
+          supportCancelKeyboard(language),
+        );
         return;
       case SUPPORT_ACTION.other:
         this.pending.set(userId, { category: "other" });
-        await this.send(bot, conversation.id, supportTexts.otherPrompt, supportCancelKeyboard());
+        await this.replacePrompt(
+          bot,
+          conversation.id,
+          texts.otherPrompt,
+          supportCancelKeyboard(language),
+        );
         return;
       case SUPPORT_ACTION.cancel:
         this.pending.delete(userId);
-        await this.send(bot, conversation.id, supportTexts.cancelled, supportMenuKeyboard());
+        await this.replacePrompt(
+          bot,
+          conversation.id,
+          texts.cancelled,
+          supportMenuKeyboard(language),
+        );
         return;
       default: {
         const topic = SUPPORT_ERROR_TOPICS[action];
@@ -127,7 +206,12 @@ export class SupportBotService {
           throw new AppError(400, "SUPPORT_ACTION_UNKNOWN", "Неизвестное действие бота");
         }
         this.pending.set(userId, { category: "error", topic });
-        await this.send(bot, conversation.id, supportTexts.describePrompt, supportCancelKeyboard());
+        await this.replacePrompt(
+          bot,
+          conversation.id,
+          texts.describePrompt,
+          supportCancelKeyboard(language),
+        );
       }
     }
   }
@@ -150,25 +234,73 @@ export class SupportBotService {
     }
   }
 
-  /** Человек написал боту: превращаем это в обращение для владельцев. */
+  /** Человек написал боту: команда показывает меню, остальное — обращение. */
   private async handleUserText(
     bot: User,
     conversation: Conversation,
     message: MessageView,
   ): Promise<void> {
     const userId = message.senderId;
+    const language = await this.languageOf(userId);
+    const texts = supportTexts(language);
+
+    // Команды проверяем раньше всего: «/start» посреди описания — это просьба
+    // начать заново, а не текст обращения, и владельцам он не нужен.
+    if (isSupportStartCommand(message.text)) {
+      this.pending.delete(userId);
+      await this.replacePrompt(bot, conversation.id, texts.welcome, supportMenuKeyboard(language));
+      return;
+    }
+    if (isSupportCancelCommand(message.text)) {
+      this.pending.delete(userId);
+      await this.replacePrompt(
+        bot,
+        conversation.id,
+        texts.cancelled,
+        supportMenuKeyboard(language),
+      );
+      return;
+    }
+    if (isSupportCommand(message.text)) {
+      // Незнакомая команда — это просьба о помощи, а не обращение: «/frobnicate»
+      // владельцам ничего не объяснит, а человеку нужен ответ.
+      this.pending.delete(userId);
+      await this.replacePrompt(
+        bot,
+        conversation.id,
+        isSupportHelpCommand(message.text) ? texts.help : texts.unknownCommand,
+        supportMenuKeyboard(language),
+      );
+      return;
+    }
+
     const pending = this.pending.get(userId);
     this.pending.delete(userId);
-    // Текст без описания (одно вложение) тоже обращение: пустую строку владельцам
-    // показывать нечего, поэтому ставим прочерк вместо неё.
-    const details = message.text.trim() || "—";
+    const details = message.text.trim();
+    // Приложенный файл без подписи — тоже обращение: снимок экрана часто и есть
+    // весь рассказ. А вот пустое сообщение отправлять владельцам нечего.
+    const attachmentIds = (message.attachments ?? []).map((attachment) => attachment.id);
+    if (!details && attachmentIds.length === 0) {
+      await this.replacePrompt(
+        bot,
+        conversation.id,
+        texts.noText,
+        supportCancelKeyboard(language),
+      );
+      return;
+    }
     await this.fileTicket({
       bot,
       conversationId: conversation.id,
       userId,
       category: pending?.category ?? "other",
       ...(pending?.topic === undefined ? {} : { topic: pending.topic }),
-      details,
+      details: details || texts.noDetails,
+      attachmentIds,
+      // Продолжение обращения сохраняет прежний номер, новое получает свой.
+      code: pending?.code ?? newTicketCode(),
+      followUp: pending?.code !== undefined,
+      language,
     });
   }
 
@@ -180,26 +312,44 @@ export class SupportBotService {
     category: string;
     topic?: string | undefined;
     details: string;
+    attachmentIds: string[];
+    code: string;
+    followUp: boolean;
+    language: SupportLanguage;
   }): Promise<void> {
+    const texts = supportTexts(input.language);
     const inbox = await this.ensureInbox(input.bot);
     const author = await this.repositories.users.findById(input.userId);
-    await this.chatService.sendBotMessage({
-      conversationId: inbox.id,
-      senderId: input.bot.id,
-      text: supportTexts.ticket({
-        displayName: author?.displayName ?? "Неизвестный",
-        username: author?.username ?? null,
-        section: supportSectionLabel(input.category, input.topic),
-        details: input.details,
-      }),
-      // Привязка к человеку: по ней находится адресат, когда владелец ответит.
-      supportTicket: {
-        userId: input.userId,
-        category: input.category,
-        ...(input.topic === undefined ? {} : { topic: input.topic }),
-      },
-    }).then((result) => this.events.publishNewMessage(result));
-    await this.send(input.bot, input.conversationId, supportTexts.accepted, supportMenuKeyboard());
+    await this.chatService
+      .sendBotMessage({
+        conversationId: inbox.id,
+        senderId: input.bot.id,
+        text: texts.ticket({
+          displayName: author?.displayName ?? "—",
+          username: author?.username ?? null,
+          section: supportSectionLabel(input.language, input.category, input.topic),
+          code: input.code,
+          details: input.details,
+        }),
+        // Снимок экрана едет вместе с обращением: подпись на файл собирается
+        // заново на того, кто смотрит, поэтому владельцы увидят его как обычно.
+        ...(input.attachmentIds.length === 0 ? {} : { attachmentIds: input.attachmentIds }),
+        // Привязка к человеку: по ней находится адресат, когда владелец ответит.
+        supportTicket: {
+          userId: input.userId,
+          category: input.category,
+          ...(input.topic === undefined ? {} : { topic: input.topic }),
+          code: input.code,
+        },
+      })
+      .then((result) => this.events.publishNewMessage(result));
+    // Подсказка «опишите подробнее» заменяется подтверждением: она своё отслужила.
+    await this.replacePrompt(
+      input.bot,
+      input.conversationId,
+      input.followUp ? texts.followUpAccepted(input.code) : texts.accepted(input.code),
+      supportMenuKeyboard(input.language),
+    );
   }
 
   /** Владелец ответил на сообщение бота — доставляем ответ человеку. */
@@ -213,12 +363,22 @@ export class SupportBotService {
       this.repositories.users.findById(ticket.userId),
     ]);
     if (!owner || !target) return;
+    // Язык — человека, а не владельца: ответ читает он, и кнопки под ответом
+    // тоже должны быть на его языке.
+    const language = supportLanguageOf(target.language);
+    const texts = supportTexts(language);
+    // У обращений, отправленных до появления номеров, своего кода нет — выдаём.
+    const code = ticket.code ?? newTicketCode();
     const direct = await this.repositories.conversations.findOrCreateDirect(bot.id, target.id);
     await this.send(
       bot,
       direct.conversation.id,
-      supportTexts.ownerReply(owner.displayName, text),
-      supportMenuKeyboard(),
+      texts.ownerReply(owner.displayName, code, text),
+      supportReplyKeyboard(language, {
+        code,
+        category: ticket.category,
+        ...(ticket.topic === undefined ? {} : { topic: ticket.topic }),
+      }),
     );
   }
 
@@ -243,6 +403,13 @@ export class SupportBotService {
     });
   }
 
+  /** Язык человека: по нему бот и говорит. Аккаунта нет — русский. */
+  private async languageOf(userId: string): Promise<SupportLanguage> {
+    const user = await this.repositories.users.findById(userId);
+    return supportLanguageOf(user?.language);
+  }
+
+  /** Отправить сообщение от бота, ничего не удаляя. */
   private async send(
     bot: User,
     conversationId: string,
@@ -256,6 +423,50 @@ export class SupportBotService {
       ...(keyboard === undefined ? {} : { keyboard }),
     });
     this.events.publishNewMessage(result);
+  }
+
+  /**
+   * Показать следующую подсказку вместо прошлой: удалить старую и прислать новую.
+   *
+   * 🔥 Удаляем только ту подсказку, которую бот прислал сам и последней. Ответ
+   * владельца идёт мимо этой карты (`send`) — его человек не должен терять,
+   * нажав после прочтения любую кнопку.
+   */
+  private async replacePrompt(
+    bot: User,
+    conversationId: string,
+    text: string,
+    keyboard?: BotKeyboard,
+  ): Promise<void> {
+    const previousId = this.prompts.get(conversationId);
+    this.prompts.delete(conversationId);
+    if (previousId !== undefined) {
+      await this.deleteQuietly(bot, conversationId, previousId);
+    }
+    const result = await this.chatService.sendBotMessage({
+      conversationId,
+      senderId: bot.id,
+      text,
+      ...(keyboard === undefined ? {} : { keyboard }),
+    });
+    this.prompts.set(conversationId, result.message.id);
+    this.events.publishNewMessage(result);
+  }
+
+  /**
+   * Удалить сообщение бота, не падая, если его уже нет.
+   *
+   * Сообщение могло исчезнуть само: человек удалил переписку, сервер
+   * перезапустился и карта подсказок опустела, — а прошлый id остался. Ошибка
+   * удаления здесь ничего не значит: новую подсказку всё равно надо показать.
+   */
+  private async deleteQuietly(bot: User, conversationId: string, messageId: string): Promise<void> {
+    try {
+      const deleted = await this.chatService.deleteMessage(bot.id, conversationId, messageId);
+      this.events.publishDeletedMessage(deleted);
+    } catch (error) {
+      console.warn("Бот поддержки не смог убрать прошлую подсказку", error);
+    }
   }
 
   /** Переписка с ботом глазами человека: чужая беседа действием не станет. */
@@ -283,4 +494,18 @@ export class SupportBotService {
     }
     return bot;
   }
+}
+
+/**
+ * Номер обращения: четыре знака из случайного id.
+ *
+ * Не порядковый счётчик и не id сообщения: счётчик пришлось бы где-то хранить и
+ * синхронизировать, а id сообщения известен только **после** создания записи —
+ * а номер нужен уже в её тексте. Случайные четыре знака дают 65 536 вариантов:
+ * в одной переписке повторов практически не бывает, а большего и не нужно —
+ * номер нужен лишь для того, чтобы человек и владельцы говорили об одном и том
+ * же обращении.
+ */
+function newTicketCode(): string {
+  return randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase();
 }

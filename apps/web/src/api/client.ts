@@ -31,6 +31,7 @@ import type {
   FriendshipState,
   FriendsOverview,
   SessionOverview,
+  StickerPack,
 } from '../types';
 
 interface RequestOptions extends Omit<RequestInit, 'body'> {
@@ -49,6 +50,8 @@ interface RawCollection<T> {
   users?: T[];
   conversations?: T[];
   messages?: T[];
+  packs?: T[];
+  gifs?: T[];
   nextCursor?: string | null;
 }
 
@@ -70,10 +73,19 @@ interface SendMessageInput {
   attachmentIds?: string[];
   replyToId?: string;
   forwardedFromId?: string;
+  /** Присланный набор: сообщение идёт без текста и файлов. */
+  stickerPackId?: string;
+  /**
+   * 🔥 Отправляемые стикеры — именно id, а не файлы. Встроенные стикеры вовсе
+   * не лежат на сервере как вложения (это файлы сборки), а пользовательский
+   * файл может быть удалён вместе со стикером; готовые адреса сервер собирает
+   * заново при каждой отдаче сообщения.
+   */
+  stickerIds?: string[];
 }
 
 export interface UploadOptions {
-  mediaKind?: 'voice' | 'video_circle';
+  mediaKind?: 'voice' | 'video_circle' | 'gif';
   durationSeconds?: number;
   signal?: AbortSignal;
   onProgress?: (percent: number) => void;
@@ -123,16 +135,61 @@ function errorMessage(payload: unknown, fallback: string): string {
   return fallback;
 }
 
+const DEVICE_ID_KEY = 'yargram.device_id';
+const DEVICE_NAME_KEY = 'yargram.device_name';
+
+export function getOrCreateDeviceId(): string {
+  try {
+    let id = localStorage.getItem(DEVICE_ID_KEY);
+    if (!id) {
+      id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem(DEVICE_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return 'browser-device';
+  }
+}
+
+export function getStoredDeviceName(): string | null {
+  try {
+    return localStorage.getItem(DEVICE_NAME_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredDeviceName(name: string | null): void {
+  try {
+    if (name && name.trim()) {
+      localStorage.setItem(DEVICE_NAME_KEY, name.trim());
+    } else {
+      localStorage.removeItem(DEVICE_NAME_KEY);
+    }
+  } catch {}
+}
+
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json');
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
   if (options.token) headers.set('Authorization', `Bearer ${options.token}`);
+  const deviceId = getOrCreateDeviceId();
+  headers.set('X-Device-Id', deviceId);
+  const deviceName = getStoredDeviceName();
+  if (deviceName) {
+    headers.set('X-Device-Name', encodeURIComponent(deviceName));
+  }
+  headers.set('Cache-Control', 'no-cache, no-store');
+  headers.set('Pragma', 'no-cache');
 
   let response: Response;
   try {
     response = await fetch(path, {
       ...options,
+      cache: options.cache ?? 'no-store',
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
@@ -811,6 +868,15 @@ export const api = {
     });
   },
 
+  /** Переименовать устройство/сеанс. */
+  renameSession(token: string, sessionId: string, name: string) {
+    return request<SessionOverview>(`/api/sessions/${encodeURIComponent(sessionId)}/rename`, {
+      method: 'PATCH',
+      token,
+      body: { name },
+    });
+  },
+
   /** Завершить один сеанс. Свой — всегда, чужой — через сутки после входа. */
   terminateSession(token: string, sessionId: string) {
     return request<SessionOverview>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
@@ -888,6 +954,27 @@ export const api = {
   adminSetFake(token: string, userId: string, fake: boolean) {
     return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/fake`, {
       method: 'POST', token, body: { fake },
+    }).then((result) => ('user' in result ? result.user : result));
+  },
+
+  /**
+   * Список служебных ботов — только владелец. Отдельно от `adminAccounts`:
+   * там список обзорный и отфильтрованный вручную, а ботов на установке
+   * единицы, и нужен именно их перечень целиком.
+   */
+  adminBots(token: string) {
+    return request<{ accounts: AdminAccount[] }>('/api/admin/bots', { token }).then(
+      (result): AdminAccount[] => result.accounts ?? [],
+    );
+  },
+
+  /**
+   * Метка «BOT»: служебный аккаунт, в который нельзя войти. Ставится и
+   * снимается владельцем.
+   */
+  adminSetBot(token: string, userId: string, isBot: boolean) {
+    return request<User | { user: User }>(`/api/admin/${encodeURIComponent(userId)}/bot`, {
+      method: 'POST', token, body: { isBot },
     }).then((result) => ('user' in result ? result.user : result));
   },
 
@@ -993,5 +1080,97 @@ export const api = {
       token,
       body: { reason, ...(details?.trim() ? { details: details.trim() } : {}) },
     });
+  },
+
+  // ---- Стикеры, наборы и гифки ----
+
+  stickerPacks(token: string, signal?: AbortSignal) {
+    return request<RawCollection<StickerPack>>('/api/sticker-packs', { token, signal }).then(
+      (result): StickerPack[] => result.packs ?? result.items ?? [],
+    );
+  },
+
+  stickerPack(token: string, packId: string, signal?: AbortSignal) {
+    return request<{ pack: StickerPack }>(
+      `/api/sticker-packs/${encodeURIComponent(packId)}`,
+      { token, signal },
+    ).then((result) => result.pack);
+  },
+
+  createStickerPack(token: string, body: { title: string; emoji?: string }) {
+    return request<{ pack: StickerPack }>('/api/sticker-packs', {
+      method: 'POST',
+      token,
+      body,
+    }).then((result) => result.pack);
+  },
+
+  updateStickerPack(
+    token: string,
+    packId: string,
+    body: { title?: string; emoji?: string },
+  ) {
+    return request<{ pack: StickerPack }>(
+      `/api/sticker-packs/${encodeURIComponent(packId)}`,
+      { method: 'PATCH', token, body },
+    ).then((result) => result.pack);
+  },
+
+  deleteStickerPack(token: string, packId: string) {
+    return request<void>(`/api/sticker-packs/${encodeURIComponent(packId)}`, {
+      method: 'DELETE',
+      token,
+    });
+  },
+
+  /**
+   * Добавить стикер в набор. Файл уже загружен отдельным запросом (`kind=sticker`),
+   * здесь только ссылка на него.
+   */
+  addStickerToPack(token: string, packId: string, attachmentId: string, emoji?: string) {
+    return request<{ pack: StickerPack }>(
+      `/api/sticker-packs/${encodeURIComponent(packId)}/stickers`,
+      {
+        method: 'POST',
+        token,
+        body: { attachmentId, ...(emoji?.trim() ? { emoji: emoji.trim() } : {}) },
+      },
+    ).then((result) => result.pack);
+  },
+
+  removeStickerFromPack(token: string, packId: string, stickerId: string) {
+    return request<{ pack: StickerPack }>(
+      `/api/sticker-packs/${encodeURIComponent(packId)}/stickers/${encodeURIComponent(stickerId)}`,
+      { method: 'DELETE', token },
+    ).then((result) => result.pack);
+  },
+
+  /** Пригласить в набор: сообщение в беседу, получателям набор добавляется. */
+  shareStickerPack(token: string, packId: string, conversationId: string) {
+    return request<{ message: Message }>(
+      `/api/sticker-packs/${encodeURIComponent(packId)}/share`,
+      { method: 'POST', token, body: { conversationId } },
+    ).then((result) => result.message);
+  },
+
+  installStickerPack(token: string, packId: string) {
+    return request<{ pack: StickerPack }>(
+      `/api/sticker-packs/${encodeURIComponent(packId)}/install`,
+      { method: 'POST', token },
+    ).then((result) => result.pack);
+  },
+
+  uninstallStickerPack(token: string, packId: string) {
+    return request<void>(`/api/sticker-packs/${encodeURIComponent(packId)}/install`, {
+      method: 'DELETE',
+      token,
+    });
+  },
+
+  /** Библиотека гифок: загруженное можно слать снова. */
+  gifs(token: string, signal?: AbortSignal) {
+    return request<RawCollection<Attachment>>('/api/gifs', { token, signal }).then(
+      (result): Attachment[] => result.gifs ?? result.items ?? [],
+    );
   },
 };

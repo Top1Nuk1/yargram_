@@ -185,6 +185,20 @@ describe("код подтверждения по почте", () => {
     expect(result).toMatchObject({ status: "code_sent", purpose: "reset" });
     expect(sent).toHaveLength(0);
   });
+
+  it("дедуплицирует запросы на сброс пароля в течение кулдауна, отправляя только одно письмо", async () => {
+    const { authService, sent } = await harness({ confirmation: true });
+    await authService.register({ email: "user@example.test", password: "password123", displayName: "Тест" });
+    const resetCountBefore = sent.length;
+    const first = await authService.requestPasswordReset("user@example.test");
+    expect(first.status).toBe("code_sent");
+    expect(sent).toHaveLength(resetCountBefore + 1);
+
+    // Повторный вызов сразу после первого возвращает тот же статус, но второе письмо не шлёт
+    const second = await authService.requestPasswordReset("user@example.test");
+    expect(second.status).toBe("code_sent");
+    expect(sent).toHaveLength(resetCountBefore + 1);
+  });
 });
 
 describe("брошенная регистрация", () => {

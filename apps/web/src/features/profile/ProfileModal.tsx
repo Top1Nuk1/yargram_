@@ -1006,32 +1006,26 @@ export function ProfileModal({ token, user, onClose, onSaved }: ProfileModalProp
               </div>
             </details>
 
-            {/* Знак приложения Yargram. Отдельное приложение — тоже аккаунт, и
-                значок «Yargram» оно ставит себе само, без админ-панели. Сервер
-                пропускает только аккаунт, помеченный приложением владельцем,
-                поэтому остальным блок просто объясняет, почему кнопки нет. */}
-            <div className="rounded-2xl border border-line bg-canvas/40 p-4">
-              <span className="mb-2 block text-sm font-semibold">{t('profile.appBadgeLabel')}</span>
-              {profileUser.isApp ? (
-                <>
-                  <div className="flex items-center justify-between gap-4">
-                    <p className="text-xs leading-5 text-muted">{t('profile.appBadgeHint')}</p>
-                    <Button
-                      type="button"
-                      variant={profileUser.badge === 'yargram' ? 'secondary' : 'primary'}
-                      disabled={appBadgeBusy}
-                      onClick={() => void toggleAppBadge()}
-                    >
-                      <ShieldCheck className="h-4 w-4" />
-                      {profileUser.badge === 'yargram' ? t('profile.appBadgeRemove') : t('profile.appBadgeSet')}
-                    </Button>
-                  </div>
-                  <p className="mt-2 text-xs text-muted">{t('profile.appBadgeHow')}</p>
-                </>
-              ) : (
-                <p className="text-xs leading-5 text-muted">{t('profile.appBadgeOwnerOnly')}</p>
-              )}
-            </div>
+            {/* Знак приложения Yargram. Показывается только аккаунтам приложений (isApp),
+                обычным пользователям этот блок не показывается. */}
+            {profileUser.isApp && (
+              <div className="rounded-2xl border border-line bg-canvas/40 p-4">
+                <span className="mb-2 block text-sm font-semibold">{t('profile.appBadgeLabel')}</span>
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-xs leading-5 text-muted">{t('profile.appBadgeHint')}</p>
+                  <Button
+                    type="button"
+                    variant={profileUser.badge === 'yargram' ? 'secondary' : 'primary'}
+                    disabled={appBadgeBusy}
+                    onClick={() => void toggleAppBadge()}
+                  >
+                    <ShieldCheck className="h-4 w-4" />
+                    {profileUser.badge === 'yargram' ? t('profile.appBadgeRemove') : t('profile.appBadgeSet')}
+                  </Button>
+                </div>
+                <p className="mt-2 text-xs text-muted">{t('profile.appBadgeHow')}</p>
+              </div>
+            )}
 
             <details className="rounded-2xl border border-line bg-canvas/40">
               <summary className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3 text-sm font-semibold">

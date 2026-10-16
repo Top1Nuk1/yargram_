@@ -3,13 +3,25 @@ import { mediaUrlFor } from "../lib/media-links.js";
 export const allowedReactionEmojis = ["👍", "❤️", "😂", "😎", "🔥", "😢", "😮", "🍓", "🍷"] as const;
 
 export type ReactionEmoji = (typeof allowedReactionEmojis)[number];
-export type AttachmentKind = "image" | "file" | "avatar" | "banner" | "wallpaper";
+
+/**
+ * Вид вложения. От него зависит и предел размера, и то, как файл отдаётся
+ * обратно: картинки и обои — инлайном, остальное — скачиванием.
+ *
+ * `sticker` и `gif` — не «ещё два вида файла», а именно картинки со своим
+ * поведением: стикер рисуется без пузыря и во весь размер, гифка играет сама
+ * по кругу и без звука.
+ */
+export type AttachmentKind = "image" | "file" | "avatar" | "banner" | "wallpaper" | "sticker" | "gif";
+
+/** Уточнение поверх вида: запись голосом, кружок и видео-гифка. */
+export type MediaKind = "voice" | "video_circle" | "gif";
 
 export type Attachment = {
   id: string;
   ownerId: string;
   kind: AttachmentKind;
-  mediaKind?: "voice" | "video_circle";
+  mediaKind?: MediaKind;
   durationSeconds?: number;
   fileName: string;
   storedFileName: string;
@@ -25,6 +37,8 @@ export type AttachmentView = Omit<Attachment, "storedFileName"> & {
 /** Зачем выдан код из письма: подтверждение регистрации, вход или сброс пароля. */
 export type EmailCodePurpose = "register" | "login" | "reset";
 
+export type CallPrivacyRule = "everyone" | "contacts" | "nobody";
+
 export type User = {
   id: string;
   email: string;
@@ -33,8 +47,18 @@ export type User = {
   username?: string | undefined;
   bio: string;
   avatar?: AttachmentView | undefined;
+  /** Ссылка на аватар: ставится, когда аватар задан прямой URL-кой, без
+   *  загрузки файла. Так оформлен служебный бот поддержки — картинку ему
+   *  кладёт скрипт, а не человек через профиль. Вложение (`avatar`) важнее. */
+  avatarUrl?: string | null;
   lastSeenAt: string;
   showLastSeen: boolean;
+  /** Конфиденциальность звонков: кто может звонить пользователю. */
+  callPrivacy?: CallPrivacyRule;
+  /** Исключения звонков: пользователи, которым всегда разрешено звонить. */
+  callPrivacyAllowedUserIds?: string[];
+  /** Исключения звонков: пользователи, которым всегда запрещено звонить. */
+  callPrivacyDeniedUserIds?: string[];
   blockedUserIds: string[];
   favoriteMessageIds: string[];
   notificationSoundEnabled: boolean;
@@ -97,6 +121,16 @@ export type User = {
   /** Через сколько дней бездействия сеанс завершается сам. `null` — никогда:
    *  сеанс живёт, пока человек его сам не закроет. */
   sessionAutoTerminateDays?: number | null;
+  /**
+   * Язык интерфейса, выбранный человеком. Сам интерфейс переводится на клиенте
+   * и живёт в `localStorage`, а это поле — только для того, чтобы **сервер**
+   * знал язык: служебный бот поддержки пишет сообщения из сервера и должен
+   * отвечать на том же языке, что и кнопки вокруг.
+   *
+   * Настройка не привязана к устройству, поэтому последний выбранный язык
+   * побеждает: зашли с телефона по-английски — бот ответит по-английски.
+   */
+  language?: string;
 };
 
 /**
@@ -161,6 +195,9 @@ export type PublicUser = {
 export type CurrentUser = PublicUser & {
   email: string;
   showLastSeen: boolean;
+  callPrivacy: CallPrivacyRule;
+  callPrivacyAllowedUserIds: string[];
+  callPrivacyDeniedUserIds: string[];
   notificationSoundEnabled: boolean;
   /** Почта подтверждена кодом из письма. У старых аккаунтов поля нет —
    *  считаем подтверждённой, чтобы не запирать их. */
@@ -170,6 +207,8 @@ export type CurrentUser = PublicUser & {
   wallpaperMimeType?: string;
   /** Через сколько дней бездействия сеанс завершается сам; `null` — никогда. */
   sessionAutoTerminateDays?: number | null;
+  /** Язык интерфейса: по нему отвечает служебный бот поддержки. */
+  language?: string;
 };
 
 /**
@@ -456,6 +495,15 @@ export type SupportTicket = {
   category: string;
   /** Уточнение внутри раздела, если человек выбрал готовый вариант. */
   topic?: string | undefined;
+  /**
+   * Номер обращения: короткий код, который человек видит в переписке с ботом.
+   * Нужен, чтобы продолжение («спросить ещё») ушло тем же обращением, а не
+   * завело новое: кнопка под ответом несёт этот код в себе.
+   *
+   * Поле необязательное: обращения, отправленные до его появления, его не
+   * имеют — им номер просто выдаётся заново при первом ответе.
+   */
+  code?: string | undefined;
 };
 
 export type Message = {
@@ -472,6 +520,18 @@ export type Message = {
   keyboard?: BotKeyboard | undefined;
   /** Пересланное в группу владельцев обращение: по нему бот находит адресата. */
   supportTicket?: SupportTicket | undefined;
+  /**
+   * Отправленные стикеры.
+   *
+   * 🔥 Ссылка на стикер, а не на вложение. У встроенных стикеров вложения нет
+   * вообще — это файлы сборки, — а у пользовательских вложение своё, и оно
+   * может быть удалено вместе со стикером. Сообщение хранит только id, а
+   * готовые адреса отдаёт `toMessageView`: иначе подпись в ссылке протухала бы
+   * прямо в истории сообщений.
+   */
+  stickerIds: string[];
+  /** Присланный набор стикеров. Сообщение без текста: клиент рисует карточку. */
+  stickerPackId?: string | undefined;
   createdAt: string;
   editedAt?: string | undefined;
   replyToId?: string | undefined;
@@ -573,14 +633,107 @@ export type Session = {
   site: string;
   /** Браузер и система — из User-Agent, например «Chrome, Windows». */
   device: string;
+  /** Постоянный идентификатор физического устройства / браузера. */
+  deviceId?: string | undefined;
+  /** Пользовательское имя устройства (например, «Домашний ПК»). */
+  customDeviceName?: string | null | undefined;
   createdAt: string;
   lastSeenAt: string;
   /** Вход был с незнакомого сайта: владельца надо предупредить окном. */
-  newDevice?: boolean;
+  newDevice?: boolean | undefined;
   /** Владелец подтвердил вход («это был я»). Пусто — окно ещё не показано. */
-  acknowledgedAt?: string | null;
+  acknowledgedAt?: string | null | undefined;
   /** Сеанс завершён: сам он или владелец с другого сеанса. */
-  terminatedAt?: string | null;
+  terminatedAt?: string | null | undefined;
+};
+
+/**
+ * Набор стикеров.
+ *
+ * Встроенные наборы Yargram (`ownerId === ""`) описаны в коде и одинаковы у
+ * всех: их не заводят, не переименовывают и не удаляют. Пользовательский набор
+ * принадлежит тому, кто его собрал, и остаётся у него, даже если стикеры из
+ * набора убрать.
+ */
+export type StickerPack = {
+  id: string;
+  /** Кто собрал набор. Пусто у встроенных наборов. */
+  ownerId: string;
+  title: string;
+  /** Значок, которым набор показывают в списке. */
+  emoji: string;
+  /**
+   * 🔥 Растёт при каждом добавлении или удалении стикера. По нему клиент
+   * понимает, что набор изменился, и перечитывает его.
+   *
+   * Набор **не копируется** человеку, которому его прислали, — он остаётся
+   * общим. Поэтому добавили стикер в набор один раз, и он появился у всех, кому
+   * этот набор прислали. Копия потребовала бы разноски по всем получателям и
+   * разошлась бы с оригиналом на первом же добавлении.
+   */
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Стикер внутри набора: картинка или анимация плюс значок-эмодзи. */
+export type Sticker = {
+  id: string;
+  packId: string;
+  /**
+   * Вложение с картинкой. Пусто у встроенных стикеров: те лежат готовыми
+   * файлами рядом с приложением и раздаются обычной статикой.
+   */
+  attachmentId?: string | undefined;
+  /** Путь встроенного стикера, когда вложения нет. */
+  imageUrl?: string | undefined;
+  /** Значок, подходящий стикеру: по нему стикер ищут в наборе. */
+  emoji: string;
+  /** Анимированный стикер: GIF, APNG или анимированный WebP. */
+  animated: boolean;
+  createdAt: string;
+};
+
+/**
+ * Присланный набор, который человек оставил себе.
+ *
+ * 🔥 Записи есть **только у присланных** наборов. Встроенные наборы доступны
+ * всем по определению, а свои человеку принадлежат по `ownerId` — заводить им
+ * отдельные записи значило бы держать их в согласии с кодом и раздавать всем
+ * существующим аккаунтам при каждом обновлении приложения.
+ */
+export type StickerPackInstall = {
+  id: string;
+  userId: string;
+  packId: string;
+  /** Кто прислал набор. */
+  sharedByUserId: string;
+  installedAt: string;
+};
+
+/** Стикер, как его видит клиент: всегда готовый адрес картинки. */
+export type StickerView = {
+  id: string;
+  packId: string;
+  emoji: string;
+  animated: boolean;
+  url: string;
+};
+
+/** Набор стикеров вместе с содержимым. */
+export type StickerPackView = {
+  id: string;
+  title: string;
+  emoji: string;
+  version: number;
+  /** Набор человека: только свои наборы можно править. */
+  mine: boolean;
+  /** Встроенный набор Yargram: править нельзя никому. */
+  builtin: boolean;
+  /** Кто прислал набор. Пусто у встроенного и своего. */
+  sharedByUserId?: string | undefined;
+  updatedAt: string;
+  stickers: StickerView[];
 };
 
 export type DatabaseState = {
@@ -596,7 +749,29 @@ export type DatabaseState = {
   folders: ConversationFolder[];
   scheduledMessages: ScheduledMessage[];
   sessions: Session[];
+  stickerPacks: StickerPack[];
+  stickers: Sticker[];
+  stickerInstalls: StickerPackInstall[];
 };
+
+/**
+ * Отдаём ли файл инлайном. Картинки переписки, оформление профиля, стикеры и
+ * гифки показываются на месте; всё остальное скачивается.
+ *
+ * 🔥 Ошибка здесь незаметна в коде и очень заметна в жизни: браузер не рисует
+ * картинку, а предлагает её сохранить. Поэтому список один на весь сервер, а не
+ * разбросан по маршрутам.
+ */
+export function servesInline(kind: AttachmentKind): boolean {
+  return (
+    kind === "image" ||
+    kind === "avatar" ||
+    kind === "banner" ||
+    kind === "wallpaper" ||
+    kind === "sticker" ||
+    kind === "gif"
+  );
+}
 
 export function toAttachmentView(attachment: Attachment, subject?: string): AttachmentView {
   const { storedFileName: _storedFileName, ...safeAttachment } = attachment;
@@ -695,7 +870,9 @@ export function toPublicUser(user: User): PublicUser {
     // SCAM важнее — он про мошенничество, а не только про подделку.
     bio: user.scam ? SCAM_BIO_WARNING : user.fake ? FAKE_BIO_WARNING : user.bio,
     avatar,
-    avatarUrl: avatar?.url ?? null,
+    // Аватар бывает и ссылкой: у служебного бота картинка задана строкой, а не
+    // загрузкой. Вложение важнее — как у баннера.
+    avatarUrl: avatar?.url ?? (user.avatarUrl ? refreshDecorativeUrl(user.avatarUrl, user.id) : null),
     bannerColor: user.bannerColor ?? undefined,
     banner,
     bannerUrl: user.bannerUrl ? refreshDecorativeUrl(user.bannerUrl, user.id) : banner?.url ?? null,
@@ -817,6 +994,9 @@ export function toCurrentUser(user: User): CurrentUser {
     ...toPublicUser(user),
     email: user.email,
     showLastSeen: user.showLastSeen ?? true,
+    callPrivacy: user.callPrivacy ?? "everyone",
+    callPrivacyAllowedUserIds: user.callPrivacyAllowedUserIds ?? [],
+    callPrivacyDeniedUserIds: user.callPrivacyDeniedUserIds ?? [],
     notificationSoundEnabled: user.notificationSoundEnabled,
     // Отсутствие поля — это аккаунт, созданный до появления подтверждения:
     // считаем его подтверждённым.
@@ -845,5 +1025,6 @@ export function toCurrentUser(user: User): CurrentUser {
     // только когда поле есть: иначе переключатель в настройках вернулся бы в
     // «никогда» после перезахода, а клиент не отличил бы «не задано» от «никогда».
     sessionAutoTerminateDays: user.sessionAutoTerminateDays ?? null,
+    ...(user.language === undefined ? {} : { language: user.language }),
   };
 }

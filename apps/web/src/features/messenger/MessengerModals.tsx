@@ -25,6 +25,7 @@ import { formatLastSeen, messageSummary } from './messengerUtils';
 import { presenceTextClass } from '../../lib/presence';
 import { useTranslation } from '../../hooks/useLanguage';
 import { translateScamWarning } from '../../lib/i18n';
+import { HighlightedText } from './MessageExtras';
 
 interface ModalProps {
   title: string;
@@ -287,7 +288,11 @@ export function PeerProfileModal({ token, user, blocked, onClose, onMessage, onA
           className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink"
         />
       ) : (
-        profile.bio && <p className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink">{profile.bio}</p>
+        profile.bio && (
+          <p className="mx-auto mt-5 max-w-md whitespace-pre-wrap rounded-xl bg-canvas px-4 py-3 text-center text-sm leading-6 text-ink">
+            <HighlightedText text={profile.bio} />
+          </p>
+        )
       )}
       <dl className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-line p-3 text-xs">
         <div><dt className="text-muted">{t('modals.statusLabel')}</dt><dd className="mt-0.5 font-bold text-ink">{profile.isOnline ?? profile.online ? t('modals.online') : t('modals.offline')}</dd></div>

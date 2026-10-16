@@ -15,6 +15,9 @@ const entityTables = [
   ["folders", "folders"],
   ["scheduled_messages", "scheduledMessages"],
   ["sessions", "sessions"],
+  ["sticker_packs", "stickerPacks"],
+  ["stickers", "stickers"],
+  ["sticker_installs", "stickerInstalls"],
 ] as const;
 
 const columns: Record<(typeof entityTables)[number][0], string> = {
@@ -43,6 +46,11 @@ const columns: Record<(typeof entityTables)[number][0], string> = {
   sessions: `user_id text GENERATED ALWAYS AS (payload->>'userId') STORED NOT NULL,
     last_seen_at text GENERATED ALWAYS AS (payload->>'lastSeenAt') STORED,
     token_hashes jsonb GENERATED ALWAYS AS (payload->'tokenHashes') STORED`,
+  sticker_packs: `owner_id text GENERATED ALWAYS AS (payload->>'ownerId') STORED NOT NULL,
+    updated_at text GENERATED ALWAYS AS (payload->>'updatedAt') STORED`,
+  stickers: `pack_id text GENERATED ALWAYS AS (payload->>'packId') STORED NOT NULL`,
+  sticker_installs: `user_id text GENERATED ALWAYS AS (payload->>'userId') STORED NOT NULL,
+    pack_id text GENERATED ALWAYS AS (payload->>'packId') STORED NOT NULL`,
 };
 
 /** Version-one schema is embedded so compiled deployments need no copied SQL asset. */
@@ -57,7 +65,28 @@ export const postgresSchemaSql = `${entityTables.map(([table]) => `
   CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username_key);
   CREATE INDEX IF NOT EXISTS users_favorites_idx ON users USING gin (favorite_ids);
   ALTER TABLE conversations ADD COLUMN IF NOT EXISTS invite_code text GENERATED ALWAYS AS (payload->>'inviteCode') STORED;
-  CREATE UNIQUE INDEX IF NOT EXISTS conversations_direct_key_unique ON conversations (direct_key);
+  -- 🔥 Индекс обязан пропускать пустые ключи. У групп поле directKey пустое, и на
+  -- общем уникальном индексе вторая группа в базе уже не заводилась:
+  -- duplicate key value violates unique constraint "conversations_direct_key_unique".
+  -- По той же причине не поднималась служебная группа поддержки, а бот отвечал
+  -- «Бот поддержки не настроен». Уникальность нужна только личным диалогам и
+  -- «Избранному» — у них ключ непустой.
+  --
+  -- Старый индекс приходится сносить: CREATE ... IF NOT EXISTS определение уже
+  -- существующего индекса не меняет, а сносить его на каждом запуске лишний —
+  -- поэтому убираем только тот, у которого нет условия.
+  DO $$
+  BEGIN
+    IF EXISTS (
+      SELECT 1 FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND indexname = 'conversations_direct_key_unique'
+        AND indexdef NOT LIKE '%WHERE%'
+    ) THEN
+      DROP INDEX conversations_direct_key_unique;
+    END IF;
+  END $$;
+  CREATE UNIQUE INDEX IF NOT EXISTS conversations_direct_key_unique ON conversations (direct_key) WHERE direct_key <> '';
   -- У личных диалогов и «Избранного» кода нет: пустые значения в индекс не попадают.
   CREATE UNIQUE INDEX IF NOT EXISTS conversations_invite_code_unique ON conversations (invite_code) WHERE invite_code IS NOT NULL AND invite_code <> '';
   CREATE INDEX IF NOT EXISTS conversations_members_idx ON conversations USING gin (member_ids);
@@ -75,6 +104,15 @@ export const postgresSchemaSql = `${entityTables.map(([table]) => `
   -- Поиск сеанса по отпечатку токена: он нужен на каждом запросе.
   CREATE INDEX IF NOT EXISTS sessions_tokens_idx ON sessions USING gin (token_hashes);
   CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id, last_seen_at DESC, sequence);
+  -- Наборы и стикеры читаются целиком и всегда вместе: список наборов человека
+  -- собирается из встроенных, своих и присланных, а содержимое — по pack_id.
+  CREATE INDEX IF NOT EXISTS sticker_packs_owner_idx ON sticker_packs (owner_id);
+  CREATE INDEX IF NOT EXISTS stickers_pack_idx ON stickers (pack_id, sequence);
+  -- 🔥 Установка набора — это пара «человек + набор», и она обязана быть
+  -- единственной: набор присылают в чат, где человек уже мог его добавить, а
+  -- повторная установка не должна плодить записи и слать лишние обновления.
+  CREATE UNIQUE INDEX IF NOT EXISTS sticker_installs_user_pack_unique ON sticker_installs (user_id, pack_id);
+  CREATE INDEX IF NOT EXISTS sticker_installs_user_idx ON sticker_installs (user_id, sequence);
 `;
 
 export class PostgresDatabase {

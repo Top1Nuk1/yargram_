@@ -20,6 +20,7 @@ import { FolderService } from "../src/services/folder-service.js";
 import { FriendService } from "../src/services/friend-service.js";
 import { SessionService } from "../src/services/session-service.js";
 import { SupportBotService } from "../src/services/support-bot-service.js";
+import { StickerService } from "../src/services/sticker-service.js";
 import { GroupService } from "../src/services/group-service.js";
 import { ScheduledMessageService } from "../src/services/scheduled-message-service.js";
 import { ChatService } from "../src/services/chat-service.js";
@@ -56,6 +57,7 @@ async function harness() {
   const friendService = new FriendService(repositories, events);
   const sessionService = new SessionService(repositories.sessions, repositories.users, events);
   const supportBotService = new SupportBotService(repositories, chatService, events);
+  const stickerService = new StickerService(repositories, events);
   const app = createApp({
     config,
     repositories,
@@ -69,6 +71,7 @@ async function harness() {
     friendService,
     sessionService,
     supportBotService,
+    stickerService,
     events,
     crypto,
   });
@@ -217,4 +220,37 @@ it("validates recording metadata and retains voice and circles in messages after
   const reopened = new JsonDatabase(h.config.dataFile); await reopened.initialize();
   const restored = await createJsonRepositories(reopened).attachments.findById(circle.id);
   expect(restored).toMatchObject({ mediaKind: "video_circle", durationSeconds: 60 });
+});
+
+it("enforces call privacy rules (nobody, contacts, allowed, denied exceptions)", async () => {
+  const h = await harness();
+  const { conversation: direct } = await h.chatService.createDirectConversation(h.alice.user.id, h.bob.user.id);
+
+  // Default: everyone can call
+  const call1 = await h.chatService.beginCall(h.alice.user.id, direct.id, "call-1", "audio");
+  expect(call1.call.id).toBe("call-1");
+  await h.chatService.finishCall(h.alice.user.id, direct.id, "call-1", false);
+
+  // Bob sets callPrivacy: "nobody"
+  await h.authService.updateProfile(h.bob.user.id, { callPrivacy: "nobody" });
+  await expect(h.chatService.beginCall(h.alice.user.id, direct.id, "call-2", "audio"))
+    .rejects.toMatchObject({ code: "CALL_FORBIDDEN_BY_PRIVACY" });
+
+  // Bob adds Alice to callPrivacyAllowedUserIds
+  await h.authService.updateProfile(h.bob.user.id, {
+    callPrivacy: "nobody",
+    callPrivacyAllowedUserIds: [h.alice.user.id],
+  });
+  const call3 = await h.chatService.beginCall(h.alice.user.id, direct.id, "call-3", "audio");
+  expect(call3.call.id).toBe("call-3");
+  await h.chatService.finishCall(h.alice.user.id, direct.id, "call-3", false);
+
+  // Bob sets callPrivacy: "everyone" but adds Alice to callPrivacyDeniedUserIds
+  await h.authService.updateProfile(h.bob.user.id, {
+    callPrivacy: "everyone",
+    callPrivacyAllowedUserIds: [],
+    callPrivacyDeniedUserIds: [h.alice.user.id],
+  });
+  await expect(h.chatService.beginCall(h.alice.user.id, direct.id, "call-4", "audio"))
+    .rejects.toMatchObject({ code: "CALL_FORBIDDEN_BY_PRIVACY" });
 });

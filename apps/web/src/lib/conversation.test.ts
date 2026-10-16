@@ -41,6 +41,27 @@ describe('conversation helpers', () => {
     });
   });
 
+  /**
+   * 🔥 `getConversationPeer` собирает собеседника **по полям**, а сервер отдаёт
+   * его только в `members`. Забытое поле здесь не падает и не видно в тестах
+   * самого значка: до интерфейса оно просто не доезжает. Метка BOT так и
+   * пропала — в шапке чата вместо «бот» висело «Был(а) недавно».
+   */
+  it('переносит метку BOT на собеседника — иначе её не видно ни в шапке, ни в списке', () => {
+    const botChat: Conversation = {
+      id: 'conversation-bot',
+      members: [
+        { id: 'me', displayName: 'Я' },
+        { id: 'bot', displayName: 'Yargram Support', isBot: true, isVerified: true, badge: 'yargram' },
+      ],
+    };
+
+    const peer = getConversationPeer(botChat, 'me');
+    expect(peer).toMatchObject({ id: 'bot', isBot: true });
+    // Подпись присутствия считается уже по этому полю.
+    expect(formatLastSeen(peer, undefined, new Date('2026-10-05T00:00:00'))).toBe('бот');
+  });
+
   describe('presence', () => {
     const live: Conversation = {
       id: 'conversation-3',

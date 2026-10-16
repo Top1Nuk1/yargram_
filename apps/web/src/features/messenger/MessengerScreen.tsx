@@ -9,6 +9,8 @@ import {
   Bookmark,
   Check,
   CheckCheck,
+  ChevronDown,
+  ChevronUp,
   Copy,
   FileUp,
   FolderArchive,
@@ -31,6 +33,10 @@ import {
   Snowflake,
   Star,
   StarOff,
+  // 🔥 Значок переименован: рядом есть тип `Sticker` из `types.ts`, и без
+  // псевдонима они занимают одно имя — тип для TS, иконка для JSX.
+  Sticker as StickerIcon,
+  PackagePlus,
   Sun,
   Trash2,
   UserRound,
@@ -92,11 +98,13 @@ import { updateUserPresence, mergeUserProfile, type PresencePayload } from '../.
 import { avatarProps } from '../../lib/user';
 import type { StoredAccount } from '../../lib/accounts';
 import {
+  browserNotificationsSupported,
+  requestBrowserNotificationPermission,
   showBrowserNotification,
 } from '../../lib/notifications';
 import { playSound } from '../../lib/sounds';
-import { useTranslation } from '../../hooks/useLanguage';
-import type { AccountStatePayload, Attachment, ChatFolder, Conversation, ConversationDraft, Message, MessageReaction, ReadReceipt, ScheduledMessage, Session, ThemeMode, User } from '../../types';
+import { useLanguage } from '../../hooks/useLanguage';
+import type { AccountStatePayload, Attachment, ChatFolder, Conversation, ConversationDraft, Message, MessageReaction, ReadReceipt, ScheduledMessage, Session, Sticker, StickerPack, ThemeMode, User } from '../../types';
 import type { ThemeControls } from '../../hooks/useTheme';
 import { CallOverlay } from '../calls/CallOverlay';
 import { useWebRtcCall } from '../calls/useWebRtcCall';
@@ -134,14 +142,18 @@ import {
 import {
   conversationIsMuted,
   conversationPins,
-  formatLastSeen,
-  isImageAttachment,
+formatLastSeen,
+isImageAttachment,
+isVideoGifAttachment,
   isUserOnline,
   messageSummary,
   validateOutgoingFile,
 } from './messengerUtils';
 import { UserSearchModal } from './UserSearchModal';
 import { ScheduledMessagesModal } from './ScheduledMessagesModal';
+import { MessageStickers, SharedPackCard } from './StickerBubble';
+import { StickerPicker } from './StickerPicker';
+import { StickerPacksScreen } from './StickerPacksScreen';
 
 interface MessengerScreenProps {
   token: string;
@@ -161,7 +173,7 @@ interface MessengerScreenProps {
 
 type LoadingState = 'loading' | 'ready' | 'error';
 type SocketState = 'connecting' | 'connected' | 'disconnected';
-type ChatListMode = 'inbox' | 'archive' | `folder:${string}`;
+type ChatListMode = 'inbox' | 'direct' | 'groups' | 'unread' | 'archive' | `folder:${string}`;
 
 interface DraftSyncPayload {
   conversationId: string | null;
@@ -184,6 +196,13 @@ interface PinsPayload {
   conversationId: string;
   pinnedMessages?: Message[];
   message?: Message | null;
+}
+
+/** Набор стикеров изменился: по нему клиент перечитывает сам набор. */
+interface StickerPackUpdatedPayload {
+  packId: string;
+  version: number;
+  sharedWithUserId?: string;
 }
 
 interface ImageViewerState {
@@ -249,6 +268,7 @@ function applyReadReceipt(message: Message | null | undefined, receipt: ReadRece
   return {
     ...message,
     readBy: Array.from(new Set([...(message.readBy ?? []), receipt.userId])),
+    readAt: receipt.readAt ?? message.readAt ?? new Date().toISOString(),
   };
 }
 
@@ -270,7 +290,13 @@ function applyReactions(messages: Message[], payload: ReactionPayload): Message[
 }
 
 function messageImages(messages: Message[]): Attachment[] {
-  return messages.flatMap((message) => message.attachments ?? []).filter(isImageAttachment);
+  // 🔥 Видео-гифку в просмотрщик не пускаем: он умеет только картинки, и она
+  // открылась бы пустым местом. В пузыре она играет сама, отдельного открытия
+  // у неё нет.
+  return messages
+    .flatMap((message) => message.attachments ?? [])
+    .filter(isImageAttachment)
+    .filter((attachment) => !isVideoGifAttachment(attachment));
 }
 
 function uniqueConversations(items: Conversation[]): Conversation[] {
@@ -292,7 +318,7 @@ export function MessengerScreen({
   onAddAccount,
   onRemoveAccount,
 }: MessengerScreenProps) {
-  const t = useTranslation();
+  const { t, language } = useLanguage();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationState, setConversationState] = useState<LoadingState>('loading');
   const [conversationError, setConversationError] = useState('');
@@ -327,6 +353,23 @@ export function MessengerScreen({
   const [memberProfile, setMemberProfile] = useState<User | null>(null);
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearch, setChatSearch] = useState('');
+  const [searchMatchIds, setSearchMatchIds] = useState<string[]>([]);
+  const [searchMatchIndex, setSearchMatchIndex] = useState(0);
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(`yargram:pinned_conversations:${currentUser.id}`);
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [recordAudioLevel, setRecordAudioLevel] = useState(0);
+  const recordAudioContextRef = useRef<{ context: AudioContext; animId: number } | null>(null);
+  const [convContextMenu, setConvContextMenu] = useState<{
+    x: number;
+    y: number;
+    conversation: Conversation;
+  } | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   /** Админ-панель владельца: отдельное окно, не вкладка в настройках. */
   const [adminPanelOpen, setAdminPanelOpen] = useState(false);
@@ -355,9 +398,69 @@ export function MessengerScreen({
   const [messageActionId, setMessageActionId] = useState<string | null>(null);
   const [reactionPickerId, setReactionPickerId] = useState<string | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  // 🔥 Стикеры и гифки грузятся вместе со всем остальным: без них пикер был бы
+  // пустым на первом экране. Отдельная загрузка по вкладке означала бы пустой
+  // список с заглушкой, а это выглядит как поломка.
+  const [stickerPacks, setStickerPacks] = useState<StickerPack[]>([]);
+  const [gifs, setGifs] = useState<Attachment[]>([]);
+  const [stickersOpen, setStickersOpen] = useState(false);
+  const [stickerPacksOpen, setStickerPacksOpen] = useState(false);
+  /** Какой набор сейчас перечитывается: на карточке вместо текста — спиннер. */
+  const [packBusy, setPackBusy] = useState('');
   const [draftAttachments, setDraftAttachments] = useState<DraftAttachment[]>([]);
   const [typingUserIds, setTypingUserIds] = useState<Set<string>>(() => new Set());
   const [pinIndex, setPinIndex] = useState(0);
+  const [unpinConfirmMessage, setUnpinConfirmMessage] = useState<Message | null>(null);
+  const [emojiDocked, setEmojiDocked] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('yargram_emoji_docked') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('yargram_sidebar_width');
+      const parsed = saved ? parseInt(saved, 10) : 340;
+      return Number.isFinite(parsed) && parsed >= 260 && parsed <= 560 ? parsed : 340;
+    } catch {
+      return 340;
+    }
+  });
+
+  const toggleEmojiDock = useCallback(() => {
+    setEmojiDocked((curr) => {
+      const next = !curr;
+      try {
+        localStorage.setItem('yargram_emoji_docked', String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const handleSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX;
+      const newWidth = Math.min(560, Math.max(260, startWidth + delta));
+      setSidebarWidth(newWidth);
+      try {
+        localStorage.setItem('yargram_sidebar_width', String(newWidth));
+      } catch {}
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }, [sidebarWidth]);
+
   const [imageViewer, setImageViewer] = useState<ImageViewerState | null>(null);
   // Акцент из профиля больше не подменяет --brand вручную: этим занимается
   // тема (withProfileAccent), и подстановка идёт до применения палитры.
@@ -411,6 +514,42 @@ export function MessengerScreen({
     setCallCurrentUser(currentUser);
   }, [currentUser, setCallCurrentUser]);
 
+  useEffect(() => {
+    if (browserNotificationsSupported() && Notification.permission === 'default') {
+      const onRequest = () => {
+        void requestBrowserNotificationPermission();
+        window.removeEventListener('click', onRequest);
+        window.removeEventListener('keydown', onRequest);
+        window.removeEventListener('touchstart', onRequest);
+      };
+      window.addEventListener('click', onRequest, { once: true, passive: true });
+      window.addEventListener('keydown', onRequest, { once: true, passive: true });
+      window.addEventListener('touchstart', onRequest, { once: true, passive: true });
+      return () => {
+        window.removeEventListener('click', onRequest);
+        window.removeEventListener('keydown', onRequest);
+        window.removeEventListener('touchstart', onRequest);
+      };
+    }
+  }, []);
+
+  /**
+   * Язык интерфейса живёт на устройстве, но служебный бот поддержки пишет
+   * сообщения **с сервера** — значит, сервер должен знать язык. Сообщаем его
+   * аккаунту: смена языка в настройках и вход с другого устройства одинаково
+   * доводят бота до дела.
+   *
+   * Сравниваем с тем, что уже записано в профиле: без этой проверки запрос
+   * уходил бы при каждом входе, а профиль при этом не менялся бы вовсе.
+   */
+  useEffect(() => {
+    if (currentUser.language === language) return;
+    void api
+      .updateProfile(token, { language })
+      .then((updated) => onUserUpdated(updated))
+      .catch(() => undefined);
+  }, [currentUser.language, language, onUserUpdated, token]);
+
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedId) ?? null,
     [conversations, selectedId],
@@ -452,6 +591,26 @@ export function MessengerScreen({
   const canSendLinks = !selectedIsGroup || viewerCan(selectedConversation, 'send_links');
   const canSendPolls = !selectedIsGroup || viewerCan(selectedConversation, 'send_polls');
   const composeBlocked = selectedUnavailable || !canWriteInGroup || viewerFrozen;
+  /**
+   * Пустая переписка с ботом: под ней встаёт кнопка «СТАРТ».
+   *
+   * 🔥 Бот не пишет первым — истории нет, значит он ещё не запущен, и вместо
+   * «приветствия, которого не просили» человек видит кнопку, как в Telegram.
+   * Нажатие отправляет `/start` обычным сообщением.
+   *
+   * Кнопка живёт ровно до первого сообщения и прячется, как только в поле ввода
+   * что-то появилось: нажатие шлёт только команду, черновик при этом ни при чём.
+   */
+  const botNotStarted =
+    Boolean(selectedPeer?.isBot) &&
+    !selectedIsGroup &&
+    !composeBlocked &&
+    messageState === 'ready' &&
+    messages.length === 0 &&
+    !draft.trim() &&
+    draftAttachments.length === 0 &&
+    !editingMessage &&
+    !replyingTo;
   // Мьют со сроком: вместо общей фразы пишем, до какого времени писать нельзя.
   const muteDeadline = selectedIsGroup
     ? mutedUntilText(selectedConversation?.mutedMembers?.[currentUser.id])
@@ -523,6 +682,8 @@ export function MessengerScreen({
         serverDraftsRef.current = new Map(list.map((item) => [item.conversationId, item]));
       })
       .catch(() => {});
+    void api.stickerPacks(token, controller.signal).then(setStickerPacks).catch(() => {});
+    void api.gifs(token, controller.signal).then(setGifs).catch(() => {});
     return () => controller.abort();
   }, [token]);
 
@@ -889,6 +1050,15 @@ export function MessengerScreen({
         setDraft(payload.draft.text);
       }
     });
+    // 🔥 Набор прислали или в нём добавили стикер: перечитываем только его.
+    // Событие точечное, поэтому всю переписку заново тянуть не нужно — а вот
+    // старый список остался бы с прежним `version` и не заметил бы новых картинок.
+    realtimeSocket.on('stickerPack:updated', (payload: StickerPackUpdatedPayload) => {
+      if (!active || !payload?.packId) return;
+      void api.stickerPack(token, payload.packId)
+        .then((pack) => setStickerPacks((current) => current.map((item) => (item.id === pack.id ? pack : item))))
+        .catch(() => {});
+    });
 
     return () => {
       active = false;
@@ -898,20 +1068,25 @@ export function MessengerScreen({
   }, [currentUser.id, loadConversations, markRead, mergeReadReceipt, onLogout, onUserUpdated, t, token]);
 
   // Вход с незнакомого сайта: предупреждаем сразу, как только мессенджер
-  // открылся. Список сеансов — не главное, поэтому ошибку тихо игнорируем:
-  // из-за неё мессенджер не должен ломаться.
+  // открылся, а также периодически проверяем при активности.
   useEffect(() => {
     let active = true;
-    void (async () => {
+    const checkSessions = async () => {
       try {
         const overview = await api.sessions(token);
         if (active && overview.alert) setSessionAlert(overview.alert);
       } catch {
         // Список не открылся — ничего не показываем.
       }
-    })();
+    };
+    void checkSessions();
+    const interval = setInterval(checkSessions, 30_000);
+    const onFocus = () => void checkSessions();
+    window.addEventListener('focus', onFocus);
     return () => {
       active = false;
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
     };
   }, [token]);
 
@@ -921,24 +1096,29 @@ export function MessengerScreen({
     setSessionAlert(null);
     if (!alert) return;
     try {
-      await api.acknowledgeSession(token, alert.id);
+      const overview = await api.acknowledgeSession(token, alert.id);
+      if (overview?.alert) setSessionAlert(overview.alert);
     } catch {
       // Не подтвердили сейчас — спросим в следующий раз.
     }
   }, [sessionAlert, token]);
 
-  /** «Это не я»: закрываем этот самый сеанс и выходим из аккаунта. */
+  /** «Это не я»: закрываем этот самый сеанс (чужой вход). */
   const terminateSessionAlert = useCallback(async () => {
     const alert = sessionAlert;
     setSessionAlert(null);
     if (alert) {
       try {
-        await api.terminateSession(token, alert.id);
+        const overview = await api.terminateSession(token, alert.id);
+        if (alert.current) {
+          onLogout(false);
+          return;
+        }
+        if (overview?.alert) setSessionAlert(overview.alert);
       } catch {
-        // Всё равно выходим: токен мог быть уже завершён.
+        if (alert.current) onLogout(false);
       }
     }
-    onLogout(false);
   }, [onLogout, sessionAlert, token]);
 
   const loadMessages = useCallback(
@@ -1008,7 +1188,11 @@ export function MessengerScreen({
 
   useEffect(() => {
     const query = chatSearch.trim();
-    if (!chatSearchOpen || !selectedId || !query) return undefined;
+    if (!chatSearchOpen || !selectedId || !query) {
+      setSearchMatchIds([]);
+      setSearchMatchIndex(0);
+      return undefined;
+    }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void api.searchMessages(token, selectedId, query, controller.signal)
@@ -1017,6 +1201,9 @@ export function MessengerScreen({
             ...current,
             ...result.items.filter((message) => !current.some((item) => item.id === message.id)),
           ]));
+          const ids = result.items.map((item) => item.id);
+          setSearchMatchIds(ids);
+          setSearchMatchIndex(0);
           const first = result.items[0];
           if (first) {
             pendingScrollMessageRef.current = first.id;
@@ -1039,6 +1226,29 @@ export function MessengerScreen({
       controller.abort();
     };
   }, [chatSearch, chatSearchOpen, selectedId, t, token]);
+
+  function scrollToSearchMatch(index: number) {
+    if (searchMatchIds.length === 0) return;
+    const clampedIndex = (index + searchMatchIds.length) % searchMatchIds.length;
+    setSearchMatchIndex(clampedIndex);
+    const targetId = searchMatchIds[clampedIndex];
+    if (targetId) {
+      const el = document.getElementById(`message-${targetId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        pendingScrollMessageRef.current = targetId;
+      }
+    }
+  }
+
+  function goToNextSearchMatch() {
+    scrollToSearchMatch(searchMatchIndex + 1);
+  }
+
+  function goToPrevSearchMatch() {
+    scrollToSearchMatch(searchMatchIndex - 1);
+  }
 
   useEffect(() => {
     const messageId = pendingScrollMessageRef.current;
@@ -1068,19 +1278,66 @@ export function MessengerScreen({
     }
   }, [messageState, messages]);
 
+  const totalUnreadCount = useMemo(
+    () => conversations.reduce((acc, c) => acc + (!c.archived ? (c.unreadCount || 0) : 0), 0),
+    [conversations],
+  );
+
+  function togglePinConversation(id: string) {
+    setPinnedIds((current) => {
+      let next: string[];
+      if (current.includes(id)) {
+        next = current.filter((item) => item !== id);
+      } else {
+        if (current.length >= 5) {
+          setNotice(t('sidebar.pinnedLimit'));
+          return current;
+        }
+        next = [id, ...current];
+      }
+      try {
+        localStorage.setItem(`yargram:pinned_conversations:${currentUser.id}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }
+
   const visibleConversations = useMemo(() => {
     const query = filter.trim().toLocaleLowerCase('ru-RU');
     const activeFolder = listMode.startsWith('folder:')
       ? folders.find((folder) => folder.id === listMode.slice('folder:'.length))
       : null;
-    return conversations.filter((conversation) => {
-      if (Boolean(conversation.archived) !== (listMode === 'archive')) return false;
-      if (activeFolder && !activeFolder.conversationIds.includes(conversation.id)) return false;
+
+    const filtered = conversations.filter((conversation) => {
+      if (listMode === 'archive') {
+        if (!conversation.archived) return false;
+      } else {
+        if (conversation.archived) return false;
+        if (listMode === 'direct') {
+          if (isGroup(conversation)) return false;
+        } else if (listMode === 'groups') {
+          if (!isGroup(conversation)) return false;
+        } else if (listMode === 'unread') {
+          if (!conversation.unreadCount || conversation.unreadCount <= 0) return false;
+        } else if (activeFolder) {
+          if (!activeFolder.conversationIds.includes(conversation.id)) return false;
+        }
+      }
       const title = conversationTitle(conversation, currentUser.id, t).toLocaleLowerCase('ru-RU');
       const lastText = conversation.lastMessage?.text?.toLocaleLowerCase('ru-RU') ?? '';
       return !query || title.includes(query) || lastText.includes(query);
     });
-  }, [conversations, currentUser.id, filter, folders, listMode, t]);
+
+    const pinnedSet = new Set(pinnedIds);
+    const pinnedList: Conversation[] = [];
+    const normalList: Conversation[] = [];
+    for (const item of filtered) {
+      if (pinnedSet.has(item.id)) pinnedList.push(item);
+      else normalList.push(item);
+    }
+    pinnedList.sort((a, b) => pinnedIds.indexOf(a.id) - pinnedIds.indexOf(b.id));
+    return [...pinnedList, ...normalList];
+  }, [conversations, currentUser.id, filter, folders, listMode, pinnedIds, t]);
 
   function selectConversation(conversation: Conversation) {
     const previousTyping = typingConversationRef.current;
@@ -1104,8 +1361,9 @@ export function MessengerScreen({
   }
 
   /**
-   * Поддержка: сервер находит или заводит переписку с ботом и один раз
-   * показывает приветствие с меню. Дальше всё общение идёт кнопками и текстом.
+   * Поддержка: сервер находит или заводит переписку с ботом. Приветствия при
+   * этом **не** приходит — бот не пишет первым: под пустой перепиской встаёт
+   * кнопка «СТАРТ», и меню уходит только после неё.
    */
   async function openSupportConversation() {
     try {
@@ -1152,11 +1410,11 @@ export function MessengerScreen({
 
   // Ссылка-приглашение вида /join/<код>: вступаем в группу и сразу её открываем.
   useEffect(() => {
-    const match = /^\/join\/([^/?#]+)\/?$/.exec(window.location.pathname);
+    const match = /^(?:\/app)?\/join\/([^/?#]+)\/?$/.exec(window.location.pathname);
     if (!match) return undefined;
     let cancelled = false;
-    // Адрес чистим сразу: перезагрузка не должна вступать повторно.
-    window.history.replaceState(null, '', '/');
+    // Адрес чистим сразу: остаёмся в веб-приложении (/app) без повторного вступления при перезагрузке.
+    window.history.replaceState(null, '', '/app');
     api
       .joinGroup(token, decodeURIComponent(match[1] ?? ''))
       .then((conversation) => {
@@ -1372,9 +1630,17 @@ export function MessengerScreen({
     });
   }
 
-  async function sendMessage(event?: FormEvent) {
+  /**
+   * Отправка сообщения.
+   *
+   * `overrideText` — текст, который шлёт не поле ввода, а кнопка: так уходит
+   * `/start`, когда человек нажал «СТАРТ» под пустой перепиской с ботом. Кнопка
+   * показывается только при пустом поле ввода и без вложений, поэтому черновик
+   * и вложения здесь ни при чём — но на всякий случай текст из поля не трогаем.
+   */
+  async function sendMessage(event?: FormEvent, overrideText?: string) {
     event?.preventDefault();
-    const text = draft.trim();
+    const text = (overrideText ?? draft).trim();
     const conversationId = selectedId;
     if (!conversationId || sending || selectedBlockedByMe) return;
 
@@ -1480,6 +1746,155 @@ export function MessengerScreen({
     } finally {
       setSending(false);
       textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * Отправить стикер.
+   *
+   * 🔥 Стикер — это не вложение, а ссылка на картинку, поэтому он уходит
+   * отдельным полем, а не среди файлов. У встроенных стикеров вложения вообще
+   * нет (это файлы сборки), а у пользовательских оно своё и может быть удалено
+   * вместе со стикером, — ссылка на файл протухала бы прямо в истории.
+   */
+  async function sendSticker(sticker: Sticker) {
+    const conversationId = selectedId;
+    if (!conversationId || sending || selectedBlockedByMe) return;
+    const replyTarget = replyingTo;
+    setSending(true);
+    setMessageError('');
+    try {
+      const message = await api.sendRichMessage(token, conversationId, {
+        stickerIds: [sticker.id],
+        ...(replyTarget ? { replyToId: replyTarget.id } : {}),
+      });
+      setMessages((current) => upsertMessage(current, message));
+      setConversations((current) =>
+        uniqueConversations(
+          current.map((conversation) =>
+            conversation.id === conversationId
+              ? { ...conversation, lastMessage: message, updatedAt: message.createdAt, unreadCount: 0 }
+              : conversation,
+          ),
+        ),
+      );
+      setReplyingTo(null);
+      playSound('sent');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onLogout(true);
+        return;
+      }
+      setMessageError(readableError(error, t('msgr.messageNotSent')));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  /** Гифка отправляется как картинка-вложение: на сервере у неё `kind=gif`. */
+  async function sendGif(gif: Attachment) {
+    await sendAttachments([gif]);
+  }
+
+  /**
+   * Поставить присланный набор себе — или убрать его.
+   *
+   * 🔥 Присланный набор появляется у получателя сразу, отдельная кнопка нужна
+   * только чтобы отказаться от него. Поэтому здесь нет подтверждения: удаление
+   * набора обратимо — его снова можно добавить из истории переписки.
+   */
+  async function installSharedPack(packId: string, install: boolean) {
+    if (packBusy) return;
+    setPackBusy(packId);
+    try {
+      let title = '';
+      if (install) {
+        const pack = await api.installStickerPack(token, packId);
+        title = pack.title;
+        setStickerPacks((current) => current.filter((item) => item.id !== packId).concat(pack));
+      } else {
+        // Убираем набор из списка: сервер больше про него ничего не знает, а
+        // заголовок нужен только для сообщения, поэтому берём его заранее.
+        title = stickerPacks.find((pack) => pack.id === packId)?.title ?? '';
+        await api.uninstallStickerPack(token, packId);
+        setStickerPacks((current) => current.filter((item) => item.id !== packId));
+      }
+      setNotice(
+        install
+          ? t('stickers.packSharedNotice', { title })
+          : t('stickers.packRemoved', { title }),
+      );
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onLogout(true);
+        return;
+      }
+      setMessageError(readableError(error, t('stickers.packActionFailed')));
+    } finally {
+      setPackBusy('');
+    }
+  }
+
+  /**
+   * Сохранить чужой стикер себе.
+   *
+   * Файл лежит на сервере, поэтому сохранить его — значит загрузить заново: у
+   * клиента нет доступа к файлу без подписи, а подпись недолговечна. Встроенные
+   * стикеры не предлагаем — они и так есть у всех.
+   */
+  async function saveStickerToPack(sticker: Sticker) {
+    try {
+      const own = stickerPacks.find((pack) => pack.mine);
+      if (!own) {
+        setNotice(t('stickers.needOwnPackFirst'));
+        setStickerPacksOpen(true);
+        return;
+      }
+      const response = await fetch(sticker.url);
+      if (!response.ok) throw new Error('download failed');
+      const blob = await response.blob();
+      const name = `${sticker.id}${sticker.url.includes('.webp') ? '.webp' : '.png'}`;
+      const uploaded = await api.upload(token, new File([blob], name, { type: blob.type }), 'sticker');
+      const pack = await api.addStickerToPack(token, own.id, uploaded.id, sticker.emoji);
+      setStickerPacks((current) => current.map((item) => (item.id === pack.id ? pack : item)));
+      setNotice(t('stickers.stickerSaved', { title: own.title }));
+    } catch {
+      setMessageError(readableError(new Error('STICKER_SAVE_FAILED'), t('stickers.stickerSaveFailed')));
+    }
+  }
+
+  /** Отправка готовых вложений без ленты в поле ввода — как гифки из библиотеки. */
+  async function sendAttachments(attachments: Attachment[]) {
+    const conversationId = selectedId;
+    if (!conversationId || sending || selectedBlockedByMe) return;
+    const replyTarget = replyingTo;
+    setSending(true);
+    setMessageError('');
+    try {
+      const message = await api.sendRichMessage(token, conversationId, {
+        attachmentIds: attachments.map((attachment) => attachment.id),
+        ...(replyTarget ? { replyToId: replyTarget.id } : {}),
+      });
+      setMessages((current) => upsertMessage(current, message));
+      setConversations((current) =>
+        uniqueConversations(
+          current.map((conversation) =>
+            conversation.id === conversationId
+              ? { ...conversation, lastMessage: message, updatedAt: message.createdAt, unreadCount: 0 }
+              : conversation,
+          ),
+        ),
+      );
+      setReplyingTo(null);
+      playSound('sent');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onLogout(true);
+        return;
+      }
+      setMessageError(readableError(error, t('msgr.messageNotSent')));
+    } finally {
+      setSending(false);
     }
   }
 
@@ -1828,23 +2243,31 @@ export function MessengerScreen({
 
   // NEW_CLIENT_HELPERS
 
+  async function updateConversationSettings(
+    conversationId: string,
+    input: { archived?: boolean; mutedUntil?: string | null },
+    successMessage: string,
+  ) {
+    try {
+      const updated = await api.updateConversationSettings(token, conversationId, input);
+      setConversations((current) => uniqueConversations(current.map((conversation) =>
+        conversation.id === updated.id ? { ...conversation, ...updated } : conversation,
+      )));
+      setNotice(successMessage);
+      if (input.archived === true && selectedId === conversationId) setSelectedId(null);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onLogout(true);
+      else setMessageError(readableError(error, t('msgr.dialogSettingsFailed')));
+    }
+  }
+
   async function updateSelectedConversationSettings(
     input: { archived?: boolean; mutedUntil?: string | null },
     successMessage: string,
   ) {
     if (!selectedId) return;
     setChatMenuOpen(false);
-    try {
-      const updated = await api.updateConversationSettings(token, selectedId, input);
-      setConversations((current) => uniqueConversations(current.map((conversation) =>
-        conversation.id === updated.id ? { ...conversation, ...updated } : conversation,
-      )));
-      setNotice(successMessage);
-      if (input.archived === true) setSelectedId(null);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) onLogout(true);
-      else setMessageError(readableError(error, t('msgr.dialogSettingsFailed')));
-    }
+    await updateConversationSettings(selectedId, input, successMessage);
   }
 
   function muteFor(milliseconds: number | 'forever') {
@@ -1855,6 +2278,46 @@ export function MessengerScreen({
       { mutedUntil },
       milliseconds === 'forever' ? t('msgr.notificationsOffForever') : t('msgr.notificationsOffTemp'),
     );
+  }
+
+  function startAudioVisualizer(stream: MediaStream) {
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      const context = new AudioCtx();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 64;
+      analyser.smoothingTimeConstant = 0.5;
+      const source = context.createMediaStreamSource(stream);
+      source.connect(analyser);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      let animId = 0;
+      const tick = () => {
+        if (!voiceActiveRef.current) return;
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+        const avg = sum / (dataArray.length || 1);
+        const level = Math.min(1, Math.max(0, avg / 90));
+        setRecordAudioLevel(level);
+        animId = requestAnimationFrame(tick);
+      };
+      animId = requestAnimationFrame(tick);
+      recordAudioContextRef.current = { context, animId };
+    } catch {
+      // AudioContext may fail in restricted/mock environments
+    }
+  }
+
+  function stopAudioVisualizer() {
+    if (recordAudioContextRef.current) {
+      const { context, animId } = recordAudioContextRef.current;
+      cancelAnimationFrame(animId);
+      try { void context.close(); } catch {}
+      recordAudioContextRef.current = null;
+    }
+    setRecordAudioLevel(0);
   }
 
   function handleBlockedChange(blocked: boolean, updatedUser?: User) {
@@ -1951,6 +2414,7 @@ export function MessengerScreen({
       setRecording(true);
       setRecordPreview(recordMode === 'video_circle' ? stream : null);
       setRecordingSeconds(0);
+      startAudioVisualizer(stream);
       recorder.start(250);
       recordTimerRef.current = window.setInterval(() => {
         const elapsed = Math.floor((Date.now() - recordStartedAtRef.current) / 1_000);
@@ -1978,6 +2442,7 @@ export function MessengerScreen({
   }
 
   function cancelVoiceRecording() {
+    stopAudioVisualizer();
     recordingRequestRef.current += 1;
     setRecordPending(false);
     setRecordPreview(null);
@@ -2003,6 +2468,7 @@ export function MessengerScreen({
   }
 
   async function finalizeVoiceRecording() {
+    stopAudioVisualizer();
     if (!voiceActiveRef.current) return;
     voiceActiveRef.current = false;
     const stream = recordStreamRef.current;
@@ -2038,7 +2504,13 @@ export function MessengerScreen({
     setSending(true);
     setMessageError('');
     try {
-      if (blob.type.includes('webm')) blob = await fixWebmDuration(blob, durationMs, { logger: false });
+      if (blob.type.includes('webm')) {
+        try {
+          blob = await fixWebmDuration(blob, durationMs, { logger: false });
+        } catch {
+          // Fallback to original blob if WebM duration patching throws
+        }
+      }
       if (requestId !== recordingRequestRef.current || selectedIdRef.current !== conversationId) {
         setNotice(t('msgr.recordingCancelled'));
         return;
@@ -2139,7 +2611,8 @@ export function MessengerScreen({
         )}
         <div className="flex min-h-0 w-full flex-1 overflow-hidden">
         <aside
-          className={`${selectedId ? 'hidden md:flex' : 'flex'} chat-sidebar w-full shrink-0 flex-col border-line bg-surface md:w-[340px] md:border-r xl:w-[360px]`}
+          className={`${selectedId ? 'hidden md:flex' : 'flex'} chat-sidebar w-full shrink-0 flex-col border-line bg-surface md:w-[var(--sidebar-width)] md:border-r`}
+          style={{ '--sidebar-width': `${sidebarWidth}px` } as React.CSSProperties}
           aria-label={t('msgr.dialogListAria')}
         >
           <header className="shrink-0 border-b border-line px-3 pt-[max(0.5rem,env(safe-area-inset-top))] md:pt-2">
@@ -2198,13 +2671,39 @@ export function MessengerScreen({
                 <Plus className="h-5 w-5" />
               </IconButton>
             </div>
-            <div className="mt-1 flex items-stretch gap-1 overflow-x-auto pb-1">
+            <div className="mt-1 flex items-stretch gap-1 overflow-x-auto pb-1 no-scrollbar">
               <button
                 type="button"
                 className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${listMode === 'inbox' ? 'border-brand bg-brand-soft text-brand' : 'border-transparent text-muted hover:bg-canvas hover:text-ink'}`}
                 onClick={() => setListMode('inbox')}
               >
-                <MessageCircleMore className="mr-1 inline h-3.5 w-3.5" /> {t('sidebar.chats')}
+                <MessageCircleMore className="mr-1 inline h-3.5 w-3.5" /> {t('sidebar.filterAll')}
+              </button>
+              <button
+                type="button"
+                className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${listMode === 'direct' ? 'border-brand bg-brand-soft text-brand' : 'border-transparent text-muted hover:bg-canvas hover:text-ink'}`}
+                onClick={() => setListMode('direct')}
+              >
+                <UserRound className="mr-1 inline h-3.5 w-3.5" /> {t('sidebar.filterDirect')}
+              </button>
+              <button
+                type="button"
+                className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${listMode === 'groups' ? 'border-brand bg-brand-soft text-brand' : 'border-transparent text-muted hover:bg-canvas hover:text-ink'}`}
+                onClick={() => setListMode('groups')}
+              >
+                <UsersRound className="mr-1 inline h-3.5 w-3.5" /> {t('sidebar.filterGroups')}
+              </button>
+              <button
+                type="button"
+                className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${listMode === 'unread' ? 'border-brand bg-brand-soft text-brand' : 'border-transparent text-muted hover:bg-canvas hover:text-ink'}`}
+                onClick={() => setListMode('unread')}
+              >
+                {t('sidebar.filterUnread')}
+                {totalUnreadCount > 0 && (
+                  <span className="ml-1.5 rounded-full bg-brand px-1.5 py-0.2 text-[10px] font-bold text-white">
+                    {unreadBadgeText(totalUnreadCount)}
+                  </span>
+                )}
               </button>
               {folders.map((folder) => {
                 const active = listMode === `folder:${folder.id}`;
@@ -2310,6 +2809,7 @@ export function MessengerScreen({
                   const title = group ? groupTitle(conversation) : conversationTitle(conversation, currentUser.id, t);
                   const peer = group ? null : getConversationPeer(conversation, currentUser.id);
                   const active = selectedId === conversation.id;
+                  const isPinned = pinnedIds.includes(conversation.id);
                   const unread = unreadBadgeText(conversation.unreadCount ?? 0);
                   return (
                     <li key={conversation.id}>
@@ -2318,6 +2818,10 @@ export function MessengerScreen({
                         className={`flex min-h-[76px] w-full items-center gap-3 px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand ${active ? 'bg-brand text-white' : 'hover:bg-canvas'}`}
                         aria-current={active ? 'true' : undefined}
                         onClick={() => selectConversation(conversation)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setConvContextMenu({ x: event.clientX, y: event.clientY, conversation });
+                        }}
                       >
                         {conversation.type === 'saved' ? <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-brand-soft text-brand"><Bookmark className="h-6 w-6" /></span> : <Avatar
                           name={title}
@@ -2330,6 +2834,9 @@ export function MessengerScreen({
                           <span className="flex items-baseline gap-2">
                             <span className="min-w-0 flex-1">
                               <span className="flex items-center gap-1">
+                                {isPinned && (
+                                  <Pin className={`h-3 w-3 shrink-0 rotate-45 ${active ? 'text-white/80' : 'text-brand'}`} />
+                                )}
                                 {conversationIsMuted(conversation) && <BellOff className="h-3.5 w-3.5 shrink-0" />}
                                 <UserName
                                   className="text-sm font-semibold"
@@ -2376,6 +2883,19 @@ export function MessengerScreen({
             <span>Yargram 0.1</span>
           </footer>
         </aside>
+
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Изменить ширину списка чатов"
+          onMouseDown={handleSidebarResizeStart}
+          onDoubleClick={() => {
+            setSidebarWidth(340);
+            try { localStorage.setItem('yargram_sidebar_width', '340'); } catch {}
+          }}
+          className="hidden md:flex w-1.5 shrink-0 cursor-col-resize select-none items-center justify-center bg-transparent transition hover:bg-brand/40 active:bg-brand z-10 -ml-1"
+          title="Потяните для изменения ширины списка (двойной клик — сброс)"
+        />
 
         <section
           className={`chat-panel chat-wallpaper ${selectedId ? 'flex' : 'hidden md:flex'} relative isolate min-w-0 flex-1 flex-col`}
@@ -2477,8 +2997,8 @@ export function MessengerScreen({
                 >
                   <Search className="h-5 w-5" />
                 </IconButton>
-                {/* В группах звонков пока нет: они остаются личными, как в планах. */}
-                {selectedPeer && !selectedIsGroup && <><IconButton
+                {/* В группах и с ботами звонков нет: они остаются личными для пользователей. */}
+                {selectedPeer && !selectedIsGroup && !selectedPeer.isBot && <><IconButton
                   label={t('msgr.audioCall')}
                   disabled={!selectedPeer || socketState !== 'connected' || selectedBlocked || selectedPeerFrozen || viewerFrozen}
                   onClick={() =>
@@ -2507,7 +3027,7 @@ export function MessengerScreen({
                     <MoreHorizontal className="h-5 w-5" />
                   </IconButton>
                   {chatMenuOpen && (
-                    <div className="absolute right-0 top-12 z-40 w-64 animate-fade-in rounded-2xl border border-line bg-elevated p-2 shadow-float">
+                    <div className="absolute right-0 top-full z-40 w-64 animate-fade-in rounded-2xl border border-line bg-elevated p-2 shadow-float">
                       {selectedIsGroup ? (
                         <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setChatMenuOpen(false); setGroupInfoOpen(true); }}>
                           <UsersRound className="h-4 w-4 text-brand" /> {t('msgr.groupInfo')}
@@ -2517,6 +3037,24 @@ export function MessengerScreen({
                           <UserRound className="h-4 w-4 text-brand" /> {t('msgr.peerProfile')}
                         </button>
                       )}
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55"
+                        onClick={() => {
+                          togglePinConversation(selectedConversation.id);
+                          setChatMenuOpen(false);
+                        }}
+                      >
+                        {pinnedIds.includes(selectedConversation.id) ? (
+                          <>
+                            <PinOff className="h-4 w-4 text-brand" /> {t('sidebar.unpinChat')}
+                          </>
+                        ) : (
+                          <>
+                            <Pin className="h-4 w-4 text-brand" /> {t('sidebar.pinChat')}
+                          </>
+                        )}
+                      </button>
                       <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void updateSelectedConversationSettings({ archived: !selectedConversation.archived }, selectedConversation.archived ? t('msgr.dialogReturnedFromArchive') : t('msgr.dialogArchived'))}>
                         {selectedConversation.archived ? <ArchiveRestore className="h-4 w-4 text-brand" /> : <Archive className="h-4 w-4 text-brand" />}
                         {selectedConversation.archived ? t('msgr.returnFromArchive') : t('msgr.archive')}
@@ -2637,14 +3175,127 @@ export function MessengerScreen({
                     type="search"
                     value={chatSearch}
                     onChange={(event) => setChatSearch(event.target.value.slice(0, 4_000))}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        if (event.shiftKey) goToPrevSearchMatch();
+                        else goToNextSearchMatch();
+                      }
+                      if (event.key === 'Escape') {
+                        setChatSearchOpen(false);
+                        setChatSearch('');
+                        setSearchMatchIds([]);
+                      }
+                    }}
                     className="h-9 min-w-0 flex-1 rounded-xl border border-line bg-canvas px-3 text-sm outline-none focus:border-brand/50"
                     placeholder={t('msgr.searchMessages')}
                   />
-                  <IconButton label={t('msgr.closeSearch')} className="h-8 w-8 rounded-xl" onClick={() => { setChatSearchOpen(false); setChatSearch(''); }}>
+                  {chatSearch.trim() && (
+                    <span className="shrink-0 text-xs font-semibold text-muted">
+                      {searchMatchIds.length > 0
+                        ? t('msgr.searchCounter', { index: searchMatchIndex + 1, total: searchMatchIds.length })
+                        : t('msgr.searchNoMatches')}
+                    </span>
+                  )}
+                  <IconButton
+                    label={t('msgr.searchPrev')}
+                    className="h-8 w-8 rounded-xl"
+                    disabled={searchMatchIds.length <= 1}
+                    onClick={goToPrevSearchMatch}
+                  >
+                    <ChevronUp className="h-4 w-4" />
+                  </IconButton>
+                  <IconButton
+                    label={t('msgr.searchNext')}
+                    className="h-8 w-8 rounded-xl"
+                    disabled={searchMatchIds.length <= 1}
+                    onClick={goToNextSearchMatch}
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </IconButton>
+                  <IconButton
+                    label={t('msgr.closeSearch')}
+                    className="h-8 w-8 rounded-xl"
+                    onClick={() => {
+                      setChatSearchOpen(false);
+                      setChatSearch('');
+                      setSearchMatchIds([]);
+                    }}
+                  >
                     <X className="h-4 w-4" />
                   </IconButton>
                 </div>
               )}
+      {convContextMenu && (
+        <div
+          className="fixed inset-0 z-50 select-none"
+          onClick={() => setConvContextMenu(null)}
+          onContextMenu={(e) => { e.preventDefault(); setConvContextMenu(null); }}
+        >
+          <div
+            className="fixed min-w-[210px] rounded-2xl border border-line bg-surface/95 p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100"
+            style={{
+              top: Math.min(convContextMenu.y, window.innerHeight - 180),
+              left: Math.min(convContextMenu.x, window.innerWidth - 230),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+              onClick={() => {
+                togglePinConversation(convContextMenu.conversation.id);
+                setConvContextMenu(null);
+              }}
+            >
+              {pinnedIds.includes(convContextMenu.conversation.id) ? (
+                <>
+                  <PinOff className="h-4 w-4 text-brand" /> {t('sidebar.unpinChat')}
+                </>
+              ) : (
+                <>
+                  <Pin className="h-4 w-4 text-brand" /> {t('sidebar.pinChat')}
+                </>
+              )}
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+              onClick={() => {
+                const conv = convContextMenu.conversation;
+                setConvContextMenu(null);
+                void updateConversationSettings(
+                  conv.id,
+                  { archived: !conv.archived },
+                  conv.archived ? t('msgr.dialogReturnedFromArchive') : t('msgr.dialogArchived'),
+                );
+              }}
+            >
+              {convContextMenu.conversation.archived ? (
+                <>
+                  <ArchiveRestore className="h-4 w-4 text-brand" /> {t('msgr.returnFromArchive')}
+                </>
+              ) : (
+                <>
+                  <Archive className="h-4 w-4 text-brand" /> {t('msgr.archive')}
+                </>
+              )}
+            </button>
+            {convContextMenu.conversation.unreadCount && convContextMenu.conversation.unreadCount > 0 ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+                onClick={() => {
+                  void markRead(convContextMenu.conversation.id);
+                  setConvContextMenu(null);
+                }}
+              >
+                <CheckCheck className="h-4 w-4 text-brand" /> Пометить как прочитанное
+              </button>
+            ) : null}
+          </div>
+        </div>
+      )}
         {blockedUsersOpen && (
           <BlockedUsersModal
             token={token}
@@ -2652,12 +3303,41 @@ export function MessengerScreen({
             onUnauthorized={() => onLogout(true)}
           />
         )}
+      {unpinConfirmMessage && (
+        <div className="fixed inset-0 z-[80] grid place-items-center bg-black/45 p-4 backdrop-blur-sm animate-fade-in" role="dialog" aria-modal="true">
+          <div className="w-full max-w-sm animate-scale-in rounded-2xl border border-line bg-surface p-5 shadow-float">
+            <h3 className="text-base font-bold text-ink">
+              {t('extras.unpinConfirmTitle') ?? 'Открепить сообщение?'}
+            </h3>
+            <p className="mt-2 text-sm leading-5 text-muted">
+              {t('extras.unpinConfirmHint') ?? 'Вы уверены, что хотите открепить это сообщение для всех участников?'}
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setUnpinConfirmMessage(null)}>
+                {t('common.cancel') ?? 'Отмена'}
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  const msg = unpinConfirmMessage;
+                  setUnpinConfirmMessage(null);
+                  if (msg) void togglePin(msg);
+                }}
+              >
+                {t('extras.unpin') ?? 'Открепить'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+              <div className="flex flex-1 min-h-0 overflow-hidden">
+                <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
               <PinnedMessagesBar
                 messages={selectedPins}
                 activeIndex={pinIndex}
                 onChangeIndex={setPinIndex}
                 onJump={(messageId) => document.getElementById(`message-${messageId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
-                onUnpin={(message) => void togglePin(message)}
+                onUnpin={(message) => setUnpinConfirmMessage(message)}
               />
 
               <div className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain">
@@ -2703,6 +3383,11 @@ export function MessengerScreen({
                         : 'member';
                       const pinned = selectedPins.some((item) => item.id === message.id);
                       const favorite = Boolean(message.isFavorite ?? message.favoritedByMe);
+                      // Набор из сообщения мог быть удалён автором — тогда карточке
+                      // нечего показать, и на её месте будет короткая пометка.
+                      const sharedPack = message.stickerPackId
+                        ? stickerPacks.find((pack) => pack.id === message.stickerPackId)
+                        : undefined;
                       return (
                         <li
                           key={message.id}
@@ -2755,6 +3440,12 @@ export function MessengerScreen({
                                 )}
                                 {messageActionId === message.id && (
                                   <div className={`absolute bottom-10 z-30 w-56 max-h-[70dvh] overflow-y-auto rounded-2xl border border-line bg-elevated p-1.5 text-ink shadow-float ${mine ? 'right-9' : 'left-9'}`}>
+                                    {mine && readByPeer && (
+                                      <div className="mb-1 border-b border-line/60 px-3 py-1.5 text-[11px] text-muted flex items-center gap-1.5">
+                                        <CheckCheck className="h-3.5 w-3.5 text-brand shrink-0" />
+                                        <span className="truncate">{message.readAt ? `${t('msgr.readAt') || 'Прочитано'}: ${formatMessageTime(message.readAt)}` : (t('msgr.read') || 'Прочитано')}</span>
+                                      </div>
+                                    )}
                                     <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setMessageActionId(null); setReactionPickerId(message.id); }}>
                                       <Smile className="h-4 w-4 text-brand" /> {t('msgr.reaction')}
                                     </button>
@@ -2771,7 +3462,7 @@ export function MessengerScreen({
                                       {favorite ? <StarOff className="h-4 w-4 text-brand" /> : <Star className="h-4 w-4 text-brand" />}
                                       {favorite ? t('msgr.removeFromFavorites') : t('msgr.toFavorites')}
                                     </button>
-                                    <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => void togglePin(message)}>
+                                    <button type="button" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold hover:bg-brand-soft/55" onClick={() => { setMessageActionId(null); if (pinned) setUnpinConfirmMessage(message); else void togglePin(message); }}>
                                       {pinned ? <PinOff className="h-4 w-4 text-brand" /> : <Pin className="h-4 w-4 text-brand" />}
                                       {pinned ? t('msgr.unpin') : t('msgr.pin')}
                                     </button>
@@ -2843,6 +3534,30 @@ export function MessengerScreen({
                                       mine={mine}
                                       onOpenImage={(attachment) => setImageViewer({ images: messageImages(messages), initialId: attachment.id })}
                                     />
+                                    {message.stickerPackId && sharedPack && (
+                                      <SharedPackCard
+                                        pack={sharedPack}
+                                        installed={Boolean(sharedPack.mine)}
+                                        busy={packBusy === sharedPack.id}
+                                        onInstall={() => installSharedPack(sharedPack.id, true)}
+                                        onUninstall={() => installSharedPack(sharedPack.id, false)}
+                                      />
+                                    )}
+                                    {message.stickerPackId && !sharedPack && (
+                                      // Набор удалён автором — показываем, что он
+                                      // был, но содержимого уже нет.
+                                      <p className="mb-1.5 flex items-center gap-2 text-xs text-muted">
+                                        <PackagePlus className="h-4 w-4" />
+                                        {t('stickers.packTitleLabel')}
+                                      </p>
+                                    )}
+                                    {message.stickers && message.stickers.length > 0 && (
+                                      <MessageStickers
+                                        stickers={message.stickers}
+                                        showSave={!message.stickers.every((sticker) => sticker.packId.startsWith('builtin-'))}
+                                        onSave={(sticker) => saveStickerToPack(sticker)}
+                                      />
+                                    )}
                                     {message.poll ? (
                                       <PollMessage
                                         poll={message.poll}
@@ -2906,8 +3621,16 @@ export function MessengerScreen({
                                         message.pending
                                           ? <Spinner className="h-3 w-3" />
                                           : readByPeer
-                                            ? <CheckCheck className="h-3.5 w-3.5" aria-label={t('msgr.read')} />
-                                            : <Check className="h-3.5 w-3.5" aria-label={t('msgr.sent')} />
+                                            ? (
+                                              <span title={message.readAt ? `${t('msgr.readAt') || 'Прочитано'}: ${formatMessageTime(message.readAt)}` : t('msgr.read')}>
+                                                <CheckCheck className="h-3.5 w-3.5 text-brand" aria-label={t('msgr.read')} />
+                                              </span>
+                                            )
+                                            : (
+                                              <span title={t('msgr.sent')}>
+                                                <Check className="h-3.5 w-3.5" aria-label={t('msgr.sent')} />
+                                              </span>
+                                            )
                                       )}
                                     </span>
                                     {message.failed && (
@@ -2958,8 +3681,22 @@ export function MessengerScreen({
                     {recordPreview && <video autoPlay muted playsInline aria-label={t('msgr.videoCirclePreview')} className="h-20 w-20 shrink-0 rounded-full object-cover" ref={(element) => { if (element && element.srcObject !== recordPreview) element.srcObject = recordPreview; }} />}
                     <span className="min-w-0 flex-1">
                       <span className="block text-xs font-bold text-danger">{recordMode === 'video_circle' ? t('msgr.recordingVideoCircle') : t('msgr.recordingVoice')}</span>
-                      <span className="block font-mono text-sm font-bold text-ink">
-                        {Math.floor(recordingSeconds / 60)}:{String(recordingSeconds % 60).padStart(2, '0')}{recordMode === 'video_circle' ? ' / 1:00' : ''}
+                      <span className="flex items-center gap-2">
+                        <span className="block font-mono text-sm font-bold text-ink">
+                          {Math.floor(recordingSeconds / 60)}:{String(recordingSeconds % 60).padStart(2, '0')}{recordMode === 'video_circle' ? ' / 1:00' : ''}
+                        </span>
+                        <span className="flex h-4 items-center gap-[3px] px-1" aria-hidden="true">
+                          {[0.35, 0.7, 1.0, 0.8, 0.5, 0.9, 0.6, 0.4].map((factor, idx) => {
+                            const barH = Math.max(3, Math.round(factor * (3 + recordAudioLevel * 14)));
+                            return (
+                              <span
+                                key={idx}
+                                className="w-[2.5px] rounded-full bg-danger/80 transition-[height] duration-75"
+                                style={{ height: `${barH}px` }}
+                              />
+                            );
+                          })}
+                        </span>
                       </span>
                     </span>
                     <button
@@ -3006,6 +3743,18 @@ export function MessengerScreen({
                       <X className="h-4 w-4" />
                     </IconButton>
                   </div>
+                )}
+                {/* Кнопка «СТАРТ» под пустой перепиской с ботом. Во всю ширину
+                    поля ввода и заглавными буквами — как в Telegram. */}
+                {botNotStarted && (
+                  <button
+                    type="button"
+                    disabled={sending}
+                    onClick={() => void sendMessage(undefined, '/start')}
+                    className="mx-auto mb-2 flex w-full max-w-[920px] items-center justify-center rounded-[1.2rem] border border-brand/25 bg-brand-soft/60 py-2.5 text-sm font-bold uppercase tracking-wide text-brand transition hover:bg-brand-soft disabled:opacity-60"
+                  >
+                    {t('msgr.botStart')}
+                  </button>
                 )}
                 {composeBlocked ? (
                   <p className="mx-auto flex max-w-[920px] items-center justify-center gap-2 rounded-[1.2rem] border border-line bg-canvas px-4 py-3 text-center text-xs text-muted">
@@ -3081,6 +3830,37 @@ export function MessengerScreen({
                   </IconButton>
                   <div className="relative">
                     <IconButton
+                      // 🔥 В группе стикер считается файлом, а не картинкой в
+                      // сообщении: без права на файлы его нельзя ни прислать,
+                      // ни отправить — иначе получилось бы обойти запрет.
+                      label={canAttach ? t('stickers.stickerButton') : t('msgr.mediaForbidden')}
+                      type="button"
+                      disabled={sending || selectedBlockedByMe || !canAttach}
+                      className={`h-11 w-11 shrink-0 ${stickersOpen ? 'bg-brand-soft text-brand' : ''}`}
+                      onClick={() => {
+                        setStickersOpen((open) => !open);
+                        setEmojiOpen(false);
+                      }}
+                    >
+                      <StickerIcon className="h-5 w-5" />
+                    </IconButton>
+                    {stickersOpen && (
+                      <StickerPicker
+                        className="absolute bottom-14 right-0"
+                        packs={stickerPacks}
+                        gifs={gifs}
+                        onSendSticker={(sticker) => void sendSticker(sticker)}
+                        onSendGif={(gif) => void sendGif(gif)}
+                        onOpenPacks={() => {
+                          setStickersOpen(false);
+                          setStickerPacksOpen(true);
+                        }}
+                        onClose={() => setStickersOpen(false)}
+                      />
+                    )}
+                  </div>
+                  <div className="relative">
+                    <IconButton
                       label={t('msgr.addEmoji')}
                       type="button"
                       disabled={sending || selectedBlockedByMe}
@@ -3089,9 +3869,11 @@ export function MessengerScreen({
                     >
                       <Smile className="h-5 w-5" />
                     </IconButton>
-                    {emojiOpen && (
+                    {emojiOpen && !emojiDocked && (
                       <EmojiPicker
                         className="absolute bottom-14 right-0"
+                        isDocked={false}
+                        onToggleDock={toggleEmojiDock}
                         onClose={() => setEmojiOpen(false)}
                         onSelect={(emoji) => {
                           const field = textareaRef.current;
@@ -3179,6 +3961,27 @@ export function MessengerScreen({
                 </form>
                 )}
               </footer>
+                </div>
+                {emojiOpen && emojiDocked && (
+                  <aside className="hidden md:flex w-80 shrink-0 flex-col border-l border-line bg-surface/95 backdrop-blur z-20">
+                    <EmojiPicker
+                      isDocked
+                      onToggleDock={toggleEmojiDock}
+                      onClose={() => setEmojiOpen(false)}
+                      onSelect={(emoji) => {
+                        const field = textareaRef.current;
+                        const start = field?.selectionStart ?? draft.length;
+                        const end = field?.selectionEnd ?? draft.length;
+                        handleDraftChange(`${draft.slice(0, start)}${emoji}${draft.slice(end)}`);
+                        window.setTimeout(() => {
+                          field?.focus();
+                          field?.setSelectionRange(start + emoji.length, start + emoji.length);
+                        });
+                      }}
+                    />
+                  </aside>
+                )}
+              </div>
             </>
           )}
         </section>
@@ -3273,10 +4076,18 @@ export function MessengerScreen({
       {privacyOpen && (
         <PrivacyScreen
           user={currentUser}
+          conversations={conversations}
+          token={token}
           onToggleLastSeen={async (value) => {
-            // Сохраняем сразу: «Время захода» — единственный флаг приватности,
-            // который сервер действительно хранит.
             const updated = await api.updateProfile(token, { showLastSeen: value });
+            onUserUpdated(updated);
+          }}
+          onUpdateCallPrivacy={async (privacy, allowedUserIds, deniedUserIds) => {
+            const updated = await api.updateProfile(token, {
+              callPrivacy: privacy,
+              callPrivacyAllowedUserIds: allowedUserIds,
+              callPrivacyDeniedUserIds: deniedUserIds,
+            });
             onUserUpdated(updated);
           }}
           onBack={() => {
@@ -3312,6 +4123,15 @@ export function MessengerScreen({
           onRemove={themeControls.removeCustom}
           onImport={themeControls.importTheme}
           currentWallpaperUrl={currentUser.wallpaperUrl}
+          currentColor={currentUser.themeColor ?? '#3390ec'}
+          onChangeAccentColor={async (color) => {
+            try {
+              const updated = await api.updateProfile(token, { themeColor: color });
+              onUserUpdated(updated);
+            } catch (err) {
+              setNotice(readableError(err, 'Не удалось сохранить цвет'));
+            }
+          }}
           // Встроенные обои лежат рядом с интерфейсом, поэтому это не загрузка,
           // а путь вида `/wallpapers/…` — сервер такие пути принимает наравне
           // со ссылками и своими файлами.
@@ -3373,6 +4193,7 @@ export function MessengerScreen({
       {sidebarOpen && (
         <AppSidebar
           currentUser={currentUser}
+          connected={socketState === 'connected'}
           accounts={accounts}
           activeToken={token}
           theme={theme}
@@ -3391,12 +4212,12 @@ export function MessengerScreen({
           onClose={() => setPeerProfileOpen(false)}
           onMessage={() => setPeerProfileOpen(false)}
           onAudioCall={() => {
-            if (!selectedConversation) return;
+            if (!selectedConversation || selectedPeer.isBot) return;
             setPeerProfileOpen(false);
             void webRtc.startCall(selectedConversation.id, selectedPeer, 'audio');
           }}
           onVideoCall={() => {
-            if (!selectedConversation) return;
+            if (!selectedConversation || selectedPeer.isBot) return;
             setPeerProfileOpen(false);
             void webRtc.startCall(selectedConversation.id, selectedPeer, 'video');
           }}
@@ -3485,6 +4306,18 @@ export function MessengerScreen({
           images={imageViewer.images}
           initialId={imageViewer.initialId}
           onClose={() => setImageViewer(null)}
+        />
+      )}
+      {stickerPacksOpen && (
+        <StickerPacksScreen
+          token={token}
+          packs={stickerPacks}
+          gifs={gifs}
+          conversations={conversations}
+          onPacksChange={setStickerPacks}
+          onGifsChange={setGifs}
+          onShared={() => void loadConversations()}
+          onClose={() => setStickerPacksOpen(false)}
         />
       )}
       {notice && (

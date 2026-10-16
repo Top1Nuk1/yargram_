@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   Ban,
+  Bot,
   Calendar,
   Copy,
   Edit2,
@@ -42,6 +43,7 @@ import {
 import { useTranslation } from '../../hooks/useLanguage';
 import { ProfileBanner } from './ProfileBanner';
 import { translateScamWarning } from '../../lib/i18n';
+import { HighlightedText } from '../messenger/MessageExtras';
 
 type Mode = 'own' | 'peer' | 'public';
 
@@ -269,6 +271,30 @@ export function UserProfileSheet({
     }
   }
 
+  /**
+   * Отметка BOT: аккаунт становится служебным ботом, в него нельзя войти.
+   * Смысл ровно такой же, как в админке, — здесь только второй, более короткий
+   * путь к той же операции. Метку себе поставить нельзя (сервер отвечает
+   * 400 SELF_ACTION): снять её после этого было бы уже некому.
+   */
+  async function toggleBot() {
+    const next = !profile.isBot;
+    const handle = profile.username ? `@${profile.username}` : profile.displayName;
+    if (next && !window.confirm(t('profile.confirmBot', { handle }))) return;
+    setBusy(true);
+    setError('');
+    try {
+      const updated = await api.adminSetBot(token, profile.id, next);
+      setProfile((current) => ({ ...current, ...updated }));
+      setNotice(next ? t('profile.botSet') : t('profile.botCleared'));
+    } catch (reasonError) {
+      if (reasonError instanceof ApiError && reasonError.status === 401) return onUnauthorized?.();
+      setError(reasonError instanceof ApiError ? reasonError.message : t('profile.botFailed'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   /** Возврат удалённого аккаунта: профиль и история снова на месте. */
   async function restoreAccount() {
     setBusy(true);
@@ -448,10 +474,10 @@ export function UserProfileSheet({
 
         {/* Ряд быстрых действий — только для чужого профиля. */}
         {mode !== 'own' && (
-          <div className="grid grid-cols-4 gap-2 px-4">
+          <div className={`grid ${profile.isBot ? 'grid-cols-2' : 'grid-cols-4'} gap-2 px-4`}>
             <ActionTile icon={<FileText className="h-5 w-5" />} label={t('profile.actionChat')} disabled={isDeleted} onClick={onMessage} />
-            <ActionTile icon={isBlocked ? <MicOff /> : <Mic className="h-5 w-5" />} label={t('profile.actionAudio')} disabled={isBlocked || isDeleted} onClick={onAudioCall} />
-            <ActionTile icon={<Video className="h-5 w-5" />} label={t('profile.actionVideo')} disabled={isBlocked || isDeleted} onClick={onVideoCall} />
+            {!profile.isBot && <ActionTile icon={isBlocked ? <MicOff /> : <Mic className="h-5 w-5" />} label={t('profile.actionAudio')} disabled={isBlocked || isDeleted} onClick={onAudioCall} />}
+            {!profile.isBot && <ActionTile icon={<Video className="h-5 w-5" />} label={t('profile.actionVideo')} disabled={isBlocked || isDeleted} onClick={onVideoCall} />}
             <ActionTile icon={<MoreHorizontal className="h-5 w-5" />} label={t('profile.actionMore')} onClick={onMore} />
           </div>
         )}
@@ -476,7 +502,9 @@ export function UserProfileSheet({
           ) : (
             profile.bio && (
               <div className="px-5 pt-3">
-                <p className="whitespace-pre-wrap text-center text-sm leading-6 text-ink">{profile.bio}</p>
+                <p className="whitespace-pre-wrap text-center text-sm leading-6 text-ink">
+                  <HighlightedText text={profile.bio} />
+                </p>
               </div>
             )
           )}
@@ -636,6 +664,19 @@ export function UserProfileSheet({
                 >
                   <ShieldAlert className="h-4 w-4" />
                   {profile.fake ? t('profile.clearFake') : t('profile.setFake')}
+                </Button>
+              )}
+              {/* Метка BOT: закрывает вход в аккаунт — как и в админке,
+                  поэтому кнопка в том же опасном стиле и с подтверждением. */}
+              {!profile.isDeleted && (
+                <Button
+                  variant={profile.isBot ? 'secondary' : 'danger'}
+                  className="w-full"
+                  loading={busy}
+                  onClick={() => void toggleBot()}
+                >
+                  <Bot className="h-4 w-4" />
+                  {profile.isBot ? t('profile.clearBot') : t('profile.setBot')}
                 </Button>
               )}
               {!profile.isDeleted && (

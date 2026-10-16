@@ -24,7 +24,7 @@ export const FONT_STACKS: Record<ThemeFont, string> = {
   system:
     'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif',
   rounded:
-    'ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", "Varela Round", "Segoe UI", system-ui, sans-serif',
+    'ui-rounded, "SF Pro Rounded", "Comfortaa", "Nunito", "Quicksand", "Arial Rounded MT Bold", "Segoe Print", "Trebuchet MS", "Varela Round", system-ui, sans-serif',
   serif: 'Georgia, "Times New Roman", "PT Serif", ui-serif, serif',
   mono: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
 };
@@ -751,9 +751,15 @@ export function themeToCssVariables(theme: Theme): Record<string, string> {
 export function applyTheme(theme: Theme, root: HTMLElement = document.documentElement): void {
   root.classList.toggle('dark', theme.mode === 'dark');
   root.style.colorScheme = theme.mode;
+  const fontStack = FONT_STACKS[theme.font] ?? FONT_STACKS.system;
+  root.style.fontFamily = fontStack;
+  if (typeof document !== 'undefined' && document.body) {
+    document.body.style.fontFamily = fontStack;
+  }
   for (const [name, value] of Object.entries(themeToCssVariables(theme))) {
     root.style.setProperty(name, value);
   }
+  root.style.setProperty('--app-font', fontStack);
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   meta?.setAttribute('content', theme.mode === 'dark' ? theme.colors.surface : theme.colors.brand);
 }

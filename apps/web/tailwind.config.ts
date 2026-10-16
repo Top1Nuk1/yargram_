@@ -31,6 +31,7 @@ export default {
       animation: {
         'fade-in': 'fade-in 180ms ease-out both',
         'slide-up': 'slide-up 220ms ease-out both',
+        'slide-down': 'slide-down 220ms ease-out both',
         'pulse-soft': 'pulse-soft 2s ease-in-out infinite',
       },
       keyframes: {
@@ -40,6 +41,10 @@ export default {
         },
         'slide-up': {
           from: { opacity: '0', transform: 'translateY(10px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
+        'slide-down': {
+          from: { opacity: '0', transform: 'translateY(-12px)' },
           to: { opacity: '1', transform: 'translateY(0)' },
         },
         'pulse-soft': {

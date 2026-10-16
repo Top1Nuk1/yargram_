@@ -47,6 +47,20 @@ export function CallToAction() {
           </a>
 
           <p className="mt-5 text-[12.5px] text-white/70">{cta.note}</p>
+
+          {/* 🔥 Оговорка про Telegram стоит в самом призыве, а не только в
+              подвале: сюда попадают те, кто пришёл по ссылке извне и кто
+              сравнивает мессенджеры по названию. Мелким шрифтом и без
+              полемики — это юридическая оговорка, а не рекламный слоган. */}
+          <p className="mx-auto mt-4 max-w-[560px] text-[11.5px] leading-[1.6] text-white/60">
+            {content.footer.notTelegram}
+          </p>
+          <a
+            href="/terms"
+            className="mt-3 inline-block text-[12.5px] font-medium text-white/75 underline decoration-white/30 underline-offset-4 transition hover:text-white"
+          >
+            {content.footer.terms}
+          </a>
         </div>
       </div>
     </section>
@@ -94,6 +108,25 @@ export function Footer() {
             {content.header.cta}
           </a>
         </nav>
+      </div>
+
+      {/* 🔥 Подвал лендинга — место, где человек ищет мелкий юридический текст.
+          Здесь стоят и ссылка на соглашение, и прямая оговорка про Telegram:
+          в блоке призыва она могла бы потеряться среди крупного текста. */}
+      <div className="border-t border-stroke/60">
+        <div className="mx-auto w-full max-w-6xl px-5 py-6 sm:px-8">
+          <p className="max-w-[860px] text-[12px] leading-[1.65] text-body">
+            {content.footer.notTelegram}
+          </p>
+          <p className="mt-2.5 text-[12px] text-body">
+            <a
+              href="/terms"
+              className="font-medium text-brand underline decoration-brand/30 underline-offset-4 transition hover:decoration-brand"
+            >
+              {content.footer.terms}
+            </a>
+          </p>
+        </div>
       </div>
     </footer>
   );
