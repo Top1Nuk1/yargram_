@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Username,
-    [string]$SpaceName = "yargram",
+    [string]$Username = "Top1Nuk1",
+    [string]$SpaceName = "Yargram",
     [string]$Token
 )
 
@@ -20,24 +20,12 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-if (-not $Username) {
-    $Username = Read-Host "Введите ваш логин (Username) на Hugging Face"
-}
-$Username = $Username.Trim()
+$inputUser = Read-Host "Логин на Hugging Face [Enter = $Username]"
+if ($inputUser.Trim()) { $Username = $inputUser.Trim() }
 
-if (-not $Username) {
-    Write-Host "[ОШИБКА] Логин Hugging Face не может быть пустым." -ForegroundColor Red
-    pause
-    exit 1
-}
+$inputSpace = Read-Host "Имя Space [Enter = $SpaceName]"
+if ($inputSpace.Trim()) { $SpaceName = $inputSpace.Trim() }
 
-if (-not $SpaceName) {
-    $SpaceName = Read-Host "Введите имя Space (по умолчанию: yargram)"
-}
-$SpaceName = $SpaceName.Trim()
-if (-not $SpaceName) {
-    $SpaceName = "yargram"
-}
 
 if (-not $Token) {
     Write-Host ""
