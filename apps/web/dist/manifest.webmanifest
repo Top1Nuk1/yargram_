@@ -1,0 +1,42 @@
+{
+  "name": "Yargram",
+  "short_name": "Yargram",
+  "description": "Лёгкий мессенджер для тех, кто рядом — переписка, файлы, звонки и темы прямо в браузере.",
+  "lang": "ru",
+  "dir": "ltr",
+  "start_url": "/app",
+  "scope": "/app",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#f6f7fd",
+  "theme_color": "#3390ec",
+  "categories": ["communication", "social"],
+  "icons": [
+    {
+      "src": "/app/brand/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/app/brand/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/app/brand/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Новый чат",
+      "short_name": "Чат",
+      "url": "/app"
+    }
+  ]
+}

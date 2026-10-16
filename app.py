@@ -79,7 +79,7 @@ if not os.environ.get("DB_ENCRYPTION_KEY") or os.environ.get("DB_ENCRYPTION_KEY"
 node_modules = os.path.join(ROOT_DIR, "node_modules")
 if not os.path.exists(node_modules):
     print("[YarGram] Устанавливаем зависимости workspaces (npm install)...", flush=True)
-    subprocess.run(["npm", "install"], cwd=ROOT_DIR, check=True)
+    subprocess.run(["npm", "install", "--workspaces", "--include-workspace-root", "--omit=dev"], cwd=ROOT_DIR, check=True)
 
 server_dist = os.path.join(ROOT_DIR, "apps", "server", "dist", "index.js")
 web_dist = os.path.join(ROOT_DIR, "apps", "web", "dist", "index.html")
