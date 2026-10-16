@@ -76,6 +76,12 @@ if not os.path.exists(server_modules):
 server_dist = os.path.join(ROOT_DIR, "apps", "server", "dist", "index.js")
 web_dist = os.path.join(ROOT_DIR, "apps", "web", "dist", "index.html")
 
+server_dir = os.path.join(ROOT_DIR, "apps", "server")
+if os.path.exists(server_dir):
+    print(f"[YarGram Debug] apps/server contents: {os.listdir(server_dir)}", flush=True)
+    if os.path.exists(os.path.join(server_dir, "dist")):
+        print(f"[YarGram Debug] apps/server/dist contents: {os.listdir(os.path.join(server_dir, 'dist'))}", flush=True)
+
 print(f"[YarGram] Проверка сборки: server_dist={os.path.exists(server_dist)}, web_dist={os.path.exists(web_dist)}", flush=True)
 
 print("[YarGram] Запуск сервера YarGram на порту 7860...", flush=True)
