@@ -380,7 +380,7 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
       audio.pause();
       if (recoveredUrl) URL.revokeObjectURL(recoveredUrl);
     };
-  }, [attachment.url, attachment.size, attachment.mimeType, recordedDuration, speed]);
+  }, [attachment.id, attachment.url, attachment.size, attachment.mimeType, recordedDuration, speed]);
 
   const togglePlayback = () => {
     const audio = audioRef.current;

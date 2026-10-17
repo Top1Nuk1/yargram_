@@ -20,6 +20,7 @@ import {
   writeActiveToken,
   type StoredAccount,
 } from './lib/accounts';
+import { initInternalLinkInterceptor } from './lib/navigation';
 import type { AuthResult, User } from './types';
 
 export default function App() {
@@ -47,12 +48,19 @@ export default function App() {
     accountsRef.current = accounts;
   }, [accounts]);
 
-  function persistAccounts(next: StoredAccount[]) {
-    const clean = deduplicateAccounts(next, token);
-    accountsRef.current = clean;
-    writeAccounts(clean);
-    setAccounts(clean);
-  }
+  const persistAccounts = useCallback(
+    (next: StoredAccount[]) => {
+      const clean = deduplicateAccounts(next, token);
+      accountsRef.current = clean;
+      writeAccounts(clean);
+      setAccounts(clean);
+    },
+    [token],
+  );
+
+  useEffect(() => {
+    return initInternalLinkInterceptor();
+  }, []);
 
   /** Делает аккаунт активным и просит профиль заново. */
   function activateAccount(nextToken: string | null, message = '') {
@@ -107,7 +115,7 @@ export default function App() {
       });
 
     return () => controller.abort();
-  }, [token, user, connectionAttempt, t]);
+  }, [token, user, connectionAttempt, t, persistAccounts]);
 
   async function handleAuthenticated(result: AuthResult) {
     const nextToken = result.accessToken;
@@ -160,7 +168,7 @@ export default function App() {
       if (!token) return;
       persistAccounts(upsertAccount(accountsRef.current, { token, user: next }));
     },
-    [token],
+    [token, persistAccounts],
   );
 
   if (booting) {

@@ -8,11 +8,14 @@ export default tseslint.config(
     ignores: [
       '**/dist/**',
       '**/node_modules/**',
+      '**/out/**',
+      '**/*_out/**',
       '.chrome-*/**',
       '.smoke-*/**',
       'apps/server/data/**',
       'runtime/**',
       'в приложение/**',
+      'Ошибки/**',
       // Выгрузка ресурсов Telegram, лежит на диске рядом с проектом и не
       // относится к Yargram: без этой строки `npm run lint` разбирает её
       // минифицированные скрипты и падает сотней ошибок.
@@ -22,7 +25,12 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['apps/server/**/*.ts', 'scripts/**/*.mjs'],
+    rules: {
+      'no-empty': ['error', { allowEmptyCatch: true }],
+    },
+  },
+  {
+    files: ['server.js', 'apps/server/**/*.ts'],
     languageOptions: {
       globals: globals.node,
     },
@@ -36,6 +44,16 @@ export default tseslint.config(
           varsIgnorePattern: '^_',
         },
       ],
+    },
+  },
+  {
+    files: ['scripts/**/*.{js,mjs}'],
+    languageOptions: {
+      globals: globals.node,
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': 'off',
+      'no-useless-assignment': 'off',
     },
   },
   {

@@ -5,6 +5,7 @@ import { useTranslation } from '../../hooks/useLanguage';
 import type { Message, MessageReaction } from '../../types';
 import { COMPOSER_EMOJIS, EMOJI_CATEGORIES, MESSAGE_REACTIONS } from './messengerUtils';
 import { tokenizeText } from '../../lib/linkify';
+import { isInternalYargramUrl, navigateInternal } from '../../lib/navigation';
 
 interface EmojiPickerProps {
   mode?: 'composer' | 'reaction';
@@ -167,17 +168,21 @@ export function HighlightedText({
 
   const elements: ReactNode[] = tokens.map((token, index) => {
     if (token.type === 'link') {
+      const isInternal = isInternalYargramUrl(token.href);
       return (
         <a
           key={`token-link-${index}`}
           href={token.href}
-          target="_blank"
-          rel="noopener noreferrer"
+          target={isInternal ? undefined : '_blank'}
+          rel={isInternal ? undefined : 'noopener noreferrer'}
           className="cursor-pointer break-all font-medium text-brand underline decoration-brand/40 underline-offset-2 transition hover:text-brand-dark hover:decoration-brand"
           onClick={(event) => {
-            // Клик по ссылке открывает её в новой вкладке браузера и не переключает
-            // текущий диалог/экран мессенджера (предотвращаем всплытие клика к пузырю сообщения).
+            // Предотвращаем всплытие клика к пузырю сообщения
             event.stopPropagation();
+            if (isInternal) {
+              event.preventDefault();
+              navigateInternal(token.href);
+            }
           }}
         >
           {renderHighlightedSlice(token.value, normalizedQuery, `tok-${index}`)}

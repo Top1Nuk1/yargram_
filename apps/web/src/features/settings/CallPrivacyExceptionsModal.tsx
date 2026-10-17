@@ -3,7 +3,7 @@ import { Check, Search, X } from 'lucide-react';
 import { Avatar } from '../../components/ui';
 import { useTranslation } from '../../hooks/useLanguage';
 import { api } from '../../api/client';
-import type { Conversation, User } from '../../types';
+import type { Conversation } from '../../types';
 
 export interface ExceptionUserItem {
   id: string;

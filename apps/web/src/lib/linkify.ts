@@ -65,7 +65,7 @@ export function tokenizeText(text: string): TextToken[] {
   let lastIndex = 0;
 
   URL_OR_EMAIL_REGEX.lastIndex = 0;
-  let match: RegExpExecArray | null = null;
+  let match: RegExpExecArray | null;
 
   while ((match = URL_OR_EMAIL_REGEX.exec(text)) !== null) {
     const matchStart = match.index;

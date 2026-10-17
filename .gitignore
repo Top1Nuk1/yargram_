@@ -45,3 +45,6 @@ Desktop.ini
 Ошибки/
 в приложение/
 1/
+data/
+*.zip
+scripts/askpass.bat

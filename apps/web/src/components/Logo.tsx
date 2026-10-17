@@ -29,6 +29,7 @@ export function Logo({ compact = false, className = '', href, title }: LogoProps
     return (
       <a
         href={href}
+        data-no-internal=""
         className={`inline-flex items-center gap-2.5 ${className}`}
         aria-label="Yargram"
         title={title ?? 'Yargram'}

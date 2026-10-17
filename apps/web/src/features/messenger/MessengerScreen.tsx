@@ -507,6 +507,7 @@ export function MessengerScreen({
   const messagesRef = useRef<Message[]>([]);
   const serverDraftsRef = useRef(new Map<string, ConversationDraft>());
   const draftSaveTimerRef = useRef<number | null>(null);
+  const cancelVoiceRecordingRef = useRef<() => void>(() => {});
   const webRtc = useWebRtcCall(socket, token);
   const { setCurrentUser: setCallCurrentUser } = webRtc;
 
@@ -1170,7 +1171,7 @@ export function MessengerScreen({
     // когда запись действительно шла в другой беседе — и говорим об этом, иначе
     // запись пропадала молча и выглядела как «не могу записать».
     if (recordingRef.current && recordConversationRef.current !== selectedId) {
-      cancelVoiceRecording();
+      cancelVoiceRecordingRef.current();
       setNotice(t('msgr.recordingCancelled'));
     }
     if (!selectedId) {
@@ -1408,30 +1409,54 @@ export function MessengerScreen({
     );
   }
 
+  const joinGroupByCode = useCallback(
+    (rawCode: string) => {
+      const code = rawCode.trim();
+      if (!code) return;
+      api
+        .joinGroup(token, code)
+        .then((conversation) => {
+          setConversations((current) =>
+            uniqueConversations([conversation, ...current.filter((item) => item.id !== conversation.id)]),
+          );
+          setSelectedId(conversation.id);
+          setNotice(t('msgr.joinedGroup', { title: groupTitle(conversation) }));
+        })
+        .catch((reason: unknown) => {
+          setNotice(readableError(reason, t('msgr.inviteInvalid')));
+        });
+    },
+    [t, token],
+  );
+
   // Ссылка-приглашение вида /join/<код>: вступаем в группу и сразу её открываем.
   useEffect(() => {
     const match = /^(?:\/app)?\/join\/([^/?#]+)\/?$/.exec(window.location.pathname);
     if (!match) return undefined;
-    let cancelled = false;
     // Адрес чистим сразу: остаёмся в веб-приложении (/app) без повторного вступления при перезагрузке.
     window.history.replaceState(null, '', '/app');
-    api
-      .joinGroup(token, decodeURIComponent(match[1] ?? ''))
-      .then((conversation) => {
-        if (cancelled) return;
-        setConversations((current) =>
-          uniqueConversations([conversation, ...current.filter((item) => item.id !== conversation.id)]),
-        );
-        setSelectedId(conversation.id);
-        setNotice(t('msgr.joinedGroup', { title: groupTitle(conversation) }));
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) setNotice(readableError(reason, t('msgr.inviteInvalid')));
-      });
-    return () => {
-      cancelled = true;
+    joinGroupByCode(decodeURIComponent(match[1] ?? ''));
+  }, [joinGroupByCode]);
+
+  // Внутренняя навигация без перезагрузки: клик по ссылке-приглашению или ссылке на главную в чате
+  useEffect(() => {
+    const handleJoinEvent = (event: Event) => {
+      const customEvent = event as CustomEvent<{ code?: string }>;
+      if (customEvent.detail?.code) {
+        joinGroupByCode(customEvent.detail.code);
+      }
     };
-  }, [t, token]);
+    const handleNavigateHome = () => {
+      setSelectedId(null);
+    };
+
+    window.addEventListener('yargram:join-group', handleJoinEvent);
+    window.addEventListener('yargram:navigate-home', handleNavigateHome);
+    return () => {
+      window.removeEventListener('yargram:join-group', handleJoinEvent);
+      window.removeEventListener('yargram:navigate-home', handleNavigateHome);
+    };
+  }, [joinGroupByCode]);
 
   /** Из профиля участника группы открываем личный диалог с ним. */
   async function openDirectWith(user: User) {
@@ -2466,6 +2491,7 @@ export function MessengerScreen({
     setRecording(false);
     setRecordingSeconds(0);
   }
+  cancelVoiceRecordingRef.current = cancelVoiceRecording;
 
   async function finalizeVoiceRecording() {
     stopAudioVisualizer();

@@ -11,7 +11,6 @@ import {
   Settings,
   ShieldBan,
   ShieldCheck,
-  Star,
   UserPlus,
   UsersRound,
   X,
@@ -262,7 +261,7 @@ export function AppSidebar({
         <footer className="border-t border-line/70 px-5 py-3 text-[12px] leading-5 text-muted">
           <p className="font-semibold text-ink">Yargram Web</p>
           {/* ЗБТ — закрытое бета-тестирование: сокращение, расшифровка в подсказке. */}
-          <p title={t('sidebar.betaTip')}>{t('sidebar.version', { version: '0.0.1', channel: 'ЗБТ' })}</p>
+          <p title={t('sidebar.betaTip')}>{t('sidebar.version', { version: '0.0.2', channel: 'ЗБТ' })}</p>
           <button type="button" className="mt-0.5 font-semibold text-brand transition hover:text-brand-strong">
             {t('sidebar.about')}
           </button>
