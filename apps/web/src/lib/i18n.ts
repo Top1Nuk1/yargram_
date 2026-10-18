@@ -3249,6 +3249,20 @@ define('msgr.addEmoji', { ru: 'Добавить эмодзи', en: 'Add emoji', 
 });
 define('msgr.sendLater', { ru: 'Отправить позже', en: 'Send later', bg: 'Изпрати по-късно', uk: 'Надіслати позже', be: 'Адправіць позже' 
 });
+define('msgr.formatting', { ru: 'Форматирование текста', en: 'Text formatting', bg: 'Форматиране на текст', uk: 'Форматування тексту', be: 'Фарматаванне тэксту' 
+});
+define('msgr.bold', { ru: 'Жирный', en: 'Bold', bg: 'Получер', uk: 'Жирний', be: 'Тлусты' 
+});
+define('msgr.italic', { ru: 'Курсив', en: 'Italic', bg: 'Курсив', uk: 'Курсив', be: 'Курсіў' 
+});
+define('msgr.underline', { ru: 'Подчёркнутый', en: 'Underline', bg: 'Подчертан', uk: 'Підкреслений', be: 'Падкрэслены' 
+});
+define('msgr.strike', { ru: 'Зачёркнутый', en: 'Strikethrough', bg: 'Зачеркнат', uk: 'Закреслений', be: 'Закрэслены' 
+});
+define('msgr.code', { ru: 'Моноширинный код', en: 'Inline code', bg: 'Код', uk: 'Код', be: 'Код' 
+});
+define('msgr.quote', { ru: 'Цитата', en: 'Quote', bg: 'Цитат', uk: 'Цитата', be: 'Цытата' 
+});
 define('msgr.messageLabel', { ru: 'Сообщение', en: 'Message', bg: 'Съобщение', uk: 'Повідомлення', be: 'Паведамленне' 
 });
 define('msgr.linksForbidden', { ru: 'В этой группе запрещены ссылки', en: 'Links are forbidden in this group', bg: 'Връзките са забранени в тази група', uk: 'У цієї Групі заборонені Посилання', be: 'У гэтай Групе забаронены Спасылка' 

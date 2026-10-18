@@ -49,6 +49,13 @@ import {
   Folder,
   Clock,
   FolderOpen,
+  Bold,
+  Italic,
+  Underline,
+  Strikethrough,
+  Code,
+  Quote,
+  Type,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { io, type Socket } from 'socket.io-client';
@@ -127,6 +134,8 @@ import { FriendsModal } from '../friends/FriendsModal';
 import { AppSidebar, type SidebarAction } from '../sidebar/AppSidebar';
 import { AdminPanel } from '../admin/AdminPanel';
 import { AttachmentDraftTray, ImageViewer, MessageAttachments, type DraftAttachment } from './AttachmentUi';
+import { FloatingAudioBar } from './FloatingAudioBar';
+import { applyFormatting, type FormatType } from '../../lib/formatting';
 import {
   EmojiPicker,
   HighlightedText,
@@ -398,6 +407,7 @@ export function MessengerScreen({
   const [messageActionId, setMessageActionId] = useState<string | null>(null);
   const [reactionPickerId, setReactionPickerId] = useState<string | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [formatMenuOpen, setFormatMenuOpen] = useState(false);
   // 🔥 Стикеры и гифки грузятся вместе со всем остальным: без них пикер был бы
   // пустым на первом экране. Отдельная загрузка по вкладке означала бы пустой
   // список с заглушкой, а это выглядит как поломка.
@@ -2386,10 +2396,50 @@ export function MessengerScreen({
     }
   }
 
+  function applyComposerFormat(format: FormatType) {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? 0;
+    const result = applyFormatting(draft, start, end, format);
+    handleDraftChange(result.text);
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(result.selectionStart, result.selectionEnd);
+      }
+    });
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void sendMessage();
+      return;
+    }
+
+    const isMod = event.ctrlKey || event.metaKey;
+    if (isMod) {
+      const code = event.code;
+      if (!event.shiftKey && code === 'KeyB') {
+        event.preventDefault();
+        applyComposerFormat('bold');
+      } else if (!event.shiftKey && code === 'KeyI') {
+        event.preventDefault();
+        applyComposerFormat('italic');
+      } else if (!event.shiftKey && code === 'KeyU') {
+        event.preventDefault();
+        applyComposerFormat('underline');
+      } else if (event.shiftKey && code === 'KeyX') {
+        event.preventDefault();
+        applyComposerFormat('strike');
+      } else if (event.shiftKey && (code === 'KeyC' || code === 'KeyM')) {
+        event.preventDefault();
+        applyComposerFormat('code');
+      } else if (event.shiftKey && (code === 'KeyQ' || code === 'Digit9')) {
+        event.preventDefault();
+        applyComposerFormat('quote');
+      }
     }
   }
 
@@ -2763,6 +2813,9 @@ export function MessengerScreen({
               </button>
             </div>
           </header>
+          <div className="md:hidden">
+            <FloatingAudioBar />
+          </div>
 
           {folderCreateOpen && (
             <div className="mx-3 mt-2 flex items-center gap-2 rounded-2xl border border-line bg-canvas px-3 py-2">
@@ -3182,6 +3235,8 @@ export function MessengerScreen({
                   )}
                 </div>}
               </header>
+
+              <FloatingAudioBar />
 
               {pendingScheduled.length > 0 && (
                 <button
@@ -3943,6 +3998,76 @@ export function MessengerScreen({
                         >
                           {t('msgr.schedule')}
                         </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="relative">
+                    <IconButton
+                      label={t('msgr.formatting')}
+                      type="button"
+                      disabled={sending || selectedBlockedByMe}
+                      className={`h-11 w-11 shrink-0 ${formatMenuOpen ? 'bg-brand-soft text-brand' : ''}`}
+                      onClick={() => setFormatMenuOpen((open) => !open)}
+                    >
+                      <Type className="h-5 w-5" />
+                    </IconButton>
+                    {formatMenuOpen && (
+                      <div className="absolute bottom-14 left-0 z-30 flex items-center gap-1 rounded-2xl border border-line bg-elevated p-1.5 shadow-float">
+                        <button
+                          type="button"
+                          onClick={() => applyComposerFormat('bold')}
+                          title={`${t('msgr.bold')} (Ctrl+B)`}
+                          aria-label={t('msgr.bold')}
+                          className="grid h-8 w-8 place-items-center rounded-xl font-bold hover:bg-brand-soft/60"
+                        >
+                          <Bold className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyComposerFormat('italic')}
+                          title={`${t('msgr.italic')} (Ctrl+I)`}
+                          aria-label={t('msgr.italic')}
+                          className="grid h-8 w-8 place-items-center rounded-xl hover:bg-brand-soft/60"
+                        >
+                          <Italic className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyComposerFormat('underline')}
+                          title={`${t('msgr.underline')} (Ctrl+U)`}
+                          aria-label={t('msgr.underline')}
+                          className="grid h-8 w-8 place-items-center rounded-xl hover:bg-brand-soft/60"
+                        >
+                          <Underline className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyComposerFormat('strike')}
+                          title={`${t('msgr.strike')} (Ctrl+Shift+X)`}
+                          aria-label={t('msgr.strike')}
+                          className="grid h-8 w-8 place-items-center rounded-xl hover:bg-brand-soft/60"
+                        >
+                          <Strikethrough className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyComposerFormat('code')}
+                          title={`${t('msgr.code')} (Ctrl+Shift+C)`}
+                          aria-label={t('msgr.code')}
+                          className="grid h-8 w-8 place-items-center rounded-xl hover:bg-brand-soft/60"
+                        >
+                          <Code className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => applyComposerFormat('quote')}
+                          title={`${t('msgr.quote')} (Ctrl+Shift+Q)`}
+                          aria-label={t('msgr.quote')}
+                          className="grid h-8 w-8 place-items-center rounded-xl hover:bg-brand-soft/60"
+                        >
+                          <Quote className="h-4 w-4" />
+                        </button>
                       </div>
                     )}
                   </div>

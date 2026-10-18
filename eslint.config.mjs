@@ -20,6 +20,7 @@ export default tseslint.config(
       // относится к Yargram: без этой строки `npm run lint` разбирает её
       // минифицированные скрипты и падает сотней ошибок.
       '1/**',
+      'versions/**',
     ],
   },
   eslint.configs.recommended,

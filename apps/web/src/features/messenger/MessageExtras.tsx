@@ -4,8 +4,8 @@ import { IconButton } from '../../components/ui';
 import { useTranslation } from '../../hooks/useLanguage';
 import type { Message, MessageReaction } from '../../types';
 import { COMPOSER_EMOJIS, EMOJI_CATEGORIES, MESSAGE_REACTIONS } from './messengerUtils';
-import { tokenizeText } from '../../lib/linkify';
 import { isInternalYargramUrl, navigateInternal } from '../../lib/navigation';
+import { parseFormattedMessage, type FormattedInline } from '../../lib/formatting';
 
 interface EmojiPickerProps {
   mode?: 'composer' | 'reaction';
@@ -164,15 +164,16 @@ export function HighlightedText({
 }) {
   if (!text) return null;
   const normalizedQuery = (query ?? '').trim().toLocaleLowerCase('ru-RU');
-  const tokens = tokenizeText(text);
+  const blocks = parseFormattedMessage(text);
 
-  const elements: ReactNode[] = tokens.map((token, index) => {
-    if (token.type === 'link') {
-      const isInternal = isInternalYargramUrl(token.href);
+  function renderInline(inline: FormattedInline, key: string): ReactNode {
+    if (inline.type === 'link') {
+      const href = inline.href || inline.value;
+      const isInternal = isInternalYargramUrl(href);
       return (
         <a
-          key={`token-link-${index}`}
-          href={token.href}
+          key={key}
+          href={href}
           target={isInternal ? undefined : '_blank'}
           rel={isInternal ? undefined : 'noopener noreferrer'}
           className="cursor-pointer break-all font-medium text-brand underline decoration-brand/40 underline-offset-2 transition hover:text-brand-dark hover:decoration-brand"
@@ -181,22 +182,77 @@ export function HighlightedText({
             event.stopPropagation();
             if (isInternal) {
               event.preventDefault();
-              navigateInternal(token.href);
+              navigateInternal(href);
             }
           }}
         >
-          {renderHighlightedSlice(token.value, normalizedQuery, `tok-${index}`)}
+          {renderHighlightedSlice(inline.value, normalizedQuery, `${key}-lnk`)}
         </a>
       );
     }
-    return (
-      <Fragment key={`token-txt-${index}`}>
-        {renderHighlightedSlice(token.value, normalizedQuery, `tok-${index}`)}
-      </Fragment>
-    );
-  });
 
-  return <span className={className}>{elements}</span>;
+    const content = renderHighlightedSlice(inline.value, normalizedQuery, `${key}-txt`);
+
+    switch (inline.type) {
+      case 'bold':
+        return <strong key={key} className="font-bold">{content}</strong>;
+      case 'italic':
+        return <em key={key} className="italic">{content}</em>;
+      case 'strike':
+        return <del key={key} className="line-through opacity-80">{content}</del>;
+      case 'underline':
+        return <span key={key} className="underline underline-offset-2">{content}</span>;
+      case 'code':
+        return (
+          <code key={key} className="rounded border border-line/40 bg-surface/70 px-1 py-0.5 font-mono text-[0.88em]">
+            {content}
+          </code>
+        );
+      default:
+        return <Fragment key={key}>{content}</Fragment>;
+    }
+  }
+
+  // Если блок один и это обычный параграф — рендерим плоским span, чтобы не нарушать верстку пузыря
+  if (blocks.length === 1 && blocks[0]?.type === 'paragraph') {
+    return (
+      <span className={className}>
+        {blocks[0].inlines.map((inline, index) => renderInline(inline, `inl-${index}`))}
+      </span>
+    );
+  }
+
+  return (
+    <span className={className}>
+      {blocks.map((block, bIdx) => {
+        if (block.type === 'quote') {
+          return (
+            <blockquote
+              key={`blk-${bIdx}`}
+              className="my-1 block rounded-r border-l-2 border-brand bg-brand-soft/20 py-0.5 pl-2.5 pr-2 text-[0.95em] italic"
+            >
+              {block.inlines.map((inline, iIdx) => renderInline(inline, `q-${bIdx}-${iIdx}`))}
+            </blockquote>
+          );
+        }
+        if (block.type === 'codeblock') {
+          return (
+            <pre
+              key={`blk-${bIdx}`}
+              className="my-1 block overflow-x-auto rounded-lg border border-line/60 bg-surface/80 p-2 font-mono text-xs text-ink/90"
+            >
+              <code>{block.inlines.map((inline, iIdx) => renderInline(inline, `cb-${bIdx}-${iIdx}`))}</code>
+            </pre>
+          );
+        }
+        return (
+          <span key={`blk-${bIdx}`} className="block">
+            {block.inlines.map((inline, iIdx) => renderInline(inline, `p-${bIdx}-${iIdx}`))}
+          </span>
+        );
+      })}
+    </span>
+  );
 }
 
 interface ReactionBarProps {

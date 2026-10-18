@@ -17,6 +17,7 @@ import { useTranslation } from '../../hooks/useLanguage';
 import type { Attachment } from '../../types';
 import { formatFileSize, isImageAttachment, isVideoGifAttachment, isVoiceAttachment, type UploadKind } from './messengerUtils';
 import { discoverAudioDuration, finiteDuration, seekTime } from './mediaDuration';
+import { audioManager } from '../../lib/audioManager';
 
 type MediaAttachment = Attachment & { mediaKind?: string; durationSeconds?: number };
 function isVideoCircle(attachment: Attachment): attachment is MediaAttachment & { mediaKind: 'video_circle' } {
@@ -315,13 +316,32 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
   }, [attachment.id]);
 
   useEffect(() => {
+    return audioManager.subscribe(() => {
+      const info = audioManager.getInfo();
+      if (info && info.id === attachment.id) {
+        setPlaying(info.isPlaying);
+        if (Math.abs(info.currentTime - current) > 0.3) {
+          setCurrent(info.currentTime);
+        }
+        if (info.playbackRate !== speed) {
+          setSpeed(info.playbackRate);
+        }
+      }
+    });
+  }, [attachment.id, current, speed]);
+
+  useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return undefined;
     const controller = new AbortController();
     let probing = false;
     let recoveredUrl: string | undefined;
     let recoveredDuration: number | undefined;
-    const onTime = () => setCurrent(Number.isFinite(audio.currentTime) ? Math.max(0, audio.currentTime) : 0);
+    const onTime = () => {
+      const pos = Number.isFinite(audio.currentTime) ? Math.max(0, audio.currentTime) : 0;
+      setCurrent(pos);
+      audioManager.updateLocalTime(attachment.id, pos, duration);
+    };
     const onMeta = () => {
       const known = finiteDuration(audio.duration) ?? recordedDuration ?? recoveredDuration;
       setDuration(known);
@@ -359,11 +379,27 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
       setPlaying(true);
       setError(false);
       window.dispatchEvent(new CustomEvent('yargram:voice-play', { detail: { id: attachment.id } }));
+      audioManager.registerLocalPlay(
+        attachment.id,
+        attachment.url,
+        attachment.fileName || t('attach.voiceMessage'),
+        finiteDuration(audio.duration) ?? recordedDuration ?? recoveredDuration,
+        audio,
+        speed,
+      );
     };
-    const onPause = () => setPlaying(false);
-    const onError = () => { setPlaying(false); setError(true); };
+    const onPause = () => {
+      setPlaying(false);
+      audioManager.updateLocalPlaying(attachment.id, false);
+    };
+    const onError = () => {
+      setPlaying(false);
+      setError(true);
+      audioManager.updateLocalPlaying(attachment.id, false);
+    };
     const onEnded = () => {
       setPlaying(false);
+      audioManager.updateLocalPlaying(attachment.id, false);
       // Natural completion is also reliable evidence for headerless recordings.
       if (!finiteDuration(audio.duration) && !recordedDuration && !recoveredDuration) {
         recoveredDuration = finiteDuration(audio.currentTime);
@@ -377,10 +413,11 @@ function VoicePlayer({ attachment, mine }: { attachment: Attachment; mine: boole
     return () => {
       controller.abort();
       for (const [event, handler] of Object.entries(handlers)) audio.removeEventListener(event, handler);
+      audioManager.handleLocalUnmount(attachment.id, audio);
       audio.pause();
       if (recoveredUrl) URL.revokeObjectURL(recoveredUrl);
     };
-  }, [attachment.id, attachment.url, attachment.size, attachment.mimeType, recordedDuration, speed]);
+  }, [attachment.id, attachment.url, attachment.size, attachment.mimeType, attachment.fileName, recordedDuration, speed, duration, t]);
 
   const togglePlayback = () => {
     const audio = audioRef.current;
