@@ -1,15 +1,14 @@
 @echo off
 chcp 65001 >nul
-title Резервное копирование YarGram с сервера
-
-echo ============================================================
-echo   📦 YarGram — Резервное копирование сервера на ПК
-echo ============================================================
-echo.
+title YarGram Backup
 
 cd /d "%~dp0"
-python "scripts\backup_from_server.py"
+
+set "PY_EXE="
+if exist "%LOCALAPPDATA%\Python\bin\python.exe" set "PY_EXE=%LOCALAPPDATA%\Python\bin\python.exe"
+if not defined PY_EXE set "PY_EXE=python"
+
+"%PY_EXE%" "scripts\backup_from_server.py"
 
 echo.
-echo Нажмите любую клавишу для выхода...
-pause >nul
+pause
