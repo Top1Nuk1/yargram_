@@ -3612,6 +3612,90 @@ define('sessions.autoTerminateHint', {
   be: 'Сеанс зачыніцца сам, калі ім не карысталіся.',
 });
 define('sessions.never', { ru: 'Никогда', en: 'Never', bg: 'Никога', uk: 'Ніколи', be: 'Ніколі' });
+define('sessions.renameAction', {
+  ru: 'Переименовать',
+  en: 'Rename',
+  bg: 'Преименувай',
+  uk: 'Перейменувати',
+  be: 'Перайменаваць',
+});
+define('sessions.terminateAllOthers', {
+  ru: 'Завершить все другие сеансы',
+  en: 'Terminate all other sessions',
+  bg: 'Прекрати всички други сесии',
+  uk: 'Завершити всі інші сеанси',
+  be: 'Завяршыць усе іншыя сеансы',
+});
+define('sessions.terminateAllOthersHint', {
+  ru: 'Выйти на всех устройствах, кроме текущего.',
+  en: 'Log out on all devices except this one.',
+  bg: 'Излизане от всички устройства освен това.',
+  uk: 'Вийти на всіх пристроях, крім поточного.',
+  be: 'Выйсці на ўсіх прыладах, акрамя гэтай.',
+});
+define('sessions.officialAppsHint', {
+  ru: 'Официальные веб-клиенты YarGram доступны для любых устройств.',
+  en: 'Official YarGram web clients are available for all devices.',
+  bg: 'Официалните уеб клиенти на YarGram са достъпни за всякакви устройства.',
+  uk: 'Офіційні веб-клієнти YarGram доступні для будь-яких пристроїв.',
+  be: 'Афіцыйныя вэб-кліенты YarGram даступныя для любых прылад.',
+});
+define('sessions.otherSessionsTitle', {
+  ru: 'Активные сеансы',
+  en: 'Active sessions',
+  bg: 'Активни сесии',
+  uk: 'Активні сеанси',
+  be: 'Актыўныя сеансы',
+});
+define('sessions.autoTerminateTitle', {
+  ru: 'Автозавершение',
+  en: 'Auto-termination',
+  bg: 'Автоматично прекратяване',
+  uk: 'Автозавершення',
+  be: 'Аўтазавяршэнне',
+});
+define('sessions.ifSessionInactive', {
+  ru: 'Если сеанс неактивен',
+  en: 'If session is inactive',
+  bg: 'Ако сесията е неактивна',
+  uk: 'Якщо сеанс неактивний',
+  be: 'Калі сеанс неактыўны',
+});
+define('sessions.duration.1week', {
+  ru: '1 неделя',
+  en: '1 week',
+  bg: '1 седмица',
+  uk: '1 тиждень',
+  be: '1 тыдзень',
+});
+define('sessions.duration.1month', {
+  ru: '1 месяц',
+  en: '1 month',
+  bg: '1 месец',
+  uk: '1 місяць',
+  be: '1 месяц',
+});
+define('sessions.duration.3months', {
+  ru: '3 месяца',
+  en: '3 months',
+  bg: '3 месеца',
+  uk: '3 місяці',
+  be: '3 месяцы',
+});
+define('sessions.duration.6months', {
+  ru: '6 месяцев',
+  en: '6 months',
+  bg: '6 месеца',
+  uk: '6 місяців',
+  be: '6 месяцаў',
+});
+define('sessions.duration.12months', {
+  ru: '12 месяцев',
+  en: '12 months',
+  bg: '12 месеца',
+  uk: '12 місяців',
+  be: '12 месяцаў',
+});
 define('sessions.failed', {
   ru: 'Не удалось завершить сеанс.',
   en: 'Could not terminate the session.',

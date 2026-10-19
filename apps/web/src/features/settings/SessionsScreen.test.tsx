@@ -105,6 +105,13 @@ describe('экран «Активные сеансы»', () => {
     expect(screen.getAllByText(/Последняя активность:/)).toHaveLength(2);
   });
 
+  it('отображает версию клиента CBT для текущего и других сеансов', async () => {
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByText('Yargram Web 0.0.2 CBT')).toBeTruthy());
+    expect(screen.getByText('Yargram Web 0.0.1 CBT')).toBeTruthy();
+  });
+
   it('неизвестные сайт и браузер не оставляют пустых строк', async () => {
     renderScreen({
       overview: overview({
@@ -117,26 +124,20 @@ describe('экран «Активные сеансы»', () => {
     expect(screen.getByText('Браузер не определён')).toBeTruthy();
   });
 
-  it('до суток чужой сеанс завершить нельзя, а свой — можно', async () => {
+  it('до суток чужой сеанс завершить нельзя, а через сутки можно', async () => {
     renderScreen({ overview: overview({ canTerminateOthers: false }) });
     await waitFor(() => expect(screen.getByText('mirror.test')).toBeTruthy());
 
     const buttons = screen.getAllByRole('button', { name: 'Завершить' });
-    // Первый сеанс — текущий, его закрыть можно всегда: этим и спасаются от
-    // чужого входа. Второй закрывать раньше суток нельзя.
-    expect(buttons[0]).toBeEnabled();
-    expect(buttons[1]).toBeDisabled();
-    expect(buttons[1]).toHaveAttribute(
+    // Кнопка завершения для mirror.test закрыта до истечения 24 часов
+    expect(buttons[0]).toBeDisabled();
+    expect(buttons[0]).toHaveAttribute(
       'title',
       'Завершать другие сеансы можно через 24 часа после входа.',
     );
-    expect(screen.getByRole('button', { name: 'Завершить все остальные' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Завершить все другие сеансы' })).toBeDisabled();
     // Обратный отсчёт объясняет, почему кнопка не работает.
     expect(screen.getByText(/^Осталось:/)).toBeTruthy();
-
-    fireEvent.click(buttons[0]);
-    await waitFor(() => expect(api.terminateSession).toHaveBeenCalledWith('token', 'session-home'));
-    await waitFor(() => expect(screen.getByText('Сеанс завершён.')).toBeTruthy());
   });
 
   it('через сутки чужой сеанс завершается и показывает, что закрыто', async () => {
@@ -149,17 +150,18 @@ describe('экран «Активные сеансы»', () => {
     await waitFor(() => expect(screen.getByText('mirror.test')).toBeTruthy());
 
     const buttons = screen.getAllByRole('button', { name: 'Завершить' });
-    expect(buttons[1]).toBeEnabled();
+    expect(buttons[0]).toBeEnabled();
 
-    fireEvent.click(buttons[1]);
+    fireEvent.click(buttons[0]);
     await waitFor(() => expect(api.terminateSession).toHaveBeenCalledWith('token', 'session-mirror'));
+    await waitFor(() => expect(screen.getByText('Сеанс завершён.')).toBeTruthy());
   });
 
-  it('через сутки «завершить все остальные» закрывает чужие входы', async () => {
+  it('через сутки «завершить все другие сеансы» закрывает чужие входы', async () => {
     renderScreen({ overview: overview({ canTerminateOthers: true }) });
     await waitFor(() => expect(screen.getByText('mirror.test')).toBeTruthy());
 
-    const terminateAll = screen.getByRole('button', { name: 'Завершить все остальные' });
+    const terminateAll = screen.getByRole('button', { name: 'Завершить все другие сеансы' });
     expect(terminateAll).toBeEnabled();
 
     fireEvent.click(terminateAll);
@@ -236,7 +238,7 @@ describe('экран «Активные сеансы»', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('на мобильном кнопка «Закрыть» по-прежнему закрывает экран', async () => {
+  it('кнопка «Закрыть» по-прежнему закрывает экран', async () => {
     const { onBack, onClose } = renderScreen({ withBack: true });
     await waitFor(() => expect(screen.getByText('mirror.test')).toBeTruthy());
 
@@ -251,7 +253,7 @@ describe('экран «Активные сеансы»', () => {
     renderScreen();
 
     await waitFor(() => expect(screen.getByText('Активні сеанси')).toBeTruthy());
-    expect(screen.getAllByRole('button', { name: 'Завершити' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Завершити' })).toHaveLength(1);
   });
 
   it('отображает пользовательское имя устройства и позволяет переименовать его', async () => {
@@ -267,7 +269,7 @@ describe('экран «Активные сеансы»', () => {
     await waitFor(() => expect(screen.getByText('Рабочий ПК')).toBeTruthy());
     expect(screen.getByText('Chrome, Windows • yargram.test')).toBeTruthy();
     expect(screen.getByText('Это устройство')).toBeTruthy();
-    expect(screen.getByText('Другие сеансы')).toBeTruthy();
+    expect(screen.getAllByText('Активные сеансы').length).toBeGreaterThanOrEqual(2);
 
     // Кнопка редактирования доступна ТОЛЬКО для текущего устройства
     const renameButtons = screen.getAllByRole('button', { name: 'Переименовать устройство' });
