@@ -304,6 +304,7 @@ export function ThemesScreen({
       return;
     }
     const added = onImport(theme);
+    onActivate(added.id);
     setImportText('');
     setImportError('');
     setView('list');

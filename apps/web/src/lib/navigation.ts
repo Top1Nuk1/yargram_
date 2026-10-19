@@ -38,6 +38,11 @@ export function isInternalYargramUrl(rawUrl: string): boolean {
     return true;
   }
 
+  // Любая ссылка на тему YarGram (#theme=... или ?theme=...) обрабатывается внутри приложения
+  if (trimmed.includes('#theme=') || /[#?&]theme=/.test(trimmed)) {
+    return true;
+  }
+
   try {
     const currentOrigin =
       typeof window !== 'undefined' && window.location?.origin
@@ -53,7 +58,7 @@ export function isInternalYargramUrl(rawUrl: string): boolean {
     // Главная страница yargram.site (без пути или «/») — это сайт/лендинг,
     // переход должен вести на него (без /app), если только нет хэша темы #theme=...
     const isRoot = parsed.pathname === '/' || parsed.pathname === '';
-    const hasThemeHash = Boolean(parsed.hash && parsed.hash.startsWith('#theme='));
+    const hasThemeHash = Boolean(parsed.hash && (parsed.hash.startsWith('#theme=') || parsed.hash.includes('theme=')));
     if (isRoot && !hasThemeHash) {
       return false;
     }
@@ -87,11 +92,22 @@ export function parseInternalUrl(rawUrl: string): InternalNavigation | null {
   if (!isInternalYargramUrl(rawUrl)) return null;
 
   try {
+    const trimmed = rawUrl.trim();
+
+    // Ссылка на импорт темы оформления: ...#theme=<код> или ?theme=<код>
+    const themeMatch = /[#?&]theme=([A-Za-z0-9\-_+/=]+)/.exec(trimmed);
+    if (themeMatch) {
+      return {
+        type: 'theme',
+        hash: `#theme=${themeMatch[1]}`,
+      };
+    }
+
     const currentOrigin =
       typeof window !== 'undefined' && window.location?.origin
         ? window.location.origin
         : 'https://yargram.site';
-    const parsed = new URL(rawUrl.trim(), currentOrigin);
+    const parsed = new URL(trimmed, currentOrigin);
 
     // Ссылка-приглашение в группу вида /join/<код> или /app/join/<код>
     const joinMatch = /^(?:\/app)?\/join\/([^/?#]+)\/?$/.exec(parsed.pathname);
@@ -148,9 +164,19 @@ export function navigateInternal(rawUrl: string): boolean {
     }
 
     case 'theme': {
-      // Обновляем хэш и генерируем событие для ThemeLinkImport
-      window.location.hash = action.hash;
+      // Обновляем хэш и генерируем события для ThemeLinkImport
+      const hash = action.hash.startsWith('#') ? action.hash : `#${action.hash}`;
+      try {
+        window.location.hash = hash;
+      } catch {
+        // ignore
+      }
       window.dispatchEvent(new HashChangeEvent('hashchange'));
+      window.dispatchEvent(
+        new CustomEvent('yargram:import-theme', {
+          detail: { hash },
+        }),
+      );
       return true;
     }
 

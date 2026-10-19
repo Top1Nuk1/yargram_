@@ -66,6 +66,16 @@ describe('navigation', () => {
       });
     });
 
+    it('parses theme URLs on arbitrary hosts and IP addresses', () => {
+      expect(isInternalYargramUrl('http://26.53.76.128:3000/#theme=payload123')).toBe(true);
+      expect(isInternalYargramUrl('http://localhost:3000/app#theme=payload123')).toBe(true);
+      const parsed = parseInternalUrl('http://26.53.76.128:3000/#theme=payload123');
+      expect(parsed).toEqual({
+        type: 'theme',
+        hash: '#theme=payload123',
+      });
+    });
+
     it('parses app URLs', () => {
       const parsed = parseInternalUrl('https://yargram.site/app');
       expect(parsed).toEqual({
@@ -89,10 +99,18 @@ describe('navigation', () => {
       dispatchSpy.mockRestore();
     });
 
-    it('updates hash for theme URLs', () => {
-      const handled = navigateInternal('https://yargram.site/#theme=custom-theme');
+    it('updates hash and dispatches yargram:import-theme for theme URLs', () => {
+      const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+      const handled = navigateInternal('http://26.53.76.128:3000/#theme=custom-theme');
       expect(handled).toBe(true);
       expect(window.location.hash).toBe('#theme=custom-theme');
+      expect(dispatchSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'yargram:import-theme',
+          detail: { hash: '#theme=custom-theme' },
+        }),
+      );
+      dispatchSpy.mockRestore();
     });
   });
 });

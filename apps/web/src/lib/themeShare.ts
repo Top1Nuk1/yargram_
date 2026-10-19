@@ -119,7 +119,7 @@ export function extractSharedTheme(input: string): Theme | null {
 /** Убирает `#theme=…` из адреса, чтобы перезагрузка не спрашивала снова. */
 export function clearThemeHash(): void {
   if (typeof window === 'undefined') return;
-  if (!window.location.hash.startsWith(SHARE_HASH_PREFIX)) return;
+  if (!window.location.hash || (!window.location.hash.startsWith(SHARE_HASH_PREFIX) && !window.location.hash.includes('theme='))) return;
   window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from '../hooks/useLanguage';
 import type { Theme } from '../lib/theme';
-import { clearThemeHash, readThemeFromHash } from '../lib/themeShare';
+import { clearThemeHash, extractSharedTheme, readThemeFromHash } from '../lib/themeShare';
 
 /**
  * Предложение добавить тему, приехавшую по ссылке.
@@ -15,8 +15,40 @@ export function ThemeLinkImport({ onImport }: { onImport: (theme: Theme) => Them
   const [incoming, setIncoming] = useState<Theme | null>(null);
 
   useEffect(() => {
-    const theme = readThemeFromHash(window.location.hash);
-    if (theme) setIncoming(theme);
+    function inspect(rawHash?: string) {
+      const hash =
+        typeof rawHash === 'string'
+          ? rawHash
+          : typeof window !== 'undefined'
+            ? window.location.hash
+            : '';
+      if (!hash) return;
+      const theme = readThemeFromHash(hash) ?? extractSharedTheme(hash);
+      if (theme) {
+        setIncoming(theme);
+      }
+    }
+
+    inspect();
+
+    function onHashChange() {
+      inspect();
+    }
+
+    function onCustomImport(event: Event) {
+      const customEvent = event as CustomEvent<{ hash?: string }>;
+      inspect(customEvent.detail?.hash);
+    }
+
+    window.addEventListener('hashchange', onHashChange);
+    window.addEventListener('popstate', onHashChange);
+    window.addEventListener('yargram:import-theme', onCustomImport);
+
+    return () => {
+      window.removeEventListener('hashchange', onHashChange);
+      window.removeEventListener('popstate', onHashChange);
+      window.removeEventListener('yargram:import-theme', onCustomImport);
+    };
   }, []);
 
   if (!incoming) return null;

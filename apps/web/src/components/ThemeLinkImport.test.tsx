@@ -73,4 +73,29 @@ describe('ThemeLinkImport', () => {
     render(<ThemeLinkImport onImport={vi.fn()} />);
     expect(screen.queryByText('Добавить тему?')).toBeNull();
   });
+
+  it('открывает модалку при событии hashchange после клика по ссылке', async () => {
+    render(<ThemeLinkImport onImport={vi.fn()} />);
+    expect(screen.queryByText('Добавить тему?')).toBeNull();
+
+    openWith(`${SHARE_HASH_PREFIX}${encodeTheme(SHARED)}`);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    expect(await screen.findByText('Добавить тему?')).toBeInTheDocument();
+    expect(screen.getByText('Добавить тему «Закат» себе?')).toBeInTheDocument();
+  });
+
+  it('открывает модалку при событии yargram:import-theme', async () => {
+    render(<ThemeLinkImport onImport={vi.fn()} />);
+    expect(screen.queryByText('Добавить тему?')).toBeNull();
+
+    window.dispatchEvent(
+      new CustomEvent('yargram:import-theme', {
+        detail: { hash: `${SHARE_HASH_PREFIX}${encodeTheme(SHARED)}` },
+      }),
+    );
+
+    expect(await screen.findByText('Добавить тему?')).toBeInTheDocument();
+    expect(screen.getByText('Добавить тему «Закат» себе?')).toBeInTheDocument();
+  });
 });

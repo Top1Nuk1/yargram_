@@ -121,6 +121,7 @@ export function useTheme(profileAccent?: string, accountId?: string | null) {
       activeId: imported.id,
       custom: [...current.custom, imported],
     }));
+    applyTheme(imported);
     return imported;
   }, []);
 
