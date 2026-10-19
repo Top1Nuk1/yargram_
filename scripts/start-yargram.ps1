@@ -155,20 +155,29 @@ Set-Location -LiteralPath $ProjectRoot
 
 if (-not (Test-Path -LiteralPath $EnvironmentFile -PathType Leaf)) {
     $jwtSecret = New-JwtSecret
+    $encryptionKey = New-JwtSecret
     $environmentLines = @(
         "NODE_ENV=production",
         "HOST=0.0.0.0",
         "PORT=$ExpectedPort",
         "JWT_SECRET=$jwtSecret",
+        "DB_ENCRYPTION_KEY=$encryptionKey",
         "JWT_EXPIRES_IN=7d",
         "BCRYPT_ROUNDS=10",
         "CORS_ORIGINS=http://${ExpectedIp}:3000,https://${ExpectedIp}:${ExpectedHttpsPort},http://localhost:3000,https://localhost:${ExpectedHttpsPort},http://127.0.0.1:3000,https://127.0.0.1:${ExpectedHttpsPort},http://${ExpectedIp}:5173,http://localhost:5173,http://127.0.0.1:5173"
     )
     Set-Content -LiteralPath $EnvironmentFile -Value $environmentLines -Encoding UTF8
-    Write-Host "Создан .env с новым случайным JWT-секретом." -ForegroundColor Green
+    Write-Host "Создан .env с новым случайным JWT-секретом и ключом шифрования базы." -ForegroundColor Green
 }
 
 Import-DotEnvFile -Path $EnvironmentFile
+
+if ([string]::IsNullOrWhiteSpace($env:DB_ENCRYPTION_KEY) -or $env:DB_ENCRYPTION_KEY -eq "yargram-development-encryption-key-change-me") {
+    $encryptionKey = New-JwtSecret
+    Add-Content -LiteralPath $EnvironmentFile -Value "`nDB_ENCRYPTION_KEY=$encryptionKey" -Encoding UTF8
+    $env:DB_ENCRYPTION_KEY = $encryptionKey
+    Write-Host "Добавлен случайный DB_ENCRYPTION_KEY в .env." -ForegroundColor Green
+}
 
 # The optional local database has a separate lifetime; never silently use JSON on failure.
 if ($env:DATABASE_DRIVER -eq "postgres" -or -not [string]::IsNullOrWhiteSpace($env:DATABASE_URL)) {
