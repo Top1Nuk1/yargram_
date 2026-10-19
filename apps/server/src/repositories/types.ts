@@ -35,7 +35,7 @@ export type UpdateUserInput = {
   displayName?: string | undefined;
   /** Смена пароля при сбросе по коду из письма. Кладём уже хеш, не пароль. */
   passwordHash?: string | undefined;
-  username?: string | undefined;
+  username?: string | null | undefined;
   bio?: string | undefined;
   avatar?: AttachmentView | null | undefined;
   /** Прямая ссылка на аватар (без загрузки файла). `null` убирает. */
@@ -165,7 +165,7 @@ export type UpdateConversationInput = {
   adminIds?: string[] | undefined;
   adminPermissions?: Record<string, GroupPermissions> | undefined;
   adminDefaults?: GroupPermissions | undefined;
-  inviteCode?: string | undefined;
+  inviteCode?: string | null | undefined;
   permissions?: GroupPermissions | undefined;
   restrictions?: Record<string, GroupPermissions> | undefined;
   mutedMembers?: Record<string, string | null> | undefined;
@@ -207,6 +207,7 @@ export interface ConversationRepository {
    */
   countGroups(): Promise<number>;
   update(id: string, input: UpdateConversationInput): Promise<Conversation>;
+  delete(id: string): Promise<boolean>;
   findById(id: string): Promise<Conversation | null>;
   listForUser(userId: string): Promise<Conversation[]>;
   /** Yargram 0.1 compatibility: null clears every pin. */

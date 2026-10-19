@@ -49,6 +49,12 @@ export class RealtimeEvents {
     onConversationSettings(listener) {
         return this.subscribe("conversation:settings", listener);
     }
+    publishConversationDeleted(event) {
+        this.emitter.emit("conversation:deleted", event);
+    }
+    onConversationDeleted(listener) {
+        return this.subscribe("conversation:deleted", listener);
+    }
     publishDraft(event) {
         this.emitter.emit("draft:updated", event);
     }

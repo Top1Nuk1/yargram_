@@ -408,6 +408,44 @@ export class AuthService {
         });
         return this.createResult(updated, context);
     }
+    /**
+     * Запрос кода на удаление своего аккаунта.
+     * Сначала проверяем правильность пароля, и только затем высылаем код на почту.
+     */
+    async requestAccountDeletion(userId, password) {
+        const user = await this.users.findById(userId);
+        if (!user || user.isDeleted) {
+            throw new AppError(404, "USER_NOT_FOUND", "Пользователь не найден");
+        }
+        const matches = await bcrypt.compare(password, user.passwordHash);
+        if (!matches) {
+            throw new AppError(400, "INVALID_PASSWORD", "Неверный пароль");
+        }
+        const purpose = "delete";
+        const ttlSeconds = await this.issueCode(user, purpose, { rotate: true });
+        return {
+            status: "code_sent",
+            email: user.email,
+            purpose,
+            expiresInSeconds: ttlSeconds,
+        };
+    }
+    /**
+     * Проверка кода для удаления аккаунта.
+     */
+    async verifyDeletionCode(userId, code) {
+        const user = await this.users.findById(userId);
+        if (!user || user.isDeleted) {
+            throw new AppError(404, "USER_NOT_FOUND", "Пользователь не найден");
+        }
+        const found = await this.findUserForCode(user.email, "delete");
+        if (found.id !== userId) {
+            throw new AppError(400, "CODE_NOT_FOUND", "Запросите код заново");
+        }
+        await this.assertCodeMatches(found, code);
+        await this.clearCode(userId);
+        return found;
+    }
     async createResult(user, context) {
         const signOptions = {
             subject: user.id,

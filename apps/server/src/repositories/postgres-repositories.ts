@@ -142,7 +142,8 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         try {
           return await mutate<User>("users", id, "User", (user) => {
             if (input.displayName !== undefined) user.displayName = input.displayName;
-            if (input.username !== undefined) user.username = input.username;
+            if (input.username === null) delete user.username;
+            else if (input.username !== undefined) user.username = input.username;
             if (input.bio !== undefined) user.bio = input.bio;
             if (input.showLastSeen !== undefined) user.showLastSeen = input.showLastSeen;
             if (input.callPrivacy !== undefined) user.callPrivacy = input.callPrivacy;
@@ -357,7 +358,7 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         if (input.adminIds !== undefined) conversation.adminIds = input.adminIds;
         if (input.adminPermissions !== undefined) conversation.adminPermissions = input.adminPermissions;
         if (input.adminDefaults !== undefined) conversation.adminDefaults = input.adminDefaults;
-        if (input.inviteCode !== undefined) conversation.inviteCode = input.inviteCode;
+        if (input.inviteCode !== undefined) conversation.inviteCode = input.inviteCode ?? undefined;
         if (input.permissions !== undefined) conversation.permissions = input.permissions;
         if (input.restrictions !== undefined) conversation.restrictions = input.restrictions;
         if (input.mutedMembers !== undefined) conversation.mutedMembers = input.mutedMembers;
@@ -370,6 +371,13 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         if (input.fake !== undefined) conversation.fake = input.fake;
         conversation.updatedAt = now();
       }),
+      delete: async (id) => {
+        return database.transaction(async (client) => {
+          await client.query("DELETE FROM messages WHERE (payload->>'conversationId') = $1", [id]);
+          const result = await client.query("DELETE FROM conversations WHERE id = $1", [id]);
+          return (result.rowCount ?? 0) > 0;
+        });
+      },
       findById: (id) => find<Conversation>(pool, "conversations", id),
       // Вышедший участник остаётся в memberIds, но не видит группу в своём списке.
       listForUser: (id) => select<Conversation>(pool, "conversations",

@@ -40,6 +40,10 @@ export declare class GroupService {
         title?: string | undefined;
         description?: string | undefined;
         avatarUrl?: string | null | undefined;
+        isVerified?: boolean | undefined;
+        badge?: "yargram" | null | undefined;
+        scam?: boolean | undefined;
+        fake?: boolean | undefined;
     }): Promise<{
         conversation: ConversationView;
     }>;
@@ -61,6 +65,10 @@ export declare class GroupService {
     regenerateInvite(currentUserId: string, groupId: string): Promise<{
         conversation: ConversationView;
     }>;
+    revokeInvite(currentUserId: string, groupId: string): Promise<{
+        conversation: ConversationView;
+    }>;
+    deleteGroup(currentUserId: string, groupId: string): Promise<void>;
     setAdmin(currentUserId: string, groupId: string, targetUserId: string, admin: boolean, permissions?: GroupPermissions): Promise<{
         conversation: ConversationView;
     }>;

@@ -67,7 +67,7 @@ export class GroupService {
         // записанный текст всё равно никто не увидит. Поле не отклоняем, а тихо
         // игнорируем — карточка группы отправляет его вместе с названием и аватаром,
         // и отказ закрыл бы и переименование, и смену аватара.
-        if (input.description !== undefined && !group.scam) {
+        if (input.description !== undefined && !(input.scam ?? group.scam)) {
             patch.description = input.description.trim().slice(0, DESCRIPTION_MAX);
             if (patch.description !== group.description) {
                 history.push(this.event(currentUserId, timestamp, "description_changed"));
@@ -76,6 +76,33 @@ export class GroupService {
         if (input.avatarUrl !== undefined) {
             patch.avatarUrl = input.avatarUrl;
             history.push(this.event(currentUserId, timestamp, "avatar_changed"));
+        }
+        const hasMarksInput = input.isVerified !== undefined ||
+            input.badge !== undefined ||
+            input.scam !== undefined ||
+            input.fake !== undefined;
+        if (hasMarksInput) {
+            const user = await this.repositories.users.findById(currentUserId);
+            const isInstanceOwner = Boolean(user?.isOwner);
+            if (group.ownerId !== currentUserId && !isInstanceOwner) {
+                throw new AppError(403, "OWNER_ONLY", "Только создатель/владелец группы может менять знаки и отметки группы");
+            }
+            if (input.isVerified !== undefined) {
+                patch.isVerified = input.isVerified;
+                history.push(this.event(currentUserId, timestamp, "verified_changed", undefined, String(input.isVerified)));
+            }
+            if (input.badge !== undefined) {
+                patch.badge = input.badge;
+                history.push(this.event(currentUserId, timestamp, "badge_changed", undefined, input.badge ?? "none"));
+            }
+            if (input.scam !== undefined) {
+                patch.scam = input.scam;
+                history.push(this.event(currentUserId, timestamp, "scam_changed", undefined, String(input.scam)));
+            }
+            if (input.fake !== undefined) {
+                patch.fake = input.fake;
+                history.push(this.event(currentUserId, timestamp, "fake_changed", undefined, String(input.fake)));
+            }
         }
         patch.history = history;
         const updated = await this.repositories.conversations.update(group.id, patch);
@@ -198,12 +225,40 @@ export class GroupService {
     }
     async regenerateInvite(currentUserId, groupId) {
         const group = await this.getGroup(groupId, currentUserId);
+        const role = groupRoleFor(group, currentUserId);
+        if (role !== "owner" && role !== "admin") {
+            throw new AppError(403, "NO_RIGHTS", "Только создатель или администратор может управлять ссылкой-приглашением");
+        }
         this.assertCan(currentUserId, group, "add_members");
         const updated = await this.repositories.conversations.update(group.id, {
             inviteCode: newInviteCode(),
         });
         await this.broadcast(updated);
         return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+    }
+    async revokeInvite(currentUserId, groupId) {
+        const group = await this.getGroup(groupId, currentUserId);
+        const role = groupRoleFor(group, currentUserId);
+        if (role !== "owner" && role !== "admin") {
+            throw new AppError(403, "NO_RIGHTS", "Только создатель или администратор может управлять ссылкой-приглашением");
+        }
+        this.assertCan(currentUserId, group, "add_members");
+        const updated = await this.repositories.conversations.update(group.id, {
+            inviteCode: null,
+        });
+        await this.broadcast(updated);
+        return { conversation: await this.chat.viewConversation(currentUserId, updated.id) };
+    }
+    async deleteGroup(currentUserId, groupId) {
+        const group = await this.getGroup(groupId, currentUserId);
+        const user = await this.repositories.users.findById(currentUserId);
+        const isInstanceOwner = Boolean(user?.isOwner);
+        if (group.ownerId !== currentUserId && !isInstanceOwner) {
+            throw new AppError(403, "OWNER_ONLY", "Только создатель/владелец группы может её удалить");
+        }
+        const memberIds = [...group.memberIds];
+        await this.repositories.conversations.delete(group.id);
+        this.events.publishConversationDeleted({ conversationId: group.id, memberIds });
     }
     async setAdmin(currentUserId, groupId, targetUserId, admin, permissions) {
         const group = await this.getGroup(groupId, currentUserId);

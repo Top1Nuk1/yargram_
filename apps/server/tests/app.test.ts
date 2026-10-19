@@ -28,11 +28,13 @@ import { SupportBotService } from "../src/services/support-bot-service.js";
 import { StickerService } from "../src/services/sticker-service.js";
 import { uploadLimits } from "../src/services/upload-service.js";
 import {
+  EmailCodePurpose,
   FAKE_BIO_WARNING,
   FAKE_GROUP_WARNING,
   SCAM_BIO_WARNING,
   SCAM_GROUP_WARNING,
 } from "../src/domain/models.js";
+import type { MailService } from "../src/services/mail-service.js";
 import { JsonDatabase } from "../src/storage/json-database.js";
 
 const temporaryDirectories: string[] = [];
@@ -44,7 +46,11 @@ async function closeRealtimeServer(io: ReturnType<typeof attachSocketServer>): P
   await releaseSocketServer(io);
 }
 
-async function createHarness(seedState?: unknown, extraEnv: NodeJS.ProcessEnv = {}) {
+async function createHarness(
+  seedState?: unknown,
+  extraEnv: NodeJS.ProcessEnv = {},
+  extraOptions: { mail?: MailService } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "yargram-server-"));
   temporaryDirectories.push(directory);
   const config = loadConfig({
@@ -66,6 +72,7 @@ async function createHarness(seedState?: unknown, extraEnv: NodeJS.ProcessEnv = 
     jwtExpiresIn: config.jwtExpiresIn,
     bcryptRounds: config.bcryptRounds,
     sessions: repositories.sessions,
+    mail: extraOptions.mail,
   });
   const chatService = new ChatService(repositories);
   const events = new RealtimeEvents();
@@ -3417,6 +3424,169 @@ describe("Yargram API", () => {
       actorId: alice.user.id,
       detail: "История",
     });
+  });
+
+  it("allows group owner to manage invite link availability, marks and delete the group", async () => {
+    const harness = await createHarness();
+    const alice = await register(harness.app, "group-mgr-alice@example.com", "Alice");
+    const bob = await register(harness.app, "group-mgr-bob@example.com", "Bob");
+    const carol = await register(harness.app, "group-mgr-carol@example.com", "Carol");
+
+    // Alice creates group with Bob
+    const created = await request(harness.app)
+      .post("/api/groups")
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ title: "My Cool Group", description: "Hello world", memberIds: [bob.user.id] });
+    expect(created.status).toBe(201);
+    const groupId = created.body.conversation.id as string;
+    const initialInviteCode = created.body.conversation.inviteCode as string;
+    expect(initialInviteCode).toBeTruthy();
+
+    // 1. Marks: non-owner (Bob) cannot update group marks (returns 403 OWNER_ONLY)
+    const bobMarks = await request(harness.app)
+      .patch(`/api/groups/${groupId}`)
+      .set("Authorization", bearer(bob.accessToken))
+      .send({ isVerified: true });
+    expect(bobMarks.status).toBe(403);
+    expect(bobMarks.body.error.code).toBe("OWNER_ONLY");
+
+    // Owner (Alice) can update group marks: isVerified, badge, scam, fake
+    const aliceMarks = await request(harness.app)
+      .patch(`/api/groups/${groupId}`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ isVerified: true, badge: "yargram", scam: false, fake: false });
+    expect(aliceMarks.status).toBe(200);
+    expect(aliceMarks.body.conversation).toMatchObject({
+      isVerified: true,
+      badge: "yargram",
+    });
+
+    // 2. Revoke invite link:
+    // Bob (not admin with permissions) cannot revoke invite
+    const bobRevoke = await request(harness.app)
+      .delete(`/api/groups/${groupId}/invite`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(bobRevoke.status).toBe(403);
+
+    // Alice revokes the invite link
+    const revokeRes = await request(harness.app)
+      .delete(`/api/groups/${groupId}/invite`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(revokeRes.status).toBe(200);
+    expect(revokeRes.body.conversation.inviteCode).toBeFalsy();
+
+    // Carol tries to join using the old invite code -> fails with 404
+    const joinAttempt = await request(harness.app)
+      .post("/api/groups/join")
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ code: initialInviteCode });
+    expect(joinAttempt.status).toBe(404);
+
+    // Alice re-enables / regenerates the invite link
+    const regenRes = await request(harness.app)
+      .post(`/api/groups/${groupId}/invite`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(regenRes.status).toBe(200);
+    const newInviteCode = regenRes.body.conversation.inviteCode as string;
+    expect(newInviteCode).toBeTruthy();
+    expect(newInviteCode).not.toBe(initialInviteCode);
+
+    // Now Carol can join
+    const joinSuccess = await request(harness.app)
+      .post("/api/groups/join")
+      .set("Authorization", bearer(carol.accessToken))
+      .send({ code: newInviteCode });
+    expect(joinSuccess.status).toBe(200);
+    expect(joinSuccess.body.conversation.memberCount).toBe(3);
+
+    // 3. Delete group:
+    // Bob cannot delete the group (403 OWNER_ONLY)
+    const bobDelete = await request(harness.app)
+      .delete(`/api/groups/${groupId}`)
+      .set("Authorization", bearer(bob.accessToken));
+    expect(bobDelete.status).toBe(403);
+    expect(bobDelete.body.error.code).toBe("OWNER_ONLY");
+
+    // Alice sends a message first
+    const msgRes = await request(harness.app)
+      .post(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(alice.accessToken))
+      .send({ text: "Goodbye everyone" });
+    expect(msgRes.status).toBe(201);
+
+    // Alice deletes the group
+    const deleteRes = await request(harness.app)
+      .delete(`/api/groups/${groupId}`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(deleteRes.status).toBe(200);
+    expect(deleteRes.body.ok).toBe(true);
+
+    // Verify conversation is gone
+    const getRes = await request(harness.app)
+      .get(`/api/conversations/${groupId}/messages`)
+      .set("Authorization", bearer(alice.accessToken));
+    expect(getRes.status).toBe(404);
+
+    // Alice and Bob's conversations list no longer contains the group
+    const aliceList = await request(harness.app)
+      .get("/api/conversations")
+      .set("Authorization", bearer(alice.accessToken));
+    expect(aliceList.body.conversations.some((c: { id: string }) => c.id === groupId)).toBe(false);
+  });
+
+  it("deletes user account via password and email code, freeing the username for new registration", async () => {
+    const sentCodes: Array<{ to: string; code: string; purpose: EmailCodePurpose }> = [];
+    const mail = {
+      send: async () => {},
+      sendCode: async (input: { to: string; code: string; purpose: EmailCodePurpose }) => {
+        sentCodes.push(input);
+      },
+    } as unknown as MailService;
+
+    const harness = await createHarness(undefined, {}, { mail });
+    const user = await register(harness.app, "to-delete@example.com", "DeleteMe", "free_username");
+
+    // 1. Wrong password returns 400 INVALID_PASSWORD
+    const wrongPass = await request(harness.app)
+      .post("/api/account/delete/request-code")
+      .set("Authorization", bearer(user.accessToken))
+      .send({ password: "wrong-password" });
+    expect(wrongPass.status).toBe(400);
+    expect(wrongPass.body.error.code).toBe("INVALID_PASSWORD");
+
+    // 2. Correct password requests deletion code
+    const requestCode = await request(harness.app)
+      .post("/api/account/delete/request-code")
+      .set("Authorization", bearer(user.accessToken))
+      .send({ password: "correct horse battery staple" });
+    expect(requestCode.status).toBe(200);
+    expect(requestCode.body.status).toBe("code_sent");
+    expect(sentCodes.length).toBe(1);
+    expect(sentCodes[0]!.purpose).toBe("delete");
+
+    // 3. Invalid code returns 400 INVALID_CODE
+    const wrongCode = await request(harness.app)
+      .post("/api/account/delete/confirm")
+      .set("Authorization", bearer(user.accessToken))
+      .send({ code: "000000" });
+    expect(wrongCode.status).toBe(400);
+
+    // 4. Correct code confirms deletion
+    const confirmDelete = await request(harness.app)
+      .post("/api/account/delete/confirm")
+      .set("Authorization", bearer(user.accessToken))
+      .send({ code: sentCodes[0]!.code });
+    expect(confirmDelete.status).toBe(200);
+    expect(confirmDelete.body.ok).toBe(true);
+
+    // 5. Account is marked deleted and username is freed
+    const dbUser = await harness.repositories.users.findById(user.user.id);
+    expect(dbUser?.isDeleted).toBe(true);
+    expect(dbUser?.username).toBeUndefined();
+
+    // 6. Another user can immediately register with the exact same username!
+    const newUser = await register(harness.app, "someone-else@example.com", "Someone Else", "free_username");
+    expect(newUser.user.username).toBe("free_username");
   });
 
   it("считает непрочитанные по чатам и обнуляет их после прочтения", async () => {

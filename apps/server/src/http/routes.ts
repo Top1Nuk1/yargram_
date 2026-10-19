@@ -67,7 +67,7 @@ const loginSchema = z.object({
 
 /** Код из письма — шесть цифр, как в SMS-подтверждении. */
 const emailCodeSchema = z.string().trim().regex(/^\d{6}$/, "Code must be 6 digits");
-const emailCodePurposeSchema = z.enum(["register", "login", "reset"]);
+const emailCodePurposeSchema = z.enum(["register", "login", "reset", "delete"]);
 
 const confirmCodeSchema = z.object({
   email: z.string().trim().email().max(254),
@@ -88,6 +88,14 @@ const resetConfirmSchema = z.object({
   email: z.string().trim().email().max(254),
   code: emailCodeSchema,
   password: z.string().min(8).max(72),
+});
+
+const deleteAccountRequestSchema = z.object({
+  password: z.string().min(1).max(72),
+});
+
+const deleteAccountConfirmSchema = z.object({
+  code: emailCodeSchema,
 });
 
 /**
@@ -288,6 +296,10 @@ const updateGroupSchema = z.object({
   title: z.string().trim().min(1).max(128).optional(),
   description: z.string().trim().max(2_000).optional(),
   avatarUrl: z.string().trim().max(2_000).nullable().optional(),
+  isVerified: z.boolean().optional(),
+  badge: z.enum(["yargram"]).nullable().optional(),
+  scam: z.boolean().optional(),
+  fake: z.boolean().optional(),
 });
 const groupParamsSchema = z.object({ groupId: z.string().uuid() });
 const groupMemberParamsSchema = groupParamsSchema.extend({ userId: z.string().uuid() });
@@ -567,6 +579,28 @@ export function createApiRouter(dependencies: {
     requireAuth,
     asyncHandler(async (request, response) => {
       response.json({ user: await dependencies.authService.getCurrentUser(request.auth.userId) });
+    }),
+  );
+
+  router.post(
+    "/account/delete/request-code",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(deleteAccountRequestSchema, request);
+      response.json(
+        await dependencies.authService.requestAccountDeletion(request.auth.userId, input.password),
+      );
+    }),
+  );
+
+  router.post(
+    "/account/delete/confirm",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const input = parseBody(deleteAccountConfirmSchema, request);
+      await dependencies.authService.verifyDeletionCode(request.auth.userId, input.code);
+      await dependencies.adminService.purgeUser(request.auth.userId);
+      response.json({ ok: true });
     }),
   );
 
@@ -2111,6 +2145,25 @@ export function createApiRouter(dependencies: {
     asyncHandler(async (request, response) => {
       const { groupId } = parseParams(groupParamsSchema, request);
       response.json(await dependencies.groupService.regenerateInvite(request.auth.userId, groupId));
+    }),
+  );
+
+  router.delete(
+    "/groups/:groupId/invite",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      response.json(await dependencies.groupService.revokeInvite(request.auth.userId, groupId));
+    }),
+  );
+
+  router.delete(
+    "/groups/:groupId",
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      const { groupId } = parseParams(groupParamsSchema, request);
+      await dependencies.groupService.deleteGroup(request.auth.userId, groupId);
+      response.json({ ok: true });
     }),
   );
 

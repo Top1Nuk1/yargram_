@@ -132,6 +132,7 @@ class JsonUserRepository implements UserRepository {
       if (!user) throw new Error("User was not found");
       if (
         input.username !== undefined &&
+        input.username !== null &&
         state.users.some(
           (candidate) =>
             candidate.id !== id &&
@@ -141,7 +142,8 @@ class JsonUserRepository implements UserRepository {
         throw new RepositoryConflictError("username");
       }
       if (input.displayName !== undefined) user.displayName = input.displayName;
-      if (input.username !== undefined) user.username = input.username;
+      if (input.username === null) delete user.username;
+      else if (input.username !== undefined) user.username = input.username;
       if (input.bio !== undefined) user.bio = input.bio;
       if (input.showLastSeen !== undefined) user.showLastSeen = input.showLastSeen;
       if (input.callPrivacy !== undefined) user.callPrivacy = input.callPrivacy;
@@ -446,7 +448,7 @@ class JsonConversationRepository implements ConversationRepository {
       if (input.adminIds !== undefined) conversation.adminIds = input.adminIds;
       if (input.adminPermissions !== undefined) conversation.adminPermissions = input.adminPermissions;
       if (input.adminDefaults !== undefined) conversation.adminDefaults = input.adminDefaults;
-      if (input.inviteCode !== undefined) conversation.inviteCode = input.inviteCode;
+      if (input.inviteCode !== undefined) conversation.inviteCode = input.inviteCode ?? undefined;
       if (input.permissions !== undefined) conversation.permissions = input.permissions;
       if (input.restrictions !== undefined) conversation.restrictions = input.restrictions;
       if (input.mutedMembers !== undefined) conversation.mutedMembers = input.mutedMembers;
@@ -459,6 +461,16 @@ class JsonConversationRepository implements ConversationRepository {
       if (input.fake !== undefined) conversation.fake = input.fake;
       conversation.updatedAt = new Date().toISOString();
       return conversation;
+    });
+  }
+
+  async delete(id: string): Promise<boolean> {
+    return this.database.transaction((state) => {
+      const index = state.conversations.findIndex((candidate) => candidate.id === id);
+      if (index === -1) return false;
+      state.conversations.splice(index, 1);
+      state.messages = state.messages.filter((message) => message.conversationId !== id);
+      return true;
     });
   }
 

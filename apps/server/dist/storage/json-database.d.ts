@@ -115,7 +115,7 @@ export declare const databaseSchema: z.ZodObject<{
         birthday: z.ZodOptional<z.ZodString>;
         emailVerified: z.ZodOptional<z.ZodBoolean>;
         emailCodeHash: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-        emailCodePurpose: z.ZodOptional<z.ZodNullable<z.ZodEnum<["register", "login", "reset"]>>>;
+        emailCodePurpose: z.ZodOptional<z.ZodNullable<z.ZodEnum<["register", "login", "reset", "delete"]>>>;
         emailCodeExpiresAt: z.ZodOptional<z.ZodNullable<z.ZodString>>;
         emailCodeAttempts: z.ZodOptional<z.ZodNumber>;
         sessionAutoTerminateDays: z.ZodOptional<z.ZodNullable<z.ZodNumber>>;
@@ -187,7 +187,7 @@ export declare const databaseSchema: z.ZodObject<{
         isDeleted?: boolean | undefined;
         deletedAt?: string | undefined;
         emailCodeHash?: string | null | undefined;
-        emailCodePurpose?: "register" | "login" | "reset" | null | undefined;
+        emailCodePurpose?: "register" | "login" | "reset" | "delete" | null | undefined;
         emailCodeExpiresAt?: string | null | undefined;
         emailCodeAttempts?: number | undefined;
     }, {
@@ -257,7 +257,7 @@ export declare const databaseSchema: z.ZodObject<{
         isDeleted?: boolean | undefined;
         deletedAt?: string | undefined;
         emailCodeHash?: string | null | undefined;
-        emailCodePurpose?: "register" | "login" | "reset" | null | undefined;
+        emailCodePurpose?: "register" | "login" | "reset" | "delete" | null | undefined;
         emailCodeExpiresAt?: string | null | undefined;
         emailCodeAttempts?: number | undefined;
     }>, {
@@ -327,7 +327,7 @@ export declare const databaseSchema: z.ZodObject<{
         isDeleted?: boolean | undefined;
         deletedAt?: string | undefined;
         emailCodeHash?: string | null | undefined;
-        emailCodePurpose?: "register" | "login" | "reset" | null | undefined;
+        emailCodePurpose?: "register" | "login" | "reset" | "delete" | null | undefined;
         emailCodeExpiresAt?: string | null | undefined;
         emailCodeAttempts?: number | undefined;
     }, {
@@ -397,7 +397,7 @@ export declare const databaseSchema: z.ZodObject<{
         isDeleted?: boolean | undefined;
         deletedAt?: string | undefined;
         emailCodeHash?: string | null | undefined;
-        emailCodePurpose?: "register" | "login" | "reset" | null | undefined;
+        emailCodePurpose?: "register" | "login" | "reset" | "delete" | null | undefined;
         emailCodeExpiresAt?: string | null | undefined;
         emailCodeAttempts?: number | undefined;
     }>, "many">;
@@ -1450,7 +1450,7 @@ export declare const databaseSchema: z.ZodObject<{
         isDeleted?: boolean | undefined;
         deletedAt?: string | undefined;
         emailCodeHash?: string | null | undefined;
-        emailCodePurpose?: "register" | "login" | "reset" | null | undefined;
+        emailCodePurpose?: "register" | "login" | "reset" | "delete" | null | undefined;
         emailCodeExpiresAt?: string | null | undefined;
         emailCodeAttempts?: number | undefined;
     }[];
@@ -1720,7 +1720,7 @@ export declare const databaseSchema: z.ZodObject<{
         isDeleted?: boolean | undefined;
         deletedAt?: string | undefined;
         emailCodeHash?: string | null | undefined;
-        emailCodePurpose?: "register" | "login" | "reset" | null | undefined;
+        emailCodePurpose?: "register" | "login" | "reset" | "delete" | null | undefined;
         emailCodeExpiresAt?: string | null | undefined;
         emailCodeAttempts?: number | undefined;
     }[];

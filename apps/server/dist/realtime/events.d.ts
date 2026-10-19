@@ -35,6 +35,10 @@ export type ConversationSettingsEvent = {
     userId: string;
     conversation: ConversationView;
 };
+export type ConversationDeletedEvent = {
+    conversationId: string;
+    memberIds: string[];
+};
 export type DraftEvent = {
     userId: string;
     draft: ConversationDraft | null;
@@ -113,6 +117,8 @@ export declare class RealtimeEvents {
     onUpdatedProfile(listener: (event: UpdatedProfileEvent) => void): () => void;
     publishConversationSettings(event: ConversationSettingsEvent): void;
     onConversationSettings(listener: (event: ConversationSettingsEvent) => void): () => void;
+    publishConversationDeleted(event: ConversationDeletedEvent): void;
+    onConversationDeleted(listener: (event: ConversationDeletedEvent) => void): () => void;
     publishDraft(event: DraftEvent): void;
     onDraft(listener: (event: DraftEvent) => void): () => void;
     publishFolders(event: FoldersEvent): void;

@@ -1059,6 +1059,12 @@ export function MessengerScreen({
         item.id === conversation.id ? { ...item, ...conversation } : item,
       )));
     });
+    realtimeSocket.on('conversation:deleted', ({ conversationId }: { conversationId: string }) => {
+      if (!active || !conversationId) return;
+      setConversations((current) => current.filter((item) => item.id !== conversationId));
+      setSelectedId((current) => (current === conversationId ? null : current));
+      setGroupInfoOpen(false);
+    });
     realtimeSocket.on('messages:read', (receipt: ReadReceipt) => {
       if (!active || !receipt?.conversationId || !Array.isArray(receipt.messageIds)) return;
       mergeReadReceipt(receipt);
@@ -1545,6 +1551,14 @@ export function MessengerScreen({
     setConversations((current) => current.filter((item) => item.id !== conversationId));
     setSelectedId((current) => (current === conversationId ? null : current));
     setNotice(t('msgr.leftGroup'));
+  }
+
+  /** Создатель удалил группу: беседа исчезает для всех участников. */
+  function handleGroupDeleted(conversationId: string) {
+    setGroupInfoOpen(false);
+    setConversations((current) => current.filter((item) => item.id !== conversationId));
+    setSelectedId((current) => (current === conversationId ? null : current));
+    setNotice(t('groups.groupDeleted'));
   }
 
   // Маршрутизация действий из боковой панели в стиле Telegram Desktop.
@@ -4241,6 +4255,7 @@ export function MessengerScreen({
           onClose={() => setGroupInfoOpen(false)}
           onUpdated={handleGroupUpdated}
           onLeft={handleGroupLeft}
+          onDeleted={handleGroupDeleted}
           onShowProfile={setMemberProfile}
         />
       )}
@@ -4327,6 +4342,7 @@ export function MessengerScreen({
             });
             onUserUpdated(updated);
           }}
+          onAccountDeleted={() => onLogout(true)}
           onBack={() => {
             setPrivacyOpen(false);
             setSettingsOpen(true);

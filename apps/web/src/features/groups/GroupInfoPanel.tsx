@@ -6,12 +6,14 @@ import {
   Copy,
   Crown,
   History,
+  Link2Off,
   LogOut,
   Pencil,
   RefreshCw,
   Search,
   Shield,
   ShieldCheck,
+  Trash2,
   UserPlus,
   UsersRound,
   X,
@@ -65,6 +67,8 @@ interface GroupInfoPanelProps {
   onUpdated: (conversation: Conversation) => void;
   /** Я вышел из группы: беседу нужно убрать из списка. */
   onLeft: (conversationId: string) => void;
+  /** Группа удалена владельцем: беседу убираем из списка. */
+  onDeleted?: (conversationId: string) => void;
   /** Показать профиль человека — открывает карточку профиля поверх всего. */
   onShowProfile: (user: User) => void;
 }
@@ -126,6 +130,7 @@ export function GroupInfoPanel({
   onClose,
   onUpdated,
   onLeft,
+  onDeleted,
   onShowProfile,
 }: GroupInfoPanelProps) {
   const t = useTranslation();
@@ -364,6 +369,24 @@ export function GroupInfoPanel({
     }
   }
 
+  async function deleteCurrentGroup() {
+    const title = conversation.title || t('groups.tabMembers');
+    if (!window.confirm(t('groups.confirmDeleteGroup', { title }))) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await api.deleteGroup(token, groupId);
+      if (onDeleted) onDeleted(groupId);
+      else onLeft(groupId);
+    } catch (reason) {
+      setError(readableError(reason, t('groups.actionFailed')));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function addSelected() {
     if (adding.length === 0) return;
     await run(
@@ -497,25 +520,59 @@ export function GroupInfoPanel({
                       {t('groups.inviteLink')}
                     </span>
                     <div className="flex items-center gap-1">
-                      <IconButton label={copied ? t('groups.copied') : t('groups.copyLink')} onClick={() => void copyInvite()} disabled={!inviteLink}>
-                        {copied ? <Check className="h-5 w-5 text-success" /> : <Copy className="h-5 w-5" />}
-                      </IconButton>
-                      <IconButton
-                        label={t('groups.regenerateLink')}
-                        disabled={busy}
-                        onClick={() =>
-                          void run(
-                            () => api.regenerateGroupInvite(token, groupId),
-                            t('groups.linkRegenerated'),
-                          )
-                        }
-                      >
-                        <RefreshCw className="h-5 w-5" />
-                      </IconButton>
+                      {inviteLink ? (
+                        <>
+                          <IconButton label={copied ? t('groups.copied') : t('groups.copyLink')} onClick={() => void copyInvite()}>
+                            {copied ? <Check className="h-5 w-5 text-success" /> : <Copy className="h-5 w-5" />}
+                          </IconButton>
+                          <IconButton
+                            label={t('groups.regenerateLink')}
+                            disabled={busy}
+                            onClick={() =>
+                              void run(
+                                () => api.regenerateGroupInvite(token, groupId),
+                                t('groups.linkRegenerated'),
+                              )
+                            }
+                          >
+                            <RefreshCw className="h-5 w-5" />
+                          </IconButton>
+                          {(isOwner || canChangeInfo) && (
+                            <IconButton
+                              label={t('groups.revokeInviteLink')}
+                              disabled={busy}
+                              onClick={() =>
+                                void run(
+                                  () => api.revokeGroupInvite(token, groupId),
+                                  t('groups.linkRevoked'),
+                                )
+                              }
+                            >
+                              <Link2Off className="h-5 w-5 text-danger" />
+                            </IconButton>
+                          )}
+                        </>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="min-h-8 px-2.5 text-xs"
+                          disabled={busy}
+                          onClick={() =>
+                            void run(
+                              () => api.regenerateGroupInvite(token, groupId),
+                              t('groups.linkRegenerated'),
+                            )
+                          }
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          {t('groups.enableInviteLink')}
+                        </Button>
+                      )}
                     </div>
                   </div>
                   <p className="mt-1 break-all rounded-lg bg-surface px-2.5 py-1.5 text-xs text-muted">
-                    {inviteLink || t('groups.linkUnavailable')}
+                    {inviteLink || t('groups.linkDisabled')}
                   </p>
                 </div>
               )}
@@ -529,6 +586,74 @@ export function GroupInfoPanel({
                   {t('groups.addMembers')}
                 </button>
               )}
+            </section>
+          )}
+
+          {isOwner && (
+            <section className="mx-5 mb-4 overflow-hidden rounded-xl bg-canvas">
+              <div className="border-b border-line/60 px-4 py-3">
+                <span className="block text-sm font-semibold text-ink">
+                  {t('groups.marksTitle')}
+                </span>
+              </div>
+              <div className="divide-y divide-line/60">
+                <div className="flex items-center justify-between px-4 py-2.5">
+                  <span className="text-sm font-medium text-ink">{t('groups.markVerified')}</span>
+                  <Switch
+                    label={t('groups.markVerified')}
+                    checked={Boolean(conversation.isVerified)}
+                    disabled={busy}
+                    onChange={(next) =>
+                      void run(
+                        () => api.updateGroup(token, groupId, { isVerified: next }),
+                        next ? t('groups.markVerified') : t('common.done'),
+                      )
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between px-4 py-2.5">
+                  <span className="text-sm font-medium text-ink">{t('groups.markBadge')}</span>
+                  <Switch
+                    label={t('groups.markBadge')}
+                    checked={conversation.badge === 'yargram'}
+                    disabled={busy}
+                    onChange={(next) =>
+                      void run(
+                        () => api.updateGroup(token, groupId, { badge: next ? 'yargram' : null }),
+                        next ? t('groups.markBadge') : t('common.done'),
+                      )
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between px-4 py-2.5">
+                  <span className="text-sm font-medium text-danger">{t('groups.markScam')}</span>
+                  <Switch
+                    label={t('groups.markScam')}
+                    checked={Boolean(conversation.scam)}
+                    disabled={busy}
+                    onChange={(next) =>
+                      void run(
+                        () => api.updateGroup(token, groupId, { scam: next }),
+                        next ? t('groups.markScam') : t('common.done'),
+                      )
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between px-4 py-2.5">
+                  <span className="text-sm font-medium text-warning">{t('groups.markFake')}</span>
+                  <Switch
+                    label={t('groups.markFake')}
+                    checked={Boolean(conversation.fake)}
+                    disabled={busy}
+                    onChange={(next) =>
+                      void run(
+                        () => api.updateGroup(token, groupId, { fake: next }),
+                        next ? t('groups.markFake') : t('common.done'),
+                      )
+                    }
+                  />
+                </div>
+              </div>
             </section>
           )}
 
@@ -698,11 +823,22 @@ export function GroupInfoPanel({
           </div>
         </div>
 
-        <footer className="border-t border-line/70 px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <footer className="space-y-2 border-t border-line/70 px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           {isOwner ? (
-            <p className="text-center text-xs text-muted">
-              {t('groups.ownerCannotLeave')}
-            </p>
+            <>
+              <Button
+                type="button"
+                variant="danger"
+                className="w-full"
+                loading={busy}
+                onClick={() => void deleteCurrentGroup()}
+              >
+                <Trash2 className="h-4 w-4" /> {t('groups.deleteGroup')}
+              </Button>
+              <p className="text-center text-xs text-muted">
+                {t('groups.ownerCannotLeave')}
+              </p>
+            </>
           ) : (
             <Button
               type="button"

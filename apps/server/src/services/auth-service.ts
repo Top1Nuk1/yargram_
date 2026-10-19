@@ -62,11 +62,11 @@ export class AuthService {
       bcryptRounds: number;
       /** Отправка писем. Без него код выдаётся, но письмо не уходит — на этом
        *  держатся тесты и разработка с драйвером `console`. */
-      mail?: MailService;
+      mail?: MailService | undefined;
       /** Требовать код из письма при регистрации и входе. */
-      emailConfirmation?: boolean;
+      emailConfirmation?: boolean | undefined;
       /** Срок жизни кода; по умолчанию 10 минут. */
-      emailCodeTtlSeconds?: number;
+      emailCodeTtlSeconds?: number | undefined;
       /** Сеансы: по ним токен находит свой вход и его можно завершить. */
       sessions: SessionRepository;
     },
@@ -503,6 +503,46 @@ export class AuthService {
       emailVerified: true,
     });
     return this.createResult(updated, context);
+  }
+
+  /**
+   * Запрос кода на удаление своего аккаунта.
+   * Сначала проверяем правильность пароля, и только затем высылаем код на почту.
+   */
+  async requestAccountDeletion(userId: string, password: string): Promise<EmailCodeChallenge> {
+    const user = await this.users.findById(userId);
+    if (!user || user.isDeleted) {
+      throw new AppError(404, "USER_NOT_FOUND", "Пользователь не найден");
+    }
+    const matches = await bcrypt.compare(password, user.passwordHash);
+    if (!matches) {
+      throw new AppError(400, "INVALID_PASSWORD", "Неверный пароль");
+    }
+    const purpose: EmailCodePurpose = "delete";
+    const ttlSeconds = await this.issueCode(user, purpose, { rotate: true });
+    return {
+      status: "code_sent",
+      email: user.email,
+      purpose,
+      expiresInSeconds: ttlSeconds,
+    };
+  }
+
+  /**
+   * Проверка кода для удаления аккаунта.
+   */
+  async verifyDeletionCode(userId: string, code: string): Promise<User> {
+    const user = await this.users.findById(userId);
+    if (!user || user.isDeleted) {
+      throw new AppError(404, "USER_NOT_FOUND", "Пользователь не найден");
+    }
+    const found = await this.findUserForCode(user.email, "delete");
+    if (found.id !== userId) {
+      throw new AppError(400, "CODE_NOT_FOUND", "Запросите код заново");
+    }
+    await this.assertCodeMatches(found, code);
+    await this.clearCode(userId);
+    return found;
   }
 
   private async createResult(user: User, context?: AuthContext): Promise<AuthResult> {

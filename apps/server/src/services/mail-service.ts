@@ -73,6 +73,7 @@ const SUBJECTS: Record<EmailCodePurpose, string> = {
   register: "Подтверждение регистрации в Yargram",
   login: "Код для входа в Yargram",
   reset: "Сброс пароля в Yargram",
+  delete: "Удаление аккаунта в Yargram",
 };
 
 /** Что делать с кодом — одной фразой, чтобы письмо не выглядело подозрительно. */
@@ -80,6 +81,7 @@ const INTRO: Record<EmailCodePurpose, string> = {
   register: "Вы регистрируетесь в Yargram. Введите этот код, чтобы подтвердить почту:",
   login: "Вы входите в Yargram. Введите этот код, чтобы завершить вход:",
   reset: "Вы сбрасываете пароль в Yargram. Введите этот код, чтобы задать новый пароль:",
+  delete: "Вы запросили удаление своего аккаунта Yargram. Введите этот код, чтобы подтвердить удаление:",
 };
 
 /** Строка-заголовок в таблице деталей под кодом. */
@@ -87,12 +89,14 @@ const DETAIL_LABEL: Record<EmailCodePurpose, string> = {
   register: "Зачем",
   login: "Зачем",
   reset: "Зачем",
+  delete: "Зачем",
 };
 
 const DETAIL_TEXT: Record<EmailCodePurpose, string> = {
   register: "Регистрация в Yargram",
   login: "Вход в Yargram",
   reset: "Сброс пароля в Yargram",
+  delete: "Удаление аккаунта в Yargram",
 };
 
 /**

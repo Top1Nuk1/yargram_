@@ -614,20 +614,7 @@ export class AdminService {
    * занятыми (на них нельзя зарегистрировать новый аккаунт), а владелец может
    * вернуть аккаунт через `restoreUser`.
    */
-  async deleteUser(grantorId: string, targetUserId: string): Promise<void> {
-    const grantor = await this.users.findById(grantorId);
-    if (!grantor?.isOwner) {
-      throw new AppError(403, "NOT_OWNER", "Only the owner can delete accounts");
-    }
-    if (targetUserId === grantorId) {
-      throw new AppError(400, "SELF_ACTION", "You cannot delete your own account");
-    }
-    const target = await this.users.findById(targetUserId);
-    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
-    if (target.isOwner) {
-      throw new AppError(400, "OWNER_PROTECTED", "Another owner's account cannot be deleted");
-    }
-
+  async purgeUser(targetUserId: string): Promise<void> {
     for (const draft of await this.repositories.drafts.listForUser(targetUserId)) {
       await this.repositories.drafts.delete(targetUserId, draft.conversationId);
     }
@@ -676,6 +663,18 @@ export class AdminService {
     const deleted = await this.users.update(targetUserId, {
       isDeleted: true,
       deletedAt: new Date().toISOString(),
+      username: null,
+      usernames: [],
+      bio: "",
+      avatar: null,
+      avatarUrl: null,
+      banner: null,
+      bannerUrl: null,
+      bannerColor: null,
+      wallpaperUrl: "",
+      emailCodeHash: null,
+      emailCodePurpose: null,
+      emailCodeExpiresAt: null,
     });
     if (!deleted) throw new AppError(404, "USER_NOT_FOUND", "Target user no longer exists");
     // Рассылаем последним: клиенты подменяют профиль заглушкой прямо в открытом чате.
@@ -685,6 +684,22 @@ export class AdminService {
       removed: true,
       user: deletedPlaceholderFor(targetUserId),
     });
+  }
+
+  async deleteUser(grantorId: string, targetUserId: string): Promise<void> {
+    const grantor = await this.users.findById(grantorId);
+    if (!grantor?.isOwner) {
+      throw new AppError(403, "NOT_OWNER", "Only the owner can delete accounts");
+    }
+    if (targetUserId === grantorId) {
+      throw new AppError(400, "SELF_ACTION", "You cannot delete your own account");
+    }
+    const target = await this.users.findById(targetUserId);
+    if (!target) throw new AppError(404, "USER_NOT_FOUND", "Target user does not exist");
+    if (target.isOwner) {
+      throw new AppError(400, "OWNER_PROTECTED", "Another owner's account cannot be deleted");
+    }
+    await this.purgeUser(targetUserId);
   }
 
   async listAdmins(grantorId: string): Promise<User[]> {

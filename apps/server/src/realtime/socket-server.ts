@@ -831,6 +831,9 @@ export function attachSocketServer(
   dependencies.events.onConversationSettings(({ userId, conversation }) => {
     io.to(`user:${userId}`).emit("conversation:settings", conversation);
   });
+  dependencies.events.onConversationDeleted(({ conversationId, memberIds }) => {
+    emitToMembers(io, memberIds, "conversation:deleted", { conversationId });
+  });
   dependencies.events.onDraft(({ userId, draft }) => {
     io.to(`user:${userId}`).emit("draft:updated", { conversationId: draft?.conversationId ?? null, draft });
   });

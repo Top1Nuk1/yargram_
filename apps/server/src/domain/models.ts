@@ -34,8 +34,8 @@ export type AttachmentView = Omit<Attachment, "storedFileName"> & {
   url: string;
 };
 
-/** Зачем выдан код из письма: подтверждение регистрации, вход или сброс пароля. */
-export type EmailCodePurpose = "register" | "login" | "reset";
+/** Зачем выдан код из письма: подтверждение регистрации, вход, сброс пароля или удаление аккаунта. */
+export type EmailCodePurpose = "register" | "login" | "reset" | "delete";
 
 export type CallPrivacyRule = "everyone" | "contacts" | "nobody";
 
@@ -274,7 +274,11 @@ export type GroupEvent = {
     | "member_restricted"
     | "member_muted"
     | "member_unmuted"
-    | "member_tag_changed";
+    | "member_tag_changed"
+    | "verified_changed"
+    | "badge_changed"
+    | "scam_changed"
+    | "fake_changed";
   targetId?: string | undefined;
   detail?: string | undefined;
 };

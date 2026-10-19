@@ -20,13 +20,14 @@ import type { ThemeMode } from '../types';
  */
 export type ThemeFont = 'system' | 'rounded' | 'serif' | 'mono';
 
+const SYSTEM_FONT_STACK =
+  'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif';
+
 export const FONT_STACKS: Record<ThemeFont, string> = {
-  system:
-    'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif',
-  rounded:
-    'ui-rounded, "SF Pro Rounded", "Comfortaa", "Nunito", "Quicksand", "Arial Rounded MT Bold", "Segoe Print", "Trebuchet MS", "Varela Round", system-ui, sans-serif',
-  serif: 'Georgia, "Times New Roman", "PT Serif", ui-serif, serif',
-  mono: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+  system: SYSTEM_FONT_STACK,
+  rounded: SYSTEM_FONT_STACK,
+  serif: SYSTEM_FONT_STACK,
+  mono: SYSTEM_FONT_STACK,
 };
 
 export const THEME_FONTS: ThemeFont[] = ['system', 'rounded', 'serif', 'mono'];
@@ -275,7 +276,7 @@ export const BUILT_IN_THEMES: Theme[] = [
     name: 'Sepia',
     nameKey: 'themes.presetSepia',
     mode: 'light',
-    font: 'serif',
+    font: 'system',
     counterpartId: 'sepia-night',
     builtIn: true,
     colors: {
@@ -297,7 +298,7 @@ export const BUILT_IN_THEMES: Theme[] = [
     name: 'Sepia night',
     nameKey: 'themes.presetSepiaNight',
     mode: 'dark',
-    font: 'serif',
+    font: 'system',
     counterpartId: 'sepia',
     builtIn: true,
     colors: {

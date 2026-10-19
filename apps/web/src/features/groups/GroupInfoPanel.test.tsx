@@ -21,6 +21,8 @@ vi.mock('../../api/client', async (importOriginal) => {
       removeGroupMember: vi.fn(),
       addGroupMembers: vi.fn(),
       regenerateGroupInvite: vi.fn(),
+      revokeGroupInvite: vi.fn(),
+      deleteGroup: vi.fn(),
       leaveGroup: vi.fn(),
     },
   };
@@ -131,6 +133,9 @@ beforeEach(() => {
   vi.mocked(api.restrictGroupMember).mockResolvedValue(group());
   vi.mocked(api.leaveGroup).mockResolvedValue(group());
   vi.mocked(api.regenerateGroupInvite).mockResolvedValue(group({ inviteCode: 'fresh-code' }));
+  vi.mocked(api.revokeGroupInvite).mockResolvedValue(group({ inviteCode: '' }));
+  vi.mocked(api.deleteGroup).mockResolvedValue({ ok: true });
+  vi.mocked(api.updateGroup).mockResolvedValue(group());
   Object.assign(navigator, {
     clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
   });
@@ -423,5 +428,53 @@ describe('карточка группы', () => {
     expect(screen.getByPlaceholderText('Описание')).toBeDisabled();
     expect(screen.getByPlaceholderText('Название группы')).toBeEnabled();
     expect(screen.getByText(/На группе стоит отметка SCAM/)).toBeInTheDocument();
+  });
+
+  it('владелец может удалить группу с подтверждением', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { onLeft } = renderPanel({ role: 'owner' });
+
+    const deleteBtn = screen.getByRole('button', { name: /Удалить группу/i });
+    expect(deleteBtn).toBeInTheDocument();
+    fireEvent.click(deleteBtn);
+
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() => expect(api.deleteGroup).toHaveBeenCalledWith('token', 'group-1'));
+    await waitFor(() => expect(onLeft).toHaveBeenCalledWith('group-1'));
+  });
+
+  it('создатель может отключить ссылку-приглашение', async () => {
+    renderPanel({ role: 'owner', inviteCode: 'test-code-123' });
+
+    const revokeBtn = screen.getByRole('button', { name: /Отключить ссылку/i });
+    expect(revokeBtn).toBeInTheDocument();
+    fireEvent.click(revokeBtn);
+
+    await waitFor(() => expect(api.revokeGroupInvite).toHaveBeenCalledWith('token', 'group-1'));
+  });
+
+  it('создатель группы видит и может переключать знаки и отметки группы', async () => {
+    renderPanel({ role: 'owner' });
+
+    expect(screen.getByText('Знаки и отметки группы')).toBeInTheDocument();
+    const verifiedSwitch = screen.getByRole('switch', { name: /Галочка/i });
+    const scamSwitch = screen.getByRole('switch', { name: /Отметка SCAM/i });
+    const fakeSwitch = screen.getByRole('switch', { name: /Отметка FAKE/i });
+    const badgeSwitch = screen.getByRole('switch', { name: /Значок Yargram/i });
+
+    expect(verifiedSwitch).toBeInTheDocument();
+    expect(scamSwitch).toBeInTheDocument();
+    expect(fakeSwitch).toBeInTheDocument();
+    expect(badgeSwitch).toBeInTheDocument();
+
+    fireEvent.click(verifiedSwitch);
+    await waitFor(() =>
+      expect(api.updateGroup).toHaveBeenCalledWith('token', 'group-1', { isVerified: true }),
+    );
+
+    fireEvent.click(scamSwitch);
+    await waitFor(() =>
+      expect(api.updateGroup).toHaveBeenCalledWith('token', 'group-1', { scam: true }),
+    );
   });
 });

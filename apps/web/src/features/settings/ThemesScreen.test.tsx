@@ -231,14 +231,13 @@ describe('экран тем: создание своей темы', () => {
     expect(document.documentElement.style.getPropertyValue('--chat-bg')).toBe('16 24 32');
   });
 
-  it('переключает шрифт темы', () => {
+  it('сохраняет единый шрифт для всех тем', () => {
     renderScreen();
 
     fireEvent.click(screen.getByText('Создать тему'));
-    fireEvent.click(screen.getByText('Моноширинный'));
     fireEvent.click(screen.getByText('Сохранить'));
 
-    expect(document.documentElement.style.getPropertyValue('--app-font')).toContain('monospace');
+    expect(document.documentElement.style.getPropertyValue('--app-font')).toContain('Inter');
   });
 
   it('делает парную тёмную версию отдельной темой', () => {

@@ -79,7 +79,7 @@ const userSchema = z
     // чтении: код «выдавался» бы и тут же пропадал после перезапуска.
     emailVerified: z.boolean().optional(),
     emailCodeHash: z.string().nullable().optional(),
-    emailCodePurpose: z.enum(["register", "login", "reset"]).nullable().optional(),
+    emailCodePurpose: z.enum(["register", "login", "reset", "delete"]).nullable().optional(),
     emailCodeExpiresAt: z.string().nullable().optional(),
     emailCodeAttempts: z.number().int().min(0).optional(),
     // Автозавершение сеансов. Без этой строки схема вырезала бы поле при

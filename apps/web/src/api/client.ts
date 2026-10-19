@@ -342,6 +342,25 @@ export const api = {
     }).then((result) => ('user' in result ? result.user : result));
   },
 
+  requestAccountDeleteCode(token: string, password: string) {
+    return request<{ status: string; email: string; expiresInSeconds: number }>(
+      '/api/account/delete/request-code',
+      {
+        method: 'POST',
+        token,
+        body: { password },
+      },
+    );
+  },
+
+  confirmAccountDelete(token: string, code: string) {
+    return request<{ ok: boolean }>('/api/account/delete/confirm', {
+      method: 'POST',
+      token,
+      body: { code },
+    });
+  },
+
   users(token: string, query: string, signal?: AbortSignal) {
     const params = new URLSearchParams({ q: query, limit: '20' });
     return request<RawCollection<User>>(`/api/users?${params}`, { token, signal }).then(
@@ -479,7 +498,15 @@ export const api = {
   updateGroup(
     token: string,
     groupId: string,
-    input: { title?: string; description?: string; avatarUrl?: string | null },
+    input: {
+      title?: string;
+      description?: string;
+      avatarUrl?: string | null;
+      isVerified?: boolean;
+      badge?: 'yargram' | null;
+      scam?: boolean;
+      fake?: boolean;
+    },
   ) {
     return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}`, {
       method: 'PATCH',
@@ -595,6 +622,20 @@ export const api = {
       method: 'POST',
       token,
     }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  revokeGroupInvite(token: string, groupId: string) {
+    return request<RawConversationResult>(`/api/groups/${encodeURIComponent(groupId)}/invite`, {
+      method: 'DELETE',
+      token,
+    }).then((result) => result.conversation ?? (result as Conversation));
+  },
+
+  deleteGroup(token: string, groupId: string) {
+    return request<{ ok: boolean }>(`/api/groups/${encodeURIComponent(groupId)}`, {
+      method: 'DELETE',
+      token,
+    });
   },
 
   messages(token: string, conversationId: string, signal?: AbortSignal) {

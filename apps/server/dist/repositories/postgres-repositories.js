@@ -101,7 +101,9 @@ export function createPostgresRepositories(database) {
                     return await mutate("users", id, "User", (user) => {
                         if (input.displayName !== undefined)
                             user.displayName = input.displayName;
-                        if (input.username !== undefined)
+                        if (input.username === null)
+                            delete user.username;
+                        else if (input.username !== undefined)
                             user.username = input.username;
                         if (input.bio !== undefined)
                             user.bio = input.bio;
@@ -358,7 +360,7 @@ export function createPostgresRepositories(database) {
                 if (input.adminDefaults !== undefined)
                     conversation.adminDefaults = input.adminDefaults;
                 if (input.inviteCode !== undefined)
-                    conversation.inviteCode = input.inviteCode;
+                    conversation.inviteCode = input.inviteCode ?? undefined;
                 if (input.permissions !== undefined)
                     conversation.permissions = input.permissions;
                 if (input.restrictions !== undefined)
@@ -381,6 +383,13 @@ export function createPostgresRepositories(database) {
                     conversation.fake = input.fake;
                 conversation.updatedAt = now();
             }),
+            delete: async (id) => {
+                return database.transaction(async (client) => {
+                    await client.query("DELETE FROM messages WHERE (payload->>'conversationId') = $1", [id]);
+                    const result = await client.query("DELETE FROM conversations WHERE id = $1", [id]);
+                    return (result.rowCount ?? 0) > 0;
+                });
+            },
             findById: (id) => find(pool, "conversations", id),
             // Вышедший участник остаётся в memberIds, но не видит группу в своём списке.
             listForUser: (id) => select(pool, "conversations", "member_ids ? $1 AND NOT COALESCE(payload->'leftIds' ? $1, false)", [id], "ORDER BY updated_at DESC, sequence"),

@@ -158,8 +158,8 @@ describe('themeToCssVariables', () => {
     expect(Object.keys(variables)).toHaveLength(THEME_COLOR_KEYS.length + 4);
   });
 
-  it('шрифт берётся из темы, а не из константы', () => {
-    expect(themeToCssVariables({ ...LIGHT, font: 'mono' })['--app-font']).toContain('monospace');
+  it('шрифт всегда единый системный для всех тем', () => {
+    expect(themeToCssVariables({ ...LIGHT, font: 'mono' })['--app-font']).toContain('Inter');
   });
 
   it('палитра градиента собирается из темы как список цветов', () => {

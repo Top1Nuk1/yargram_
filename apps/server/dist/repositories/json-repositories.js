@@ -69,13 +69,16 @@ class JsonUserRepository {
             if (!user)
                 throw new Error("User was not found");
             if (input.username !== undefined &&
+                input.username !== null &&
                 state.users.some((candidate) => candidate.id !== id &&
                     candidate.username?.toLowerCase() === input.username?.toLowerCase())) {
                 throw new RepositoryConflictError("username");
             }
             if (input.displayName !== undefined)
                 user.displayName = input.displayName;
-            if (input.username !== undefined)
+            if (input.username === null)
+                delete user.username;
+            else if (input.username !== undefined)
                 user.username = input.username;
             if (input.bio !== undefined)
                 user.bio = input.bio;
@@ -401,7 +404,7 @@ class JsonConversationRepository {
             if (input.adminDefaults !== undefined)
                 conversation.adminDefaults = input.adminDefaults;
             if (input.inviteCode !== undefined)
-                conversation.inviteCode = input.inviteCode;
+                conversation.inviteCode = input.inviteCode ?? undefined;
             if (input.permissions !== undefined)
                 conversation.permissions = input.permissions;
             if (input.restrictions !== undefined)
@@ -424,6 +427,16 @@ class JsonConversationRepository {
                 conversation.fake = input.fake;
             conversation.updatedAt = new Date().toISOString();
             return conversation;
+        });
+    }
+    async delete(id) {
+        return this.database.transaction((state) => {
+            const index = state.conversations.findIndex((candidate) => candidate.id === id);
+            if (index === -1)
+                return false;
+            state.conversations.splice(index, 1);
+            state.messages = state.messages.filter((message) => message.conversationId !== id);
+            return true;
         });
     }
     async findById(id) {

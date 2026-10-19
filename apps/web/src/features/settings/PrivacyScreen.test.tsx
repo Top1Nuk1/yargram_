@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { api } from '../../api/client';
 import type { CallPrivacyRule, Conversation, User } from '../../types';
 import { PrivacyScreen } from './PrivacyScreen';
 
@@ -54,12 +55,14 @@ function renderScreen(
   overrides: {
     user?: User;
     conversations?: Conversation[];
+    token?: string;
     onToggleLastSeen?: (value: boolean) => Promise<void>;
     onUpdateCallPrivacy?: (
       privacy: CallPrivacyRule,
       allowedUserIds: string[],
       deniedUserIds: string[],
     ) => Promise<void>;
+    onAccountDeleted?: () => void;
     withBack?: boolean;
   } = {},
 ) {
@@ -67,19 +70,22 @@ function renderScreen(
     overrides.onToggleLastSeen ?? vi.fn(async () => undefined);
   const onUpdateCallPrivacy =
     overrides.onUpdateCallPrivacy ?? vi.fn(async () => undefined);
+  const onAccountDeleted = overrides.onAccountDeleted ?? vi.fn();
   const onClose = vi.fn();
   const onBack = vi.fn();
   const view = render(
     <PrivacyScreen
       user={overrides.user ?? user}
       conversations={overrides.conversations ?? mockConversations}
+      token={overrides.token ?? 'test-token'}
       onToggleLastSeen={onToggleLastSeen}
       onUpdateCallPrivacy={onUpdateCallPrivacy}
+      onAccountDeleted={onAccountDeleted}
       onClose={onClose}
       {...(overrides.withBack ? { onBack } : {})}
     />,
   );
-  return { ...view, onToggleLastSeen, onUpdateCallPrivacy, onClose, onBack };
+  return { ...view, onToggleLastSeen, onUpdateCallPrivacy, onAccountDeleted, onClose, onBack };
 }
 
 afterEach(cleanup);
@@ -208,6 +214,41 @@ describe('экран «Конфиденциальность»', () => {
 
     expect(screen.getByText('Конфіденційність')).toBeTruthy();
     expect(screen.getByText('Час останнього входу')).toBeTruthy();
+  });
+
+  it('проводит 2-этапное удаление аккаунта: пароль -> код из письма -> вызов onAccountDeleted', async () => {
+    const requestSpy = vi.spyOn(api, 'requestAccountDeleteCode').mockResolvedValue({
+      status: 'code_sent',
+      email: 'v***@example.com',
+      expiresInSeconds: 600,
+    });
+    const confirmSpy = vi.spyOn(api, 'confirmAccountDelete').mockResolvedValue({ ok: true });
+
+    const { onAccountDeleted } = renderScreen();
+
+    fireEvent.click(screen.getByText('Удалить мой аккаунт'));
+    expect(screen.getByText('Шаг 1 из 2: подтверждение пароля')).toBeTruthy();
+
+    const passInput = screen.getByPlaceholderText('Текущий пароль');
+    fireEvent.change(passInput, { target: { value: 'my-secret-pass' } });
+    fireEvent.click(screen.getByText('Отправить код на почту'));
+
+    await waitFor(() => {
+      expect(requestSpy).toHaveBeenCalledWith('test-token', 'my-secret-pass');
+    });
+
+    expect(screen.getByText('Шаг 2 из 2: код из письма')).toBeTruthy();
+    const codeInput = screen.getByPlaceholderText('6-значный код');
+    fireEvent.change(codeInput, { target: { value: '123456' } });
+    fireEvent.click(screen.getByText('Удалить аккаунт навсегда'));
+
+    await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalledWith('test-token', '123456');
+      expect(onAccountDeleted).toHaveBeenCalledTimes(1);
+    });
+
+    requestSpy.mockRestore();
+    confirmSpy.mockRestore();
   });
 });
 

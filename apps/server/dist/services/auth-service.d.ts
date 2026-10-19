@@ -1,5 +1,5 @@
 import { type UpdateUserInput, type UserRepository } from "../repositories/types.js";
-import { type CurrentUser, type EmailCodePurpose } from "../domain/models.js";
+import { type CurrentUser, type EmailCodePurpose, type User } from "../domain/models.js";
 import type { SessionContext } from "../lib/session-context.js";
 import type { SessionRepository } from "../repositories/types.js";
 import type { MailService } from "./mail-service.js";
@@ -34,11 +34,11 @@ export declare class AuthService {
         bcryptRounds: number;
         /** Отправка писем. Без него код выдаётся, но письмо не уходит — на этом
          *  держатся тесты и разработка с драйвером `console`. */
-        mail?: MailService;
+        mail?: MailService | undefined;
         /** Требовать код из письма при регистрации и входе. */
-        emailConfirmation?: boolean;
+        emailConfirmation?: boolean | undefined;
         /** Срок жизни кода; по умолчанию 10 минут. */
-        emailCodeTtlSeconds?: number;
+        emailCodeTtlSeconds?: number | undefined;
         /** Сеансы: по ним токен находит свой вход и его можно завершить. */
         sessions: SessionRepository;
     });
@@ -79,6 +79,15 @@ export declare class AuthService {
     requestPasswordReset(emailInput: string): Promise<EmailCodeChallenge>;
     /** Сброс пароля по коду из письма: код списывается, сразу выдаётся токен. */
     resetPassword(emailInput: string, code: string, newPassword: string, context?: AuthContext): Promise<AuthResult>;
+    /**
+     * Запрос кода на удаление своего аккаунта.
+     * Сначала проверяем правильность пароля, и только затем высылаем код на почту.
+     */
+    requestAccountDeletion(userId: string, password: string): Promise<EmailCodeChallenge>;
+    /**
+     * Проверка кода для удаления аккаунта.
+     */
+    verifyDeletionCode(userId: string, code: string): Promise<User>;
     private createResult;
     /**
      * Привязывает выданный токен к сеансу — существующему или новому.

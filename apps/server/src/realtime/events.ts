@@ -32,6 +32,10 @@ export type ConversationSettingsEvent = {
   userId: string;
   conversation: ConversationView;
 };
+export type ConversationDeletedEvent = {
+  conversationId: string;
+  memberIds: string[];
+};
 export type DraftEvent = { userId: string; draft: ConversationDraft | null };
 export type FoldersEvent = { userId: string; folders: ConversationFolder[] };
 export type ScheduledMessageEvent = { userId: string; scheduled: ScheduledMessage };
@@ -151,6 +155,14 @@ export class RealtimeEvents {
 
   onConversationSettings(listener: (event: ConversationSettingsEvent) => void): () => void {
     return this.subscribe("conversation:settings", listener);
+  }
+
+  publishConversationDeleted(event: ConversationDeletedEvent): void {
+    this.emitter.emit("conversation:deleted", event);
+  }
+
+  onConversationDeleted(listener: (event: ConversationDeletedEvent) => void): () => void {
+    return this.subscribe("conversation:deleted", listener);
   }
 
   publishDraft(event: DraftEvent): void {

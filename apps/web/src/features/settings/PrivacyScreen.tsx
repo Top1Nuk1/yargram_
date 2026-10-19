@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, ChevronRight, Lock, Moon, Phone, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Loader2, Lock, Moon, Phone, ShieldCheck, Trash2, X } from 'lucide-react';
 import { useTranslation } from '../../hooks/useLanguage';
+import { api } from '../../api/client';
 import { CallPrivacyScreen } from './CallPrivacyScreen';
 import type { CallPrivacyRule, Conversation, User } from '../../types';
 
@@ -41,6 +42,10 @@ interface PrivacyScreenProps {
     deniedUserIds: string[],
   ) => Promise<void>;
   /**
+   * Коллбек при успешном удалении своего аккаунта.
+   */
+  onAccountDeleted?: () => void;
+  /**
    * Стрелка «назад»: вернуться на экран, откуда пришли (список настроек).
    * Не задана — стрелка работает как закрытие.
    */
@@ -62,6 +67,7 @@ export function PrivacyScreen({
   token,
   onToggleLastSeen,
   onUpdateCallPrivacy,
+  onAccountDeleted,
   onBack,
   onClose,
 }: PrivacyScreenProps) {
@@ -71,11 +77,51 @@ export function PrivacyScreen({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteStep, setDeleteStep] = useState<'password' | 'code'>('password');
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteCode, setDeleteCode] = useState('');
+  const [deleteEmail, setDeleteEmail] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+
   useEffect(() => {
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && !callPrivacyOpen && (onBack ?? onClose)();
+    const close = (event: KeyboardEvent) => event.key === 'Escape' && !callPrivacyOpen && !deleteModalOpen && (onBack ?? onClose)();
     document.addEventListener('keydown', close);
     return () => document.removeEventListener('keydown', close);
-  }, [callPrivacyOpen, onBack, onClose]);
+  }, [callPrivacyOpen, deleteModalOpen, onBack, onClose]);
+
+  async function handleRequestDeleteCode(e: React.FormEvent) {
+    e.preventDefault();
+    if (!token || !deletePassword.trim()) return;
+    setDeleteLoading(true);
+    setDeleteError('');
+    try {
+      const res = await api.requestAccountDeleteCode(token, deletePassword);
+      setDeleteEmail(res.email);
+      setDeleteStep('code');
+    } catch (err) {
+      setDeleteError(err instanceof Error && err.message ? err.message : 'Неверный пароль');
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
+  async function handleConfirmDeleteAccount(e: React.FormEvent) {
+    e.preventDefault();
+    if (!token || !deleteCode.trim()) return;
+    setDeleteLoading(true);
+    setDeleteError('');
+    try {
+      await api.confirmAccountDelete(token, deleteCode.trim());
+      setDeleteModalOpen(false);
+      onAccountDeleted?.();
+    } catch (err) {
+      setDeleteError(err instanceof Error && err.message ? err.message : 'Неверный код');
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
 
   if (callPrivacyOpen) {
     return (
@@ -193,7 +239,155 @@ export function PrivacyScreen({
             </div>
           ))}
         </div>
+
+        <div className="mt-8 border-t border-line/70 px-4 pt-6 pb-4 sm:px-5">
+          <h3 className="text-sm font-bold text-danger">
+            {t('privacy.deleteAccountTitle')}
+          </h3>
+          <p className="mt-1 text-xs leading-5 text-muted">
+            {t('privacy.deleteAccountDesc')}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setDeleteStep('password');
+              setDeletePassword('');
+              setDeleteCode('');
+              setDeleteError('');
+              setDeleteModalOpen(true);
+            }}
+            className="mt-4 inline-flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/10 px-4 py-2.5 text-xs font-bold text-danger transition hover:bg-danger/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger"
+          >
+            <Trash2 className="h-4 w-4" aria-hidden="true" />
+            {t('privacy.deleteAccountButton')}
+          </button>
+        </div>
       </section>
+
+      {deleteModalOpen && (
+        <div
+          role="presentation"
+          onClick={() => !deleteLoading && setDeleteModalOpen(false)}
+          className="fixed inset-0 z-[80] grid items-center justify-center bg-[#171724]/45 p-4 backdrop-blur-sm"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('privacy.deleteAccountModalTitle')}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-[420px] animate-slide-up rounded-2xl border border-line bg-surface p-5 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-line/70 pb-3">
+              <h3 className="flex items-center gap-2 text-base font-extrabold text-ink">
+                <Trash2 className="h-5 w-5 text-danger" />
+                {t('privacy.deleteAccountModalTitle')}
+              </h3>
+              <button
+                type="button"
+                disabled={deleteLoading}
+                onClick={() => setDeleteModalOpen(false)}
+                className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-brand-soft/60 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {deleteStep === 'password' ? (
+              <form onSubmit={handleRequestDeleteCode} className="mt-4 space-y-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted">
+                  {t('privacy.deleteStepPassword')}
+                </p>
+                <p className="text-xs leading-5 text-ink">
+                  {t('privacy.deletePasswordDesc')}
+                </p>
+
+                <div>
+                  <input
+                    type="password"
+                    autoFocus
+                    required
+                    value={deletePassword}
+                    onChange={(e) => setDeletePassword(e.target.value)}
+                    placeholder={t('privacy.passwordPlaceholder')}
+                    disabled={deleteLoading}
+                    className="w-full rounded-xl border border-line bg-elevated px-3 py-2.5 text-sm text-ink placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                  />
+                </div>
+
+                {deleteError && (
+                  <p className="text-xs font-semibold text-danger">{deleteError}</p>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    disabled={deleteLoading}
+                    onClick={() => setDeleteModalOpen(false)}
+                    className="rounded-xl border border-line px-3 py-2 text-xs font-semibold text-ink transition hover:bg-brand-soft/40"
+                  >
+                    {t('privacy.cancel')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={deleteLoading || !deletePassword.trim()}
+                    className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-xs font-extrabold text-white transition hover:bg-brand-strong disabled:opacity-50"
+                  >
+                    {deleteLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {t('privacy.sendCodeButton')}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleConfirmDeleteAccount} className="mt-4 space-y-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-danger">
+                  {t('privacy.deleteStepCode')}
+                </p>
+                <p className="text-xs leading-5 text-ink">
+                  {t('privacy.deleteCodeDesc', { email: deleteEmail || user.email || '' })}
+                </p>
+
+                <div>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoFocus
+                    required
+                    maxLength={6}
+                    value={deleteCode}
+                    onChange={(e) => setDeleteCode(e.target.value)}
+                    placeholder={t('privacy.codePlaceholder')}
+                    disabled={deleteLoading}
+                    className="w-full rounded-xl border border-danger/40 bg-elevated px-3 py-2.5 text-center font-mono text-lg tracking-widest text-ink placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger"
+                  />
+                </div>
+
+                {deleteError && (
+                  <p className="text-xs font-semibold text-danger">{deleteError}</p>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    disabled={deleteLoading}
+                    onClick={() => setDeleteModalOpen(false)}
+                    className="rounded-xl border border-line px-3 py-2 text-xs font-semibold text-ink transition hover:bg-brand-soft/40"
+                  >
+                    {t('privacy.cancel')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={deleteLoading || deleteCode.trim().length !== 6}
+                    className="inline-flex items-center gap-2 rounded-xl bg-danger px-4 py-2 text-xs font-extrabold text-white transition hover:opacity-90 disabled:opacity-50"
+                  >
+                    {deleteLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {t('privacy.confirmDeleteButton')}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

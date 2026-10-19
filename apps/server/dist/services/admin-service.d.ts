@@ -214,6 +214,7 @@ export declare class AdminService {
      * занятыми (на них нельзя зарегистрировать новый аккаунт), а владелец может
      * вернуть аккаунт через `restoreUser`.
      */
+    purgeUser(targetUserId: string): Promise<void>;
     deleteUser(grantorId: string, targetUserId: string): Promise<void>;
     listAdmins(grantorId: string): Promise<User[]>;
     unassignAdmin(grantorId: string, targetUserId: string): Promise<User>;

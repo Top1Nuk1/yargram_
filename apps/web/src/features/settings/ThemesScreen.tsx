@@ -650,29 +650,6 @@ export function ThemesScreen({
                 </div>
               </div>
 
-              <div className="border-b border-line/70 px-4 py-3 sm:px-5">
-                <span className="block text-xs font-bold uppercase tracking-wide text-muted">
-                  {t('themes.font')}
-                </span>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {THEME_FONTS.map((font) => (
-                    <button
-                      key={font}
-                      type="button"
-                      aria-pressed={draft.font === font}
-                      onClick={() => setDraft({ ...draft, font })}
-                      className={`rounded-xl px-3 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
-                        draft.font === font
-                          ? 'bg-brand text-white'
-                          : 'border border-line bg-elevated text-ink hover:border-brand/35'
-                      }`}
-                    >
-                      {t(FONT_LABEL_KEYS[font as ThemeFont])}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               <h3 className="px-4 pt-4 pb-1 text-xs font-bold uppercase tracking-wide text-muted sm:px-5">
                 {t('themes.colors')}
               </h3>
@@ -932,7 +909,7 @@ function ThemeRow({
         <span className="block truncate text-xs text-muted">
           {theme.mode === 'dark' ? t('themes.modeDark') : t('themes.modeLight')}
           {' · '}
-          {t(FONT_LABEL_KEYS[theme.font])}
+          {t('themes.fontSystem')}
         </span>
       </span>
       {active && <Check className="h-4 w-4 shrink-0 text-brand" aria-hidden="true" />}
