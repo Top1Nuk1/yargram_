@@ -299,6 +299,7 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
           inviteCode: input.inviteCode ?? "", permissions: {}, restrictions: {}, mutedMembers: {}, leftIds: [],
           history: [{ id: randomUUID(), at: timestamp, actorId: input.ownerId, kind: "created", detail: input.title }],
           ...(input.isSupportInbox ? { isSupportInbox: true } : {}),
+          ...(input.isDefaultGroup ? { isDefaultGroup: true } : {}),
         };
         return database.transaction(async (client) => {
           await insert(client, "conversations", conversation);
@@ -310,6 +311,18 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
         return (
           (await select<Conversation>(pool, "conversations", "payload->>'isSupportInbox' = 'true'"))[0] ??
           null
+        );
+      },
+      /** Начальная общая группа YarGram. */
+      async findDefaultGroup() {
+        return (
+          (
+            await select<Conversation>(
+              pool,
+              "conversations",
+              "payload->>'type' = 'group' AND (payload->>'isDefaultGroup' = 'true' OR payload->>'title' = 'Основная группа')",
+            )
+          )[0] ?? null
         );
       },
       findByInviteCode: async (code) => {
@@ -597,6 +610,7 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
             name: input.name,
             position,
             conversationIds: [...new Set(input.conversationIds ?? [])],
+            icon: input.icon ?? null,
             createdAt: timestamp,
             updatedAt: timestamp,
           });
@@ -612,6 +626,9 @@ export function createPostgresRepositories(database: PostgresDatabase): Reposito
           if (input.position !== undefined) folder.position = input.position;
           if (input.conversationIds !== undefined) {
             folder.conversationIds = [...new Set(input.conversationIds)];
+          }
+          if (input.icon !== undefined) {
+            folder.icon = input.icon;
           }
           folder.updatedAt = now();
           return save(client, "folders", folder);

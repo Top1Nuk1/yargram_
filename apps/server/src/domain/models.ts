@@ -338,6 +338,8 @@ export type Conversation = {
    * отдельная метка нужна, чтобы найти её и не путать с обычной группой.
    */
   isSupportInbox?: boolean | undefined;
+  /** Начальная общая группа, доступная всем пользователям. */
+  isDefaultGroup?: boolean | undefined;
 };
 
 /** Права администратора по умолчанию: всё, кроме смены владельца. */
@@ -591,6 +593,7 @@ export type ConversationFolder = {
   name: string;
   position: number;
   conversationIds: string[];
+  icon?: string | null | undefined;
   createdAt: string;
   updatedAt: string;
 };

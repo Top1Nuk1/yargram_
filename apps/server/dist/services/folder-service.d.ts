@@ -6,6 +6,7 @@ export type FolderInput = {
     name?: string | undefined;
     position?: number | undefined;
     conversationIds?: string[] | undefined;
+    icon?: string | null | undefined;
 };
 /** Personal chat folders: private per account, reordered and renamed freely. */
 export declare class FolderService {
@@ -17,6 +18,7 @@ export declare class FolderService {
     create(currentUserId: string, input: {
         name: string;
         conversationIds?: string[] | undefined;
+        icon?: string | null | undefined;
     }): Promise<ConversationFolder>;
     update(currentUserId: string, folderId: string, input: FolderInput): Promise<ConversationFolder>;
     delete(currentUserId: string, folderId: string): Promise<void>;

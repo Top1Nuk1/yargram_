@@ -24,6 +24,7 @@ export class FolderService {
             userId: currentUserId,
             name: this.normalizeName(input.name),
             conversationIds: await this.ownedConversationIds(currentUserId, input.conversationIds ?? []),
+            icon: input.icon ?? null,
         });
         await this.publish(currentUserId);
         return folder;
@@ -32,6 +33,7 @@ export class FolderService {
         const folder = await this.repositories.folders.update(folderId, currentUserId, {
             ...(input.name === undefined ? {} : { name: this.normalizeName(input.name) }),
             ...(input.position === undefined ? {} : { position: input.position }),
+            ...(input.icon === undefined ? {} : { icon: input.icon }),
             ...(input.conversationIds === undefined
                 ? {}
                 : {

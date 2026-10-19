@@ -152,6 +152,8 @@ export type CreateGroupInput = {
   inviteCode?: string | undefined;
   /** Служебная группа поддержки: её не видно в поиске и приглашениях. */
   isSupportInbox?: boolean | undefined;
+  /** Общая начальная группа. */
+  isDefaultGroup?: boolean | undefined;
 };
 
 export type UpdateConversationInput = {
@@ -191,6 +193,7 @@ export interface ConversationRepository {
    * `isSupportInbox` и в поиске по названию её быть не должно.
    */
   findSupportInbox(): Promise<Conversation | null>;
+  findDefaultGroup(): Promise<Conversation | null>;
   findByInviteCode(code: string): Promise<Conversation | null>;
   /**
    * Группы для админ-панели: поиск по названию, коду из ссылки-приглашения или
@@ -306,6 +309,7 @@ export interface FolderRepository {
     userId: string;
     name: string;
     conversationIds?: string[] | undefined;
+    icon?: string | null | undefined;
   }): Promise<ConversationFolder>;
   update(
     id: string,
@@ -314,6 +318,7 @@ export interface FolderRepository {
       name?: string | undefined;
       position?: number | undefined;
       conversationIds?: string[] | undefined;
+      icon?: string | null | undefined;
     },
   ): Promise<ConversationFolder>;
   delete(id: string, userId: string): Promise<void>;

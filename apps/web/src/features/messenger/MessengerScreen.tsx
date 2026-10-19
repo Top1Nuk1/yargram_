@@ -39,12 +39,15 @@ import {
   PackagePlus,
   Sun,
   Trash2,
+  User as UserIcon,
+  Users,
   UserRound,
   UsersRound,
   Video,
   Wifi,
   WifiOff,
   X,
+  Settings2,
   FolderPlus,
   Folder,
   Clock,
@@ -127,6 +130,8 @@ import { PrivacyScreen } from '../settings/PrivacyScreen';
 import { SessionsScreen } from '../settings/SessionsScreen';
 import { ScaleScreen } from '../settings/ScaleScreen';
 import { ThemesScreen } from '../settings/ThemesScreen';
+import { FoldersScreen } from '../settings/FoldersScreen';
+import { getFolderIconComponent } from '../settings/folderIcons';
 import { NewSessionAlert } from '../settings/NewSessionAlert';
 import { ThemeLinkImport } from '../../components/ThemeLinkImport';
 import { UserProfileSheet } from '../profile/UserProfileSheet';
@@ -394,6 +399,7 @@ export function MessengerScreen({
   const [languageOpen, setLanguageOpen] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [foldersOpen, setFoldersOpen] = useState(false);
   /** Вход с незнакомого сайта, который владелец ещё не подтвердил. */
   const [sessionAlert, setSessionAlert] = useState<Session | null>(null);
 
@@ -2220,6 +2226,43 @@ export function MessengerScreen({
     }
   }
 
+  async function handleCreateFolderFull(input: { name: string; conversationIds: string[]; icon?: string | null }) {
+    try {
+      const folder = await api.createFolder(token, input);
+      setFolders((current) => upsertFolder(current, folder));
+      setNotice(t('msgr.folderCreated', { name: folder.name }));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onLogout(true);
+      else setNotice(readableError(error, t('msgr.folderCreateFailed')));
+      throw error;
+    }
+  }
+
+  async function handleUpdateFolderFull(folderId: string, input: { name?: string; conversationIds?: string[]; icon?: string | null }) {
+    try {
+      const folder = await api.updateFolder(token, folderId, input);
+      setFolders((current) => upsertFolder(current, folder));
+      setNotice(t('msgr.folderRenamed', { name: folder.name }));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onLogout(true);
+      else setNotice(readableError(error, t('msgr.folderUpdateFailed')));
+      throw error;
+    }
+  }
+
+  async function handleDeleteFolderById(folderId: string) {
+    try {
+      await api.deleteFolder(token, folderId);
+      setFolders((current) => current.filter((item) => item.id !== folderId));
+      if (listMode === `folder:${folderId}`) setListMode('inbox');
+      setNotice(t('msgr.folderDeleted', { name: '' }));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onLogout(true);
+      else setNotice(readableError(error, t('msgr.folderDeleteFailed')));
+      throw error;
+    }
+  }
+
   function openSchedulePicker() {
     if (!selectedId || selectedUnavailable || sending) return;
     if (editingMessage) {
@@ -2312,6 +2355,23 @@ export function MessengerScreen({
     void updateSelectedConversationSettings(
       { mutedUntil },
       milliseconds === 'forever' ? t('msgr.notificationsOffForever') : t('msgr.notificationsOffTemp'),
+    );
+  }
+
+  function muteConversationFor(conversationId: string, milliseconds: number | 'forever' | null) {
+    const mutedUntil = milliseconds === null
+      ? null
+      : milliseconds === 'forever'
+        ? '9999-12-31T23:59:59.999Z'
+        : new Date(Date.now() + milliseconds).toISOString();
+    void updateConversationSettings(
+      conversationId,
+      { mutedUntil },
+      milliseconds === null
+        ? t('msgr.notificationsOn')
+        : milliseconds === 'forever'
+          ? t('msgr.notificationsOffForever')
+          : t('msgr.notificationsOffTemp'),
     );
   }
 
@@ -2783,6 +2843,7 @@ export function MessengerScreen({
               </button>
               {folders.map((folder) => {
                 const active = listMode === `folder:${folder.id}`;
+                const FolderIconComp = getFolderIconComponent(folder.icon);
                 return (
                   <button
                     key={folder.id}
@@ -2791,7 +2852,7 @@ export function MessengerScreen({
                     onClick={() => setListMode(`folder:${folder.id}`)}
                     title={folder.name}
                   >
-                    <Folder className="mr-1 inline h-3.5 w-3.5" />
+                    <FolderIconComp className="mr-1 inline h-3.5 w-3.5" />
                     <span className="max-w-24 truncate align-middle">{folder.name}</span>
                   </button>
                 );
@@ -2806,7 +2867,7 @@ export function MessengerScreen({
               <button
                 type="button"
                 className="shrink-0 rounded-full border border-dashed border-line px-3 py-1.5 text-xs font-semibold text-muted transition hover:border-brand hover:text-brand"
-                onClick={() => setFolderCreateOpen(true)}
+                onClick={() => setFoldersOpen(true)}
                 aria-label={t('msgr.createFolder')}
               >
                 <FolderPlus className="inline h-3.5 w-3.5" />
@@ -3307,76 +3368,6 @@ export function MessengerScreen({
                   </IconButton>
                 </div>
               )}
-      {convContextMenu && (
-        <div
-          className="fixed inset-0 z-50 select-none"
-          onClick={() => setConvContextMenu(null)}
-          onContextMenu={(e) => { e.preventDefault(); setConvContextMenu(null); }}
-        >
-          <div
-            className="fixed min-w-[210px] rounded-2xl border border-line bg-surface/95 p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100"
-            style={{
-              top: Math.min(convContextMenu.y, window.innerHeight - 180),
-              left: Math.min(convContextMenu.x, window.innerWidth - 230),
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
-              onClick={() => {
-                togglePinConversation(convContextMenu.conversation.id);
-                setConvContextMenu(null);
-              }}
-            >
-              {pinnedIds.includes(convContextMenu.conversation.id) ? (
-                <>
-                  <PinOff className="h-4 w-4 text-brand" /> {t('sidebar.unpinChat')}
-                </>
-              ) : (
-                <>
-                  <Pin className="h-4 w-4 text-brand" /> {t('sidebar.pinChat')}
-                </>
-              )}
-            </button>
-            <button
-              type="button"
-              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
-              onClick={() => {
-                const conv = convContextMenu.conversation;
-                setConvContextMenu(null);
-                void updateConversationSettings(
-                  conv.id,
-                  { archived: !conv.archived },
-                  conv.archived ? t('msgr.dialogReturnedFromArchive') : t('msgr.dialogArchived'),
-                );
-              }}
-            >
-              {convContextMenu.conversation.archived ? (
-                <>
-                  <ArchiveRestore className="h-4 w-4 text-brand" /> {t('msgr.returnFromArchive')}
-                </>
-              ) : (
-                <>
-                  <Archive className="h-4 w-4 text-brand" /> {t('msgr.archive')}
-                </>
-              )}
-            </button>
-            {convContextMenu.conversation.unreadCount && convContextMenu.conversation.unreadCount > 0 ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
-                onClick={() => {
-                  void markRead(convContextMenu.conversation.id);
-                  setConvContextMenu(null);
-                }}
-              >
-                <CheckCheck className="h-4 w-4 text-brand" /> Пометить как прочитанное
-              </button>
-            ) : null}
-          </div>
-        </div>
-      )}
         {blockedUsersOpen && (
           <BlockedUsersModal
             token={token}
@@ -4210,7 +4201,22 @@ export function MessengerScreen({
             setSettingsOpen(false);
             setScaleOpen(true);
           }}
+          onOpenFolders={() => {
+            setSettingsOpen(false);
+            setFoldersOpen(true);
+          }}
           onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {foldersOpen && (
+        <FoldersScreen
+          user={currentUser}
+          folders={folders}
+          conversations={conversations}
+          onFolderCreate={handleCreateFolderFull}
+          onFolderUpdate={handleUpdateFolderFull}
+          onFolderDelete={handleDeleteFolderById}
+          onClose={() => setFoldersOpen(false)}
         />
       )}
       {languageOpen && (
@@ -4498,6 +4504,202 @@ export function MessengerScreen({
         token={token}
         onInvite={webRtc.inviteParticipant}
       />
+      {convContextMenu && (
+        <div
+          className="fixed inset-0 z-[9999] select-none"
+          onClick={() => setConvContextMenu(null)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setConvContextMenu(null);
+          }}
+        >
+          <div
+            className="fixed min-w-[220px] max-w-[270px] rounded-2xl border border-line bg-surface/98 p-1.5 shadow-2xl backdrop-blur-2xl animate-in fade-in zoom-in-95 duration-100"
+            style={{
+              top: Math.max(10, Math.min(convContextMenu.y, window.innerHeight - 380)),
+              left: Math.max(10, Math.min(convContextMenu.x, window.innerWidth - 270)),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 1. Profile / Group Info */}
+            {isGroup(convContextMenu.conversation) ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+                onClick={() => {
+                  const conv = convContextMenu.conversation;
+                  setConvContextMenu(null);
+                  selectConversation(conv);
+                  setGroupInfoOpen(true);
+                }}
+              >
+                <Users className="h-4 w-4 text-brand" />
+                <span>Информация о группе</span>
+              </button>
+            ) : convContextMenu.conversation.type !== 'saved' ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+                onClick={() => {
+                  const conv = convContextMenu.conversation;
+                  setConvContextMenu(null);
+                  selectConversation(conv);
+                  setPeerProfileOpen(true);
+                }}
+              >
+                <UserIcon className="h-4 w-4 text-brand" />
+                <span>Открыть профиль</span>
+              </button>
+            ) : null}
+
+            {/* 2. Pin / Unpin */}
+            <button
+              type="button"
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+              onClick={() => {
+                togglePinConversation(convContextMenu.conversation.id);
+                setConvContextMenu(null);
+              }}
+            >
+              {pinnedIds.includes(convContextMenu.conversation.id) ? (
+                <>
+                  <PinOff className="h-4 w-4 text-brand" /> {t('sidebar.unpinChat')}
+                </>
+              ) : (
+                <>
+                  <Pin className="h-4 w-4 text-brand" /> {t('sidebar.pinChat')}
+                </>
+              )}
+            </button>
+
+            {/* 3. Archive / Unarchive */}
+            <button
+              type="button"
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+              onClick={() => {
+                const conv = convContextMenu.conversation;
+                setConvContextMenu(null);
+                void updateConversationSettings(
+                  conv.id,
+                  { archived: !conv.archived },
+                  conv.archived ? t('msgr.dialogReturnedFromArchive') : t('msgr.dialogArchived'),
+                );
+              }}
+            >
+              {convContextMenu.conversation.archived ? (
+                <>
+                  <ArchiveRestore className="h-4 w-4 text-brand" /> {t('msgr.returnFromArchive')}
+                </>
+              ) : (
+                <>
+                  <Archive className="h-4 w-4 text-brand" /> {t('msgr.archive')}
+                </>
+              )}
+            </button>
+
+            {/* 4. Mark Read */}
+            {convContextMenu.conversation.unreadCount && convContextMenu.conversation.unreadCount > 0 ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+                onClick={() => {
+                  void markRead(convContextMenu.conversation.id);
+                  setConvContextMenu(null);
+                }}
+              >
+                <CheckCheck className="h-4 w-4 text-brand" /> Пометить как прочитанное
+              </button>
+            ) : null}
+
+            {/* 5. Mute / Unmute */}
+            {conversationIsMuted(convContextMenu.conversation) ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+                onClick={() => {
+                  muteConversationFor(convContextMenu.conversation.id, null);
+                  setConvContextMenu(null);
+                }}
+              >
+                <Bell className="h-4 w-4 text-brand" /> Включить звук
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+                onClick={() => {
+                  muteConversationFor(convContextMenu.conversation.id, 'forever');
+                  setConvContextMenu(null);
+                }}
+              >
+                <span className="flex items-center gap-2.5">
+                  <BellOff className="h-4 w-4 text-muted" /> Без звука
+                </span>
+                <span className="text-[10px] text-muted">навсегда</span>
+              </button>
+            )}
+
+            <div className="my-1 border-t border-line/60" />
+
+            {/* 6. Folders with toggles */}
+            <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-muted">
+              Папки
+            </div>
+            {folders.length === 0 ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-1.5 text-xs text-muted hover:bg-brand-soft/40 hover:text-brand"
+                onClick={() => {
+                  setConvContextMenu(null);
+                  setFoldersOpen(true);
+                }}
+              >
+                <Plus className="h-3.5 w-3.5 text-brand" />
+                <span>Создать папку</span>
+              </button>
+            ) : (
+              <div className="max-h-36 overflow-y-auto space-y-0.5">
+                {folders.map((folder) => {
+                  const inFolder = folder.conversationIds.includes(convContextMenu.conversation.id);
+                  const FolderIconComp = getFolderIconComponent(folder.icon);
+                  return (
+                    <button
+                      key={folder.id}
+                      type="button"
+                      className="flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-xs font-semibold text-ink hover:bg-brand-soft/60"
+                      onClick={() => void toggleConversationFolder(convContextMenu.conversation.id, folder.id)}
+                    >
+                      <span className="flex min-w-0 items-center gap-2 truncate pr-2">
+                        <FolderIconComp className="h-3.5 w-3.5 shrink-0 text-muted" />
+                        <span className="truncate">{folder.name}</span>
+                      </span>
+                      <div
+                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition ${
+                          inFolder ? 'border-brand bg-brand text-white' : 'border-line bg-canvas'
+                        }`}
+                      >
+                        {inFolder && <Check className="h-3 w-3 stroke-[3]" />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <button
+              type="button"
+              className="mt-1 flex w-full items-center gap-2 rounded-xl px-3 py-1 text-[11px] font-medium text-brand hover:bg-brand-soft/40"
+              onClick={() => {
+                setConvContextMenu(null);
+                setFoldersOpen(true);
+              }}
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+              <span>Управление папками</span>
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

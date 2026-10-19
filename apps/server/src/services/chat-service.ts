@@ -224,6 +224,12 @@ export class ChatService {
     currentUserId: string,
     archived: boolean | "all" = "all",
   ): Promise<ConversationView[]> {
+    const defaultGroup = await this.repositories.conversations.findDefaultGroup();
+    if (defaultGroup && !defaultGroup.memberIds.includes(currentUserId)) {
+      await this.repositories.conversations.update(defaultGroup.id, {
+        memberIds: [...defaultGroup.memberIds, currentUserId],
+      });
+    }
     const conversations = await this.repositories.conversations.listForUser(currentUserId);
     const shown = conversations.filter(
       (conversation) =>
@@ -964,7 +970,42 @@ export class ChatService {
     };
   }
 
+  async ensureDefaultCommunityGroup(userId: string): Promise<Conversation> {
+    try {
+      let group = await this.repositories.conversations.findDefaultGroup();
+      if (!group) {
+        const allUsers = await this.repositories.users.listAll();
+        const owner = allUsers.find((u) => u.isOwner && !u.isDeleted && !u.isFrozen) ?? allUsers[0];
+        const ownerId = owner?.id ?? userId;
+        group = await this.repositories.conversations.createGroup({
+          ownerId,
+          title: "Основная группа",
+          description: "Официальная общая группа Yargram для общения и новостей.",
+          memberIds: [ownerId],
+          isDefaultGroup: true,
+        });
+      }
+      if (!group.memberIds.includes(userId)) {
+        const updatedMembers = [...group.memberIds, userId];
+        group = await this.repositories.conversations.update(group.id, {
+          memberIds: updatedMembers,
+        });
+      }
+      return group;
+    } catch {
+      const fallback = await this.repositories.conversations.findDefaultGroup();
+      if (fallback) return fallback;
+      throw new Error("Failed to ensure default community group");
+    }
+  }
+
   async conversationIdsForUser(userId: string): Promise<string[]> {
+    const defaultGroup = await this.repositories.conversations.findDefaultGroup();
+    if (defaultGroup && !defaultGroup.memberIds.includes(userId)) {
+      await this.repositories.conversations.update(defaultGroup.id, {
+        memberIds: [...defaultGroup.memberIds, userId],
+      });
+    }
     const conversations = await this.repositories.conversations.listForUser(userId);
     return conversations.map((conversation) => conversation.id);
   }

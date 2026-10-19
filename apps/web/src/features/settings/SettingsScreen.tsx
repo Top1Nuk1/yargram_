@@ -56,7 +56,7 @@ const SECTIONS: Section[] = [
   // Сеансы: видно, с каких сайтов заходили в аккаунт.
   { id: 'sessions', labelKey: 'settings.sessions', Icon: Globe, ready: true },
   { id: 'chats', labelKey: 'settings.chatSettings', Icon: MessageSquare, ready: false },
-  { id: 'folders', labelKey: 'settings.folders', Icon: Folder, ready: false },
+  { id: 'folders', labelKey: 'settings.folders', Icon: Folder, ready: true },
   { id: 'advanced', labelKey: 'settings.advanced', Icon: Settings2, ready: false },
   { id: 'sound', labelKey: 'settings.soundCamera', Icon: Speaker, ready: false },
   { id: 'language', labelKey: 'settings.language', Icon: Languages, ready: true },
@@ -76,6 +76,8 @@ interface SettingsScreenProps {
   onOpenThemes?: () => void;
   /** Открыть «Масштаб интерфейса». */
   onOpenScale?: () => void;
+  /** Открыть «Папки с чатами». */
+  onOpenFolders?: () => void;
   onClose: () => void;
 }
 
@@ -87,6 +89,7 @@ export function SettingsScreen({
   onOpenSessions,
   onOpenThemes,
   onOpenScale,
+  onOpenFolders,
   onClose,
 }: SettingsScreenProps) {
   const t = useTranslation();
@@ -127,6 +130,7 @@ export function SettingsScreen({
     if (section.id === 'sessions') return onOpenSessions();
     if (section.id === 'themes') return onOpenThemes?.();
     if (section.id === 'scale') return onOpenScale?.();
+    if (section.id === 'folders') return onOpenFolders?.();
     // Не сделанный раздел ничего не открывает: список просто не даёт себя
     // нажать, чтобы не выглядеть сломанным.
   }

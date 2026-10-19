@@ -370,6 +370,7 @@ class JsonConversationRepository implements ConversationRepository {
           { id: randomUUID(), at: now, actorId: input.ownerId, kind: "created", detail: input.title },
         ],
         ...(input.isSupportInbox ? { isSupportInbox: true } : {}),
+        ...(input.isDefaultGroup ? { isDefaultGroup: true } : {}),
       };
       state.conversations.push(conversation);
       return conversation;
@@ -381,6 +382,18 @@ class JsonConversationRepository implements ConversationRepository {
     return this.database.read(
       (state) =>
         state.conversations.find((conversation) => conversation.isSupportInbox === true) ?? null,
+    );
+  }
+
+  /** Начальная общая группа YarGram. */
+  async findDefaultGroup(): Promise<Conversation | null> {
+    return this.database.read(
+      (state) =>
+        state.conversations.find(
+          (conversation) =>
+            conversation.type === "group" &&
+            (conversation.isDefaultGroup === true || conversation.title === "Основная группа"),
+        ) ?? null,
     );
   }
 
@@ -938,6 +951,7 @@ class JsonFolderRepository implements FolderRepository {
     userId: string;
     name: string;
     conversationIds?: string[] | undefined;
+    icon?: string | null | undefined;
   }): Promise<ConversationFolder> {
     return this.database.transaction((state) => {
       const timestamp = new Date().toISOString();
@@ -950,6 +964,7 @@ class JsonFolderRepository implements FolderRepository {
         name: input.name,
         position,
         conversationIds: [...new Set(input.conversationIds ?? [])],
+        icon: input.icon ?? null,
         createdAt: timestamp,
         updatedAt: timestamp,
       };
@@ -965,6 +980,7 @@ class JsonFolderRepository implements FolderRepository {
       name?: string | undefined;
       position?: number | undefined;
       conversationIds?: string[] | undefined;
+      icon?: string | null | undefined;
     },
   ): Promise<ConversationFolder> {
     return this.database.transaction((state) => {
@@ -976,6 +992,9 @@ class JsonFolderRepository implements FolderRepository {
       if (input.position !== undefined) folder.position = input.position;
       if (input.conversationIds !== undefined) {
         folder.conversationIds = [...new Set(input.conversationIds)];
+      }
+      if (input.icon !== undefined) {
+        folder.icon = input.icon;
       }
       folder.updatedAt = new Date().toISOString();
       return folder;

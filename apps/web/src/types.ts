@@ -602,6 +602,7 @@ export interface ChatFolder {
   name: string;
   position: number;
   conversationIds: string[];
+  icon?: string | null;
   createdAt: string;
   updatedAt: string;
 }

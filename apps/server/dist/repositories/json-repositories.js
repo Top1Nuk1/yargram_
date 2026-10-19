@@ -339,6 +339,7 @@ class JsonConversationRepository {
                     { id: randomUUID(), at: now, actorId: input.ownerId, kind: "created", detail: input.title },
                 ],
                 ...(input.isSupportInbox ? { isSupportInbox: true } : {}),
+                ...(input.isDefaultGroup ? { isDefaultGroup: true } : {}),
             };
             state.conversations.push(conversation);
             return conversation;
@@ -347,6 +348,11 @@ class JsonConversationRepository {
     /** Служебная группа поддержки: помечена `isSupportInbox`, ищется напрямую. */
     async findSupportInbox() {
         return this.database.read((state) => state.conversations.find((conversation) => conversation.isSupportInbox === true) ?? null);
+    }
+    /** Начальная общая группа YarGram. */
+    async findDefaultGroup() {
+        return this.database.read((state) => state.conversations.find((conversation) => conversation.type === "group" &&
+            (conversation.isDefaultGroup === true || conversation.title === "Основная группа")) ?? null);
     }
     async findByInviteCode(code) {
         if (!code)
@@ -859,6 +865,7 @@ class JsonFolderRepository {
                 name: input.name,
                 position,
                 conversationIds: [...new Set(input.conversationIds ?? [])],
+                icon: input.icon ?? null,
                 createdAt: timestamp,
                 updatedAt: timestamp,
             };
@@ -877,6 +884,9 @@ class JsonFolderRepository {
                 folder.position = input.position;
             if (input.conversationIds !== undefined) {
                 folder.conversationIds = [...new Set(input.conversationIds)];
+            }
+            if (input.icon !== undefined) {
+                folder.icon = input.icon;
             }
             folder.updatedAt = new Date().toISOString();
             return folder;

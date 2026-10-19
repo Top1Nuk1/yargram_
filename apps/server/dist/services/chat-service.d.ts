@@ -235,6 +235,7 @@ export declare class ChatService {
         message: MessageView;
         memberIds: string[];
     }>;
+    ensureDefaultCommunityGroup(userId: string): Promise<Conversation>;
     conversationIdsForUser(userId: string): Promise<string[]>;
     /** Публичный просмотр беседы: нужен сервису групп, чтобы разослать обновление. */
     viewConversation(currentUserId: string, conversationId: string): Promise<ConversationView>;

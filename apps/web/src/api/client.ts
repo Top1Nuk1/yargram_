@@ -762,11 +762,11 @@ export const api = {
       (result): ChatFolder[] => result.folders ?? [],
     );
   },
-  createFolder(token: string, input: { name: string; conversationIds?: string[] }) {
+  createFolder(token: string, input: { name: string; conversationIds?: string[]; icon?: string | null }) {
     return request<{ folder: ChatFolder }>('/api/folders', { method: 'POST', token, body: input })
       .then((result) => result.folder);
   },
-  updateFolder(token: string, folderId: string, input: { name?: string; position?: number; conversationIds?: string[] }) {
+  updateFolder(token: string, folderId: string, input: { name?: string; position?: number; conversationIds?: string[]; icon?: string | null }) {
     return request<{ folder: ChatFolder }>(`/api/folders/${encodeURIComponent(folderId)}`, { method: 'PATCH', token, body: input })
       .then((result) => result.folder);
   },

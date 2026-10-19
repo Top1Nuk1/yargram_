@@ -320,12 +320,14 @@ const draftBodySchema = z.object({
 const folderCreateSchema = z.object({
     name: z.string().trim().min(1).max(40),
     conversationIds: z.array(z.string().uuid()).max(100).optional(),
+    icon: z.string().trim().max(50).nullable().optional(),
 });
 const folderUpdateSchema = z
     .object({
     name: z.string().trim().min(1).max(40).optional(),
     position: z.number().int().min(0).max(10_000).optional(),
     conversationIds: z.array(z.string().uuid()).max(100).optional(),
+    icon: z.string().trim().max(50).nullable().optional(),
 })
     .refine((input) => Object.values(input).some((value) => value !== undefined), {
     message: "At least one folder field is required",
@@ -893,6 +895,7 @@ export function createApiRouter(dependencies) {
             ...(input.conversationIds === undefined
                 ? {}
                 : { conversationIds: input.conversationIds }),
+            ...(input.icon === undefined ? {} : { icon: input.icon }),
         });
         response.status(201).json({ folder });
     }));
@@ -902,6 +905,7 @@ export function createApiRouter(dependencies) {
         const folder = await dependencies.folderService.update(request.auth.userId, params.folderId, {
             ...(input.name === undefined ? {} : { name: input.name }),
             ...(input.position === undefined ? {} : { position: input.position }),
+            ...(input.icon === undefined ? {} : { icon: input.icon }),
             ...(input.conversationIds === undefined
                 ? {}
                 : { conversationIds: input.conversationIds }),

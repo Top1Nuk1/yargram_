@@ -102,6 +102,26 @@ async function main(): Promise<void> {
   registrationCleanupService.start();
   supportBotService.start();
 
+  // Начальная общая группа Yargram
+  try {
+    const defaultGroup = await repositories.conversations.findDefaultGroup();
+    if (!defaultGroup) {
+      const allUsers = await repositories.users.listAll();
+      const owner = allUsers.find((u) => u.isOwner && !u.isDeleted && !u.isFrozen) ?? allUsers[0];
+      if (owner) {
+        await repositories.conversations.createGroup({
+          ownerId: owner.id,
+          title: "Основная группа",
+          description: "Официальная общая группа Yargram для общения и новостей.",
+          memberIds: allUsers.map((u) => u.id),
+          isDefaultGroup: true,
+        });
+      }
+    }
+  } catch (error) {
+    console.warn("Could not seed default group:", error);
+  }
+
   let httpsServer: ReturnType<typeof createHttpsServer> | null = null;
   if (config.httpsPort && config.tlsPfxPath && config.tlsPfxPassword) {
     const pfx = await readFile(config.tlsPfxPath);
