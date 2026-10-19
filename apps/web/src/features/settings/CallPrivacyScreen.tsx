@@ -219,6 +219,7 @@ export function CallPrivacyScreen({
           title={modalMode === 'allowed' ? t('privacy.alwaysAllow') : t('privacy.neverAllow')}
           initialUserIds={modalMode === 'allowed' ? allowedIds : deniedIds}
           conversations={conversations}
+          currentUserId={user.id}
           token={token}
           onSave={(ids) => {
             if (modalMode === 'allowed') {

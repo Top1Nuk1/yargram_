@@ -3,7 +3,8 @@ import { Check, Search, X } from 'lucide-react';
 import { Avatar } from '../../components/ui';
 import { useTranslation } from '../../hooks/useLanguage';
 import { api } from '../../api/client';
-import type { Conversation } from '../../types';
+import { getConversationPeer } from '../../lib/conversation';
+import type { Conversation, User } from '../../types';
 
 export interface ExceptionUserItem {
   id: string;
@@ -17,6 +18,7 @@ interface CallPrivacyExceptionsModalProps {
   title: string;
   initialUserIds: string[];
   conversations?: Conversation[];
+  currentUserId?: string;
   token?: string;
   onSave: (userIds: string[]) => void;
   onClose: () => void;
@@ -26,6 +28,7 @@ export function CallPrivacyExceptionsModal({
   title,
   initialUserIds,
   conversations = [],
+  currentUserId,
   token,
   onSave,
   onClose,
@@ -35,16 +38,31 @@ export function CallPrivacyExceptionsModal({
   const [selectedIds, setSelectedIds] = useState<string[]>(initialUserIds);
   const [knownUsers, setKnownUsers] = useState<Record<string, ExceptionUserItem>>({});
   const [searchResults, setSearchResults] = useState<ExceptionUserItem[]>([]);
+  const [friends, setFriends] = useState<User[]>([]);
 
-  // Collect candidate items from existing conversations
+  // Collect candidate items from existing conversations and friends
   const dialogItems = useMemo<ExceptionUserItem[]>(() => {
     const list: ExceptionUserItem[] = [];
     const seen = new Set<string>();
 
     for (const conv of conversations) {
-      const peer = conv.otherUser ?? conv.users?.[0];
-      if (conv.type === 'direct' && peer) {
-        if (!seen.has(peer.id)) {
+      if (conv.type === 'group') {
+        // Show group with participant count like Telegram
+        const memberCount = conv.memberCount ?? conv.memberIds?.length ?? 0;
+        const countText = memberCount === 1 ? '1 участник' : `${memberCount} участников`;
+        list.push({
+          id: conv.id,
+          displayName: conv.title ?? conv.name ?? 'Группа',
+          avatarUrl: conv.avatarUrl,
+          subtitle: countText,
+        });
+      } else if (conv.type !== 'saved') {
+        const peer =
+          getConversationPeer(conv, currentUserId ?? '') ??
+          conv.otherUser ??
+          conv.users?.find((u) => u.id !== currentUserId) ??
+          conv.users?.[0];
+        if (peer && !seen.has(peer.id) && peer.id !== currentUserId) {
           seen.add(peer.id);
           let sub = peer.isBot ? 'бот' : '';
           if (!sub) {
@@ -58,20 +76,25 @@ export function CallPrivacyExceptionsModal({
             isBot: peer.isBot,
           });
         }
-      } else if (conv.type === 'group') {
-        // Show group with participant count like Telegram
-        const memberCount = conv.memberCount ?? conv.memberIds?.length ?? 0;
-        const countText = memberCount === 1 ? '1 участник' : `${memberCount} участников`;
+      }
+    }
+
+    // Also include friends / contacts who don't have an open conversation yet
+    for (const f of friends) {
+      if (!seen.has(f.id) && f.id !== currentUserId) {
+        seen.add(f.id);
         list.push({
-          id: conv.id,
-          displayName: conv.title ?? conv.name ?? 'Группа',
-          avatarUrl: conv.avatarUrl,
-          subtitle: countText,
+          id: f.id,
+          displayName: f.displayName,
+          avatarUrl: f.avatarUrl ?? f.avatar?.url,
+          subtitle: f.isBot ? 'бот' : (f.online || f.isOnline ? 'в сети' : 'был(а) недавно'),
+          isBot: f.isBot,
         });
       }
     }
+
     return list;
-  }, [conversations]);
+  }, [conversations, currentUserId, friends]);
 
   // Load friends if token available to populate contacts
   useEffect(() => {
@@ -80,16 +103,18 @@ export function CallPrivacyExceptionsModal({
     api.friends(token)
       .then((res) => {
         if (cancelled) return;
+        const friendUsers = (res.friends ?? []).map((f) => f.user).filter(Boolean);
+        setFriends(friendUsers);
         setKnownUsers((prev) => {
           const next = { ...prev };
-          for (const f of res.friends ?? []) {
-            const u = f.user;
-            if (u && !next[u.id]) {
+          for (const u of friendUsers) {
+            if (!next[u.id]) {
               next[u.id] = {
                 id: u.id,
                 displayName: u.displayName,
                 avatarUrl: u.avatarUrl ?? u.avatar?.url,
-                subtitle: u.online ? 'в сети' : 'был(а) недавно',
+                subtitle: u.online || u.isOnline ? 'в сети' : 'был(а) недавно',
+                isBot: u.isBot,
               };
             }
           }
@@ -126,13 +151,15 @@ export function CallPrivacyExceptionsModal({
     const timer = setTimeout(() => {
       api.users(token, trimmed)
         .then((res) => {
-          const items: ExceptionUserItem[] = (res.items ?? []).map((u) => ({
-            id: u.id,
-            displayName: u.displayName,
-            avatarUrl: u.avatarUrl ?? u.avatar?.url,
-            subtitle: u.isBot ? 'бот' : u.online ? 'в сети' : 'был(а) недавно',
-            isBot: u.isBot,
-          }));
+          const items: ExceptionUserItem[] = (res.items ?? [])
+            .filter((u) => u.id !== currentUserId)
+            .map((u) => ({
+              id: u.id,
+              displayName: u.displayName,
+              avatarUrl: u.avatarUrl ?? u.avatar?.url,
+              subtitle: u.isBot ? 'бот' : u.online ? 'в сети' : 'был(а) недавно',
+              isBot: u.isBot,
+            }));
           setSearchResults(items);
           setKnownUsers((prev) => {
             const next = { ...prev };
@@ -144,7 +171,7 @@ export function CallPrivacyExceptionsModal({
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [query, token]);
+  }, [query, token, currentUserId]);
 
   // Filter items based on search query
   const displayedItems = useMemo(() => {
@@ -229,7 +256,7 @@ export function CallPrivacyExceptionsModal({
                   key={id}
                   className="inline-flex items-center gap-1.5 rounded-full bg-brand-soft border border-brand/20 py-0.5 pl-1 pr-2 text-xs font-medium text-ink transition"
                 >
-                  <Avatar name={name} src={item?.avatarUrl ?? undefined} size="sm" className="h-5 w-5 text-[10px]" />
+                  <Avatar name={name} src={item?.avatarUrl ?? undefined} className="h-5 w-5 text-[10px] shrink-0 aspect-square rounded-full" />
                   <span className="max-w-[120px] truncate">{name}</span>
                   <button
                     type="button"
@@ -275,8 +302,7 @@ export function CallPrivacyExceptionsModal({
                       <Avatar
                         name={item.displayName}
                         src={item.avatarUrl ?? undefined}
-                        size="md"
-                        className="h-10 w-10 shrink-0"
+                        className="h-10 w-10 shrink-0 aspect-square rounded-full"
                       />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-semibold text-ink">

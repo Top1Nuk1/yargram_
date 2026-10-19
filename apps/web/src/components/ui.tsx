@@ -74,17 +74,18 @@ export function avatarColor(seed: string): string {
 
 export function Avatar({ name, src, size = 'md', online, className = '', seed, placeholder = false }: AvatarProps) {
   const t = useTranslation();
+  const hasCustomSize = /\b[wh]-\d+\b/.test(className);
   return (
-    <span className={`relative inline-flex shrink-0 ${className}`}>
+    <span className={`relative inline-flex shrink-0 aspect-square rounded-full ${hasCustomSize ? className : `${avatarSizes[size]} ${className}`}`}>
       <span
-        className={`grid place-items-center overflow-hidden rounded-full font-semibold text-white ${avatarSizes[size]}`}
+        className="grid h-full w-full place-items-center overflow-hidden rounded-full font-semibold text-white aspect-square"
         style={{ backgroundColor: avatarColor(seed || name) }}
         aria-hidden="true"
       >
         {placeholder ? (
           <UserRound className="h-1/2 w-1/2 text-white/85" />
         ) : src ? (
-          <img src={src} alt="" className="h-full w-full object-cover" />
+          <img src={src} alt="" className="h-full w-full object-cover rounded-full aspect-square" />
         ) : (
           initials(name)
         )}

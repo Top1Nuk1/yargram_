@@ -29,6 +29,25 @@ const mockConversations: Conversation[] = [
     otherUser: peerUser,
     memberIds: ['user-1', 'user-2'],
   },
+  {
+    id: 'conv-2',
+    type: 'direct',
+    unreadCount: 0,
+    updatedAt: new Date().toISOString(),
+    memberIds: ['user-1', 'user-3'],
+    members: [
+      { id: 'user-1', displayName: 'Васька' } as any,
+      { id: 'user-3', displayName: 'Алексей' } as any,
+    ],
+  },
+  {
+    id: 'conv-group',
+    type: 'group',
+    title: 'Основная группа',
+    memberCount: 5,
+    updatedAt: new Date().toISOString(),
+    memberIds: ['user-1', 'user-2', 'user-3'],
+  },
 ];
 
 function renderScreen(
@@ -147,6 +166,8 @@ describe('экран «Конфиденциальность»', () => {
     // Открылось модальное окно
     expect(screen.getByRole('dialog', { name: 'Всегда разрешать' })).toBeTruthy();
     expect(screen.getByText('Брат Дима')).toBeTruthy();
+    expect(screen.getByText('Алексей')).toBeTruthy();
+    expect(screen.getByText('Основная группа')).toBeTruthy();
 
     // Выбираем «Брат Дима»
     fireEvent.click(screen.getByText('Брат Дима'));
