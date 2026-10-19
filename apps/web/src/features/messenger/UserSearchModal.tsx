@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Search, UserPlus, X } from 'lucide-react';
+import { Search, UserPlus, UsersRound, X } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
 import { Avatar, Button, IconButton, InlineError, Spinner } from '../../components/ui';
 import { UserName } from '../../components/UserName';
@@ -12,6 +12,7 @@ interface UserSearchModalProps {
   currentUserId: string;
   onClose: () => void;
   onConversation: (conversation: Conversation) => void;
+  onCreateGroup?: () => void;
 }
 
 type SearchState = 'idle' | 'loading' | 'success' | 'error';
@@ -28,7 +29,7 @@ function displayHandle(user: User, query: string): string {
   return matched ?? handles[0] ?? '';
 }
 
-export function UserSearchModal({ token, currentUserId, onClose, onConversation }: UserSearchModalProps) {
+export function UserSearchModal({ token, currentUserId, onClose, onConversation, onCreateGroup }: UserSearchModalProps) {
   const t = useTranslation();
   const [query, setQuery] = useState('');
   const [users, setUsers] = useState<User[]>([]);
@@ -137,6 +138,27 @@ export function UserSearchModal({ token, currentUserId, onClose, onConversation 
             />
           </div>
         </div>
+
+        {onCreateGroup && !query.trim() && (
+          <div className="px-5 pt-3 sm:px-6">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onCreateGroup();
+              }}
+              className="flex w-full items-center gap-3 rounded-2xl border border-line bg-canvas p-3 text-left transition hover:bg-brand-soft/40 hover:border-brand/40"
+            >
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand/10 text-brand">
+                <UsersRound className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-ink">{t('sidebar.createGroup')}</div>
+                <div className="text-xs text-muted">Создать новую группу для общения</div>
+              </div>
+            </button>
+          </div>
+        )}
 
         <div className="min-h-[245px] flex-1 overflow-y-auto px-3 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:px-4">
           {state === 'idle' && (

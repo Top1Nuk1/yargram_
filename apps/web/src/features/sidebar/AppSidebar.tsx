@@ -210,7 +210,7 @@ export function AppSidebar({
         <nav className="mt-5 flex-1 overflow-y-auto px-2" aria-label={t('sidebar.mainMenu')}>
           <MenuRow icon={<UserPlus className="h-5 w-5" />} label={t('sidebar.myProfile')} onClick={() => onAction('profile')} />
           <MenuRow icon={<UsersRound className="h-5 w-5" />} label={t('sidebar.friends')} onClick={() => onAction('friends')} />
-          <MenuRow icon={<UsersRound className="h-5 w-5" />} label={t('sidebar.createGroup')} muted onClick={() => onAction('create-group')} />
+          <MenuRow icon={<UsersRound className="h-5 w-5" />} label={t('sidebar.createGroup')} onClick={() => onAction('create-group')} />
           <MenuRow icon={<CircleHelp className="h-5 w-5" />} label={t('sidebar.createChannel')} muted onClick={() => onAction('create-channel')} />
           <MenuRow icon={<ShieldBan className="h-5 w-5" />} label={t('sidebar.blocked')} onClick={() => onAction('blocked')} />
           <MenuRow icon={<Phone className="h-5 w-5" />} label={t('sidebar.calls')} muted onClick={() => onAction('calls')} />

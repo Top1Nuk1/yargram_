@@ -4215,6 +4215,7 @@ export function MessengerScreen({
           currentUserId={currentUser.id}
           onClose={() => setSearchOpen(false)}
           onConversation={handleCreatedConversation}
+          onCreateGroup={() => setGroupCreateOpen(true)}
         />
       )}
       {pollOpen && (
