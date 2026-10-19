@@ -266,9 +266,12 @@ describe('экран «Активные сеансы»', () => {
 
     await waitFor(() => expect(screen.getByText('Рабочий ПК')).toBeTruthy());
     expect(screen.getByText('Chrome, Windows • yargram.test')).toBeTruthy();
+    expect(screen.getByText('Это устройство')).toBeTruthy();
+    expect(screen.getByText('Другие сеансы')).toBeTruthy();
 
-    // Кликаем по кнопке редактирования устройства
+    // Кнопка редактирования доступна ТОЛЬКО для текущего устройства
     const renameButtons = screen.getAllByRole('button', { name: 'Переименовать устройство' });
+    expect(renameButtons).toHaveLength(1);
     fireEvent.click(renameButtons[0]);
 
     // Появляется диалоговое окно переименования
@@ -286,5 +289,16 @@ describe('экран «Активные сеансы»', () => {
       expect(screen.getByText('Имя устройства сохранено.')).toBeTruthy();
       expect(screen.getByText('Мой Компьютер')).toBeTruthy();
     });
+  });
+
+  it('не даёт переименовывать чужие сеансы', async () => {
+    renderScreen({
+      overview: overview({
+        sessions: [mirror], // только не-текущий сеанс
+      }),
+    });
+
+    await waitFor(() => expect(screen.getByText('mirror.test')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Переименовать устройство' })).toBeNull();
   });
 });

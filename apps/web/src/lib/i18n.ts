@@ -3528,6 +3528,20 @@ define('sessions.intro', {
   be: 'Тут відаць, адкуль вы ўвайшлі ў акаўнт. Чужы ўваход завершыце і зменіце пароль.',
 });
 define('sessions.current', { ru: 'Этот сеанс', en: 'This session', bg: 'Тази сесия', uk: 'Цей сеанс', be: 'Гэты сеанс' });
+define('sessions.currentSection', {
+  ru: 'Это устройство',
+  en: 'This device',
+  bg: 'Това устройство',
+  uk: 'Цей пристрій',
+  be: 'Гэта прылада',
+});
+define('sessions.otherSection', {
+  ru: 'Другие сеансы',
+  en: 'Other sessions',
+  bg: 'Други сеанси',
+  uk: 'Інші сеанси',
+  be: 'Іншыя сеансы',
+});
 define('sessions.unknownSite', {
   ru: 'Сайт не определён',
   en: 'Unknown site',

@@ -83,6 +83,7 @@ export function SessionsScreen({ token, user, onAutoTerminateChange, onBack, onC
   }, [onBack, onClose, renamingSession]);
 
   function startRename(session: Session) {
+    if (!session.current) return;
     setRenamingSession(session);
     setRenameName(session.customDeviceName || '');
     setError('');
@@ -156,6 +157,7 @@ export function SessionsScreen({ token, user, onAutoTerminateChange, onBack, onC
 
   const canTerminateOthers = overview?.canTerminateOthers ?? false;
   const gateLeft = overview && !canTerminateOthers ? formatGateLeft(overview.gateUntil, t) : '';
+  const currentSession = (overview?.sessions ?? []).find((session) => session.current);
   const others = (overview?.sessions ?? []).filter((session) => !session.current);
 
   return (
@@ -203,51 +205,48 @@ export function SessionsScreen({ token, user, onAutoTerminateChange, onBack, onC
           )}
 
           {!loading && overview && (
-            <ul>
-              {overview.sessions.map((session) => {
-                // Чужой сеанс закрывают только «взрослым» сеансом: свежий вход
-                // не должен выкидывать владельца раньше, чем через сутки.
-                const locked = !session.current && !canTerminateOthers;
-                return (
-                  <li key={session.id} className="border-b border-line/70 px-4 py-4 sm:px-5">
+            <div>
+              {currentSession && (
+                <div className="border-b border-line/70">
+                  <div className="px-4 pt-3 pb-1 text-[11px] font-bold uppercase tracking-wider text-muted sm:px-5">
+                    {t('sessions.currentSection')}
+                  </div>
+                  <div className="px-4 py-4 sm:px-5">
                     <div className="flex items-start gap-3">
-                      <Globe className="mt-0.5 h-5 w-5 shrink-0 text-muted" aria-hidden="true" />
+                      <Globe className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden="true" />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start gap-3">
                           <span className="min-w-0 flex-1">
                             <span className="flex items-center gap-1.5">
                               <span className="block truncate text-[15px] font-semibold text-ink">
-                                {session.customDeviceName || siteLabel(session, t)}
+                                {currentSession.customDeviceName || siteLabel(currentSession, t)}
                               </span>
                               <button
                                 type="button"
                                 title={t('sessions.renameDevice')}
                                 aria-label={t('sessions.renameDevice')}
-                                onClick={() => startRename(session)}
+                                onClick={() => startRename(currentSession)}
                                 className="grid h-6 w-6 place-items-center rounded-lg text-muted transition hover:bg-brand-soft/60 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
                               >
                                 <Pencil className="h-3.5 w-3.5" />
                               </button>
                             </span>
                             <span className="mt-0.5 block truncate text-xs text-muted">
-                              {session.customDeviceName
-                                ? `${deviceLabel(session, t)} • ${siteLabel(session, t)}`
-                                : deviceLabel(session, t)}
+                              {currentSession.customDeviceName
+                                ? `${deviceLabel(currentSession, t)} • ${siteLabel(currentSession, t)}`
+                                : deviceLabel(currentSession, t)}
                             </span>
                             <span className="mt-1 block text-xs leading-5 text-muted">
-                              {t('sessions.lastSeen', { time: activityAt(session) })}
+                              {t('sessions.lastSeen', { time: activityAt(currentSession) })}
                             </span>
-                            {session.current && (
-                              <span className="mt-1 inline-block rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-bold text-brand">
-                                {t('sessions.current')}
-                              </span>
-                            )}
+                            <span className="mt-1 inline-block rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-bold text-brand">
+                              {t('sessions.current')}
+                            </span>
                           </span>
                           <button
                             type="button"
-                            disabled={busy || locked}
-                            title={locked ? t('sessions.gateHint') : undefined}
-                            onClick={() => void terminate(session)}
+                            disabled={busy}
+                            onClick={() => void terminate(currentSession)}
                             className="shrink-0 rounded-xl border border-danger/40 px-3 py-1.5 text-xs font-semibold text-danger transition hover:bg-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-default disabled:opacity-50"
                           >
                             {t('sessions.terminate')}
@@ -255,10 +254,56 @@ export function SessionsScreen({ token, user, onAutoTerminateChange, onBack, onC
                         </div>
                       </div>
                     </div>
-                  </li>
-                );
-              })}
-            </ul>
+                  </div>
+                </div>
+              )}
+
+              {others.length > 0 && (
+                <div>
+                  <div className="px-4 pt-4 pb-1 text-[11px] font-bold uppercase tracking-wider text-muted sm:px-5">
+                    {t('sessions.otherSection')}
+                  </div>
+                  <ul>
+                    {others.map((session) => {
+                      const locked = !canTerminateOthers;
+                      return (
+                        <li key={session.id} className="border-b border-line/70 px-4 py-4 sm:px-5">
+                          <div className="flex items-start gap-3">
+                            <Globe className="mt-0.5 h-5 w-5 shrink-0 text-muted" aria-hidden="true" />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start gap-3">
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-[15px] font-semibold text-ink">
+                                    {session.customDeviceName || siteLabel(session, t)}
+                                  </span>
+                                  <span className="mt-0.5 block truncate text-xs text-muted">
+                                    {session.customDeviceName
+                                      ? `${deviceLabel(session, t)} • ${siteLabel(session, t)}`
+                                      : deviceLabel(session, t)}
+                                  </span>
+                                  <span className="mt-1 block text-xs leading-5 text-muted">
+                                    {t('sessions.lastSeen', { time: activityAt(session) })}
+                                  </span>
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={busy || locked}
+                                  title={locked ? t('sessions.gateHint') : undefined}
+                                  onClick={() => void terminate(session)}
+                                  className="shrink-0 rounded-xl border border-danger/40 px-3 py-1.5 text-xs font-semibold text-danger transition hover:bg-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-default disabled:opacity-50"
+                                >
+                                  {t('sessions.terminate')}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
           )}
 
           {!loading && overview && (
