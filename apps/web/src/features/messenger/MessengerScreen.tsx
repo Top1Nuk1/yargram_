@@ -319,6 +319,51 @@ function uniqueConversations(items: Conversation[]): Conversation[] {
   );
 }
 
+export function matchesIncludedChatType(conv: Conversation, type: string, currentUserId: string): boolean {
+  if (type === 'channels') return conv.type === 'channel';
+  if (type === 'groups') return isGroup(conv) && conv.type !== 'channel';
+  if (type === 'bots') return Boolean(conv.otherUser?.isBot || conv.type === 'bot');
+  if (type === 'contacts') {
+    if (isGroup(conv) || conv.type === 'channel' || conv.otherUser?.isBot || conv.type === 'bot') return false;
+    const ou = conv.otherUser;
+    if (!ou) return true;
+    return ou.friendship ? ou.friendship === 'friends' : true;
+  }
+  if (type === 'non_contacts') {
+    if (isGroup(conv) || conv.type === 'channel' || conv.otherUser?.isBot || conv.type === 'bot') return false;
+    const ou = conv.otherUser;
+    if (!ou) return false;
+    return ou.friendship !== undefined && ou.friendship !== 'friends';
+  }
+  return false;
+}
+
+export function matchesExcludedChatType(conv: Conversation, type: string): boolean {
+  if (type === 'muted') return conversationIsMuted(conv);
+  if (type === 'read') return (conv.unreadCount ?? 0) === 0;
+  if (type === 'archived') return Boolean(conv.archived);
+  return false;
+}
+
+export function conversationMatchesFolder(conv: Conversation, folder: ChatFolder, currentUserId: string): boolean {
+  if (folder.excludedConversationIds?.includes(conv.id)) return false;
+  if (folder.excludedChatTypes && folder.excludedChatTypes.length > 0) {
+    for (const type of folder.excludedChatTypes) {
+      if (matchesExcludedChatType(conv, type)) return false;
+    }
+  }
+  if (conv.archived && !folder.conversationIds?.includes(conv.id)) {
+    return false;
+  }
+  if (folder.conversationIds?.includes(conv.id)) return true;
+  if (folder.includedChatTypes && folder.includedChatTypes.length > 0) {
+    for (const type of folder.includedChatTypes) {
+      if (matchesIncludedChatType(conv, type, currentUserId)) return true;
+    }
+  }
+  return false;
+}
+
 export function MessengerScreen({
   token,
   currentUser,
@@ -1337,7 +1382,7 @@ export function MessengerScreen({
         } else if (listMode === 'unread') {
           if (!conversation.unreadCount || conversation.unreadCount <= 0) return false;
         } else if (activeFolder) {
-          if (!activeFolder.conversationIds.includes(conversation.id)) return false;
+          if (!conversationMatchesFolder(conversation, activeFolder, currentUser.id)) return false;
         }
       }
       const title = conversationTitle(conversation, currentUser.id, t).toLocaleLowerCase('ru-RU');
@@ -2166,15 +2211,32 @@ export function MessengerScreen({
   async function toggleConversationFolder(conversationId: string, folderId: string) {
     const folder = folders.find((item) => item.id === folderId);
     if (!folder) return;
-    const inFolder = folder.conversationIds.includes(conversationId);
-    const conversationIds = inFolder
-      ? folder.conversationIds.filter((id) => id !== conversationId)
-      : [...folder.conversationIds, conversationId];
+    const conv = conversations.find((c) => c.id === conversationId);
+    const isCurrentlyIn = conv ? conversationMatchesFolder(conv, folder, currentUser.id) : folder.conversationIds.includes(conversationId);
+
+    let nextConversationIds = [...folder.conversationIds];
+    let nextExcludedIds = [...(folder.excludedConversationIds ?? [])];
+
+    if (isCurrentlyIn) {
+      nextConversationIds = nextConversationIds.filter((id) => id !== conversationId);
+      if (!nextExcludedIds.includes(conversationId)) {
+        nextExcludedIds.push(conversationId);
+      }
+    } else {
+      nextExcludedIds = nextExcludedIds.filter((id) => id !== conversationId);
+      if (!nextConversationIds.includes(conversationId)) {
+        nextConversationIds.push(conversationId);
+      }
+    }
+
     try {
-      const updated = await api.updateFolder(token, folderId, { conversationIds });
+      const updated = await api.updateFolder(token, folderId, {
+        conversationIds: nextConversationIds,
+        excludedConversationIds: nextExcludedIds,
+      });
       setFolders((current) => upsertFolder(current, updated));
       setNotice(
-        inFolder
+        isCurrentlyIn
           ? t('msgr.dialogRemovedFromFolder', { name: updated.name })
           : t('msgr.dialogAddedToFolder', { name: updated.name }),
       );
@@ -2226,7 +2288,14 @@ export function MessengerScreen({
     }
   }
 
-  async function handleCreateFolderFull(input: { name: string; conversationIds: string[]; icon?: string | null }) {
+  async function handleCreateFolderFull(input: {
+    name: string;
+    conversationIds: string[];
+    icon?: string | null;
+    includedChatTypes?: string[];
+    excludedConversationIds?: string[];
+    excludedChatTypes?: string[];
+  }) {
     try {
       const folder = await api.createFolder(token, input);
       setFolders((current) => upsertFolder(current, folder));
@@ -2238,7 +2307,17 @@ export function MessengerScreen({
     }
   }
 
-  async function handleUpdateFolderFull(folderId: string, input: { name?: string; conversationIds?: string[]; icon?: string | null }) {
+  async function handleUpdateFolderFull(
+    folderId: string,
+    input: {
+      name?: string;
+      conversationIds?: string[];
+      icon?: string | null;
+      includedChatTypes?: string[];
+      excludedConversationIds?: string[];
+      excludedChatTypes?: string[];
+    },
+  ) {
     try {
       const folder = await api.updateFolder(token, folderId, input);
       setFolders((current) => upsertFolder(current, folder));
@@ -3226,7 +3305,7 @@ export function MessengerScreen({
                           <p className="px-3 py-1 text-xs text-muted">{t('msgr.createFolderHint')}</p>
                         )}
                         {folders.map((folder) => {
-                          const inFolder = folder.conversationIds.includes(selectedConversation.id);
+                          const inFolder = conversationMatchesFolder(selectedConversation, folder, currentUser.id);
                           return (
                             <button
                               key={folder.id}
@@ -4660,7 +4739,7 @@ export function MessengerScreen({
             ) : (
               <div className="max-h-36 overflow-y-auto space-y-0.5">
                 {folders.map((folder) => {
-                  const inFolder = folder.conversationIds.includes(convContextMenu.conversation.id);
+                  const inFolder = conversationMatchesFolder(convContextMenu.conversation, folder, currentUser.id);
                   const FolderIconComp = getFolderIconComponent(folder.icon);
                   return (
                     <button

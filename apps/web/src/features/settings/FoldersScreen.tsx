@@ -1,14 +1,21 @@
 import { useMemo, useState } from 'react';
 import {
+  Archive,
   ArrowLeft,
+  BellOff,
+  Bot,
   Check,
+  CheckCircle2,
   Folder as FolderIcon,
   FolderPlus,
+  HelpCircle,
+  Megaphone,
   Pencil,
   Plus,
   Search,
   Trash2,
-  UsersRound,
+  User as UserIcon,
+  Users,
   X,
 } from 'lucide-react';
 import { Avatar, Button, IconButton } from '../../components/ui';
@@ -18,12 +25,50 @@ import { useTranslation } from '../../hooks/useLanguage';
 import type { ChatFolder, Conversation, User } from '../../types';
 import { FOLDER_ICONS, getFolderIconComponent } from './folderIcons';
 
+export interface ChatTypeItem {
+  id: string;
+  label: string;
+  icon: typeof UserIcon;
+  bgClass: string;
+}
+
+export const INCLUDED_CHAT_TYPES: ChatTypeItem[] = [
+  { id: 'contacts', label: 'Контакты', icon: UserIcon, bgClass: 'bg-blue-500' },
+  { id: 'non_contacts', label: 'Не контакты', icon: HelpCircle, bgClass: 'bg-cyan-500' },
+  { id: 'groups', label: 'Группы', icon: Users, bgClass: 'bg-emerald-500' },
+  { id: 'channels', label: 'Каналы', icon: Megaphone, bgClass: 'bg-amber-500' },
+  { id: 'bots', label: 'Боты', icon: Bot, bgClass: 'bg-pink-500' },
+];
+
+export const EXCLUDED_CHAT_TYPES: ChatTypeItem[] = [
+  { id: 'muted', label: 'Без уведомлений', icon: BellOff, bgClass: 'bg-pink-500' },
+  { id: 'read', label: 'Прочитанные', icon: CheckCircle2, bgClass: 'bg-sky-500' },
+  { id: 'archived', label: 'Архивированные', icon: Archive, bgClass: 'bg-blue-600' },
+];
+
 interface FoldersScreenProps {
   user: User;
   folders: ChatFolder[];
   conversations: Conversation[];
-  onFolderCreate: (input: { name: string; conversationIds: string[]; icon?: string | null }) => Promise<void>;
-  onFolderUpdate: (folderId: string, input: { name?: string; conversationIds?: string[]; icon?: string | null }) => Promise<void>;
+  onFolderCreate: (input: {
+    name: string;
+    conversationIds: string[];
+    icon?: string | null;
+    includedChatTypes?: string[];
+    excludedConversationIds?: string[];
+    excludedChatTypes?: string[];
+  }) => Promise<void>;
+  onFolderUpdate: (
+    folderId: string,
+    input: {
+      name?: string;
+      conversationIds?: string[];
+      icon?: string | null;
+      includedChatTypes?: string[];
+      excludedConversationIds?: string[];
+      excludedChatTypes?: string[];
+    },
+  ) => Promise<void>;
   onFolderDelete: (folderId: string) => Promise<void>;
   onClose: () => void;
 }
@@ -37,6 +82,13 @@ function pluralizeChats(count: number): string {
   return `${count} чатов`;
 }
 
+function getConversationSubtitle(conv: Conversation): string {
+  if (conv.type === 'channel') return 'канал';
+  if (isGroup(conv)) return 'группа';
+  if (conv.otherUser?.isBot || conv.type === 'bot') return 'бот';
+  return 'Личные';
+}
+
 export function FoldersScreen({
   user,
   folders,
@@ -46,7 +98,6 @@ export function FoldersScreen({
   onFolderDelete,
   onClose,
 }: FoldersScreenProps) {
-  const t = useTranslation();
   const [editingFolder, setEditingFolder] = useState<ChatFolder | 'new' | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -60,14 +111,27 @@ export function FoldersScreen({
         name: 'Личные',
         subtitle: 'Чаты с пользователями',
         icon: 'user',
-        conversationIds: conversations.filter((c) => !isGroup(c)).map((c) => c.id),
+        conversationIds: conversations.filter((c) => !isGroup(c) && !c.otherUser?.isBot && c.type !== 'channel').map((c) => c.id),
+        includedChatTypes: ['contacts', 'non_contacts'],
+        excludedChatTypes: ['archived'],
       },
       {
         id: 'groups',
         name: 'Группы',
         subtitle: 'Все группы',
         icon: 'users',
-        conversationIds: conversations.filter((c) => isGroup(c)).map((c) => c.id),
+        conversationIds: conversations.filter((c) => isGroup(c) && c.type !== 'channel').map((c) => c.id),
+        includedChatTypes: ['groups'],
+        excludedChatTypes: ['archived'],
+      },
+      {
+        id: 'channels',
+        name: 'Каналы',
+        subtitle: 'Информационные каналы',
+        icon: 'megaphone',
+        conversationIds: conversations.filter((c) => c.type === 'channel').map((c) => c.id),
+        includedChatTypes: ['channels'],
+        excludedChatTypes: ['archived'],
       },
       {
         id: 'unread',
@@ -75,6 +139,7 @@ export function FoldersScreen({
         subtitle: 'Новые сообщения',
         icon: 'chat',
         conversationIds: conversations.filter((c) => (c.unreadCount ?? 0) > 0).map((c) => c.id),
+        excludedChatTypes: ['read', 'archived'],
       },
     ];
     return items.filter((item) => !existingNames.has(item.name.toLowerCase()));
@@ -88,6 +153,8 @@ export function FoldersScreen({
         name: item.name,
         conversationIds: item.conversationIds,
         icon: item.icon,
+        includedChatTypes: item.includedChatTypes,
+        excludedChatTypes: item.excludedChatTypes,
       });
     } finally {
       setBusy(false);
@@ -153,7 +220,7 @@ export function FoldersScreen({
               ) : (
                 folders.map((folder) => {
                   const Icon = getFolderIconComponent(folder.icon);
-                  const count = folder.conversationIds.length;
+                  const count = folder.conversationIds.length + (folder.includedChatTypes?.length ?? 0);
                   return (
                     <div
                       key={folder.id}
@@ -306,14 +373,21 @@ export function FoldersScreen({
 }
 
 // ---------------------------------------------------------------------------
-// Folder Edit Modal (Image 4)
+// Folder Edit Modal (Telegram style with Included and Excluded chats)
 // ---------------------------------------------------------------------------
 
 interface FolderEditModalProps {
   folder: ChatFolder | null;
   conversations: Conversation[];
   currentUserId: string;
-  onSave: (data: { name: string; conversationIds: string[]; icon?: string | null }) => Promise<void>;
+  onSave: (data: {
+    name: string;
+    conversationIds: string[];
+    icon?: string | null;
+    includedChatTypes?: string[];
+    excludedConversationIds?: string[];
+    excludedChatTypes?: string[];
+  }) => Promise<void>;
   onClose: () => void;
 }
 
@@ -327,20 +401,43 @@ export function FolderEditModal({
   const t = useTranslation();
   const [name, setName] = useState(folder?.name ?? '');
   const [icon, setIcon] = useState<string | null>(folder?.icon ?? 'folder');
+  const [includedChatTypes, setIncludedChatTypes] = useState<string[]>(folder?.includedChatTypes ?? []);
   const [selectedIds, setSelectedIds] = useState<string[]>(folder?.conversationIds ?? []);
+  const [excludedChatTypes, setExcludedChatTypes] = useState<string[]>(folder?.excludedChatTypes ?? []);
+  const [excludedConversationIds, setExcludedConversationIds] = useState<string[]>(folder?.excludedConversationIds ?? []);
+
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
-  const [chatSelectOpen, setChatSelectOpen] = useState(false);
+  const [chatPickerMode, setChatPickerMode] = useState<'include' | 'exclude' | null>(null);
   const [saving, setSaving] = useState(false);
 
   const CurrentIcon = getFolderIconComponent(icon);
 
-  const selectedConversations = useMemo(() => {
-    const map = new Map(conversations.map((c) => [c.id, c]));
-    return selectedIds.map((id) => map.get(id)).filter(Boolean) as Conversation[];
-  }, [conversations, selectedIds]);
+  const conversationMap = useMemo(() => {
+    return new Map(conversations.map((c) => [c.id, c]));
+  }, [conversations]);
 
-  const handleRemoveConversation = (id: string) => {
-    setSelectedIds((prev) => prev.filter((item) => item !== id));
+  const includedConversations = useMemo(() => {
+    return selectedIds.map((id) => conversationMap.get(id)).filter(Boolean) as Conversation[];
+  }, [selectedIds, conversationMap]);
+
+  const excludedConversations = useMemo(() => {
+    return excludedConversationIds.map((id) => conversationMap.get(id)).filter(Boolean) as Conversation[];
+  }, [excludedConversationIds, conversationMap]);
+
+  const handleRemoveIncludedType = (typeId: string) => {
+    setIncludedChatTypes((prev) => prev.filter((id) => id !== typeId));
+  };
+
+  const handleRemoveIncludedConv = (convId: string) => {
+    setSelectedIds((prev) => prev.filter((id) => id !== convId));
+  };
+
+  const handleRemoveExcludedType = (typeId: string) => {
+    setExcludedChatTypes((prev) => prev.filter((id) => id !== typeId));
+  };
+
+  const handleRemoveExcludedConv = (convId: string) => {
+    setExcludedConversationIds((prev) => prev.filter((id) => id !== convId));
   };
 
   const handleSave = async () => {
@@ -352,6 +449,9 @@ export function FolderEditModal({
         name: trimmed,
         conversationIds: selectedIds,
         icon: icon ?? null,
+        includedChatTypes,
+        excludedConversationIds,
+        excludedChatTypes,
       });
     } finally {
       setSaving(false);
@@ -364,7 +464,7 @@ export function FolderEditModal({
       role="dialog"
       aria-modal="true"
     >
-      <div className="relative flex max-h-[88vh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-line bg-surface shadow-2xl">
+      <div className="relative flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-line bg-surface shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-line px-5 py-4">
           <h3 className="text-base font-bold text-ink">
@@ -376,7 +476,7 @@ export function FolderEditModal({
         </div>
 
         {/* Form Body */}
-        <div className="overflow-y-auto p-5 space-y-5">
+        <div className="overflow-y-auto p-5 space-y-6">
           {/* Icon + Folder Name row */}
           <div className="flex items-center gap-4">
             {/* Round Icon Button with pencil badge */}
@@ -409,35 +509,69 @@ export function FolderEditModal({
             </div>
           </div>
 
-          {/* Section: Included Chats */}
+          {/* Section 1: Included Chats */}
           <div>
             <div className="mb-2 flex items-center justify-between px-1">
               <span className="text-xs font-bold uppercase tracking-wider text-muted">
-                Включённые чаты
+                ВКЛЮЧЁННЫЕ ЧАТЫ
               </span>
               <span className="text-xs text-muted tabular-nums">
-                {selectedIds.length}
+                {includedChatTypes.length + selectedIds.length}
               </span>
             </div>
 
             {/* Add Chats Button */}
             <button
               type="button"
-              onClick={() => setChatSelectOpen(true)}
+              onClick={() => setChatPickerMode('include')}
               className="flex w-full items-center gap-2.5 rounded-2xl border border-line bg-canvas px-4 py-3 text-xs font-semibold text-brand transition hover:bg-brand/5 hover:border-brand/50"
             >
               <Plus className="h-4 w-4" />
-              Добавить чаты и группы
+              Добавить чаты
             </button>
 
-            {/* Selected Chats List */}
-            {selectedConversations.length > 0 && (
-              <div className="mt-2.5 max-h-56 overflow-y-auto rounded-2xl border border-line bg-canvas divide-y divide-line">
-                {selectedConversations.map((conv) => {
+            {/* List of included items (types + individual chats) */}
+            {(includedChatTypes.length > 0 || includedConversations.length > 0) && (
+              <div className="mt-2.5 max-h-52 overflow-y-auto rounded-2xl border border-line bg-canvas divide-y divide-line">
+                {/* Chat type items */}
+                {includedChatTypes.map((typeId) => {
+                  const typeItem = INCLUDED_CHAT_TYPES.find((t) => t.id === typeId);
+                  if (!typeItem) return null;
+                  const Icon = typeItem.icon;
+                  return (
+                    <div
+                      key={typeId}
+                      className="flex items-center justify-between px-3 py-2 text-left"
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white ${typeItem.bgClass}`}>
+                          <Icon className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-xs font-semibold text-ink">
+                            {typeItem.label}
+                          </div>
+                          <div className="text-[10px] text-muted">Тип чата</div>
+                        </div>
+                      </div>
+                      <IconButton
+                        label="Удалить тип"
+                        onClick={() => handleRemoveIncludedType(typeId)}
+                        className="h-7 w-7 rounded-lg text-muted hover:text-danger hover:bg-surface"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </IconButton>
+                    </div>
+                  );
+                })}
+
+                {/* Individual conversation items */}
+                {includedConversations.map((conv) => {
                   const group = isGroup(conv);
                   const title = group
                     ? groupTitle(conv)
                     : conversationTitle(conv, currentUserId, t);
+                  const subtitle = getConversationSubtitle(conv);
                   return (
                     <div
                       key={conv.id}
@@ -453,14 +587,107 @@ export function FolderEditModal({
                           <div className="truncate text-xs font-semibold text-ink">
                             {title}
                           </div>
-                          <div className="text-[10px] text-muted">
-                            {group ? 'Группа' : 'Чат'}
-                          </div>
+                          <div className="text-[10px] text-muted">{subtitle}</div>
                         </div>
                       </div>
                       <IconButton
                         label="Удалить из папки"
-                        onClick={() => handleRemoveConversation(conv.id)}
+                        onClick={() => handleRemoveIncludedConv(conv.id)}
+                        className="h-7 w-7 rounded-lg text-muted hover:text-danger hover:bg-surface"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </IconButton>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Section 2: Excluded Chats */}
+          <div>
+            <div className="mb-2 flex items-center justify-between px-1">
+              <span className="text-xs font-bold uppercase tracking-wider text-muted">
+                ИСКЛЮЧЁННЫЕ ЧАТЫ
+              </span>
+              <span className="text-xs text-muted tabular-nums">
+                {excludedChatTypes.length + excludedConversationIds.length}
+              </span>
+            </div>
+
+            {/* Add Chats Button */}
+            <button
+              type="button"
+              onClick={() => setChatPickerMode('exclude')}
+              className="flex w-full items-center gap-2.5 rounded-2xl border border-line bg-canvas px-4 py-3 text-xs font-semibold text-brand transition hover:bg-brand/5 hover:border-brand/50"
+            >
+              <Plus className="h-4 w-4" />
+              Добавить чаты
+            </button>
+
+            {/* List of excluded items (types + individual chats) */}
+            {(excludedChatTypes.length > 0 || excludedConversations.length > 0) && (
+              <div className="mt-2.5 max-h-52 overflow-y-auto rounded-2xl border border-line bg-canvas divide-y divide-line">
+                {/* Chat type items */}
+                {excludedChatTypes.map((typeId) => {
+                  const typeItem = EXCLUDED_CHAT_TYPES.find((t) => t.id === typeId);
+                  if (!typeItem) return null;
+                  const Icon = typeItem.icon;
+                  return (
+                    <div
+                      key={typeId}
+                      className="flex items-center justify-between px-3 py-2 text-left"
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white ${typeItem.bgClass}`}>
+                          <Icon className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-xs font-semibold text-ink">
+                            {typeItem.label}
+                          </div>
+                          <div className="text-[10px] text-muted">Тип чата</div>
+                        </div>
+                      </div>
+                      <IconButton
+                        label="Удалить тип"
+                        onClick={() => handleRemoveExcludedType(typeId)}
+                        className="h-7 w-7 rounded-lg text-muted hover:text-danger hover:bg-surface"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </IconButton>
+                    </div>
+                  );
+                })}
+
+                {/* Individual conversation items */}
+                {excludedConversations.map((conv) => {
+                  const group = isGroup(conv);
+                  const title = group
+                    ? groupTitle(conv)
+                    : conversationTitle(conv, currentUserId, t);
+                  const subtitle = getConversationSubtitle(conv);
+                  return (
+                    <div
+                      key={conv.id}
+                      className="flex items-center justify-between px-3 py-2 text-left"
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                        <Avatar
+                          src={conv.avatarUrl ?? undefined}
+                          name={title}
+                          className="h-8 w-8 text-xs"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-xs font-semibold text-ink">
+                            {title}
+                          </div>
+                          <div className="text-[10px] text-muted">{subtitle}</div>
+                        </div>
+                      </div>
+                      <IconButton
+                        label="Удалить из исключений"
+                        onClick={() => handleRemoveExcludedConv(conv.id)}
                         className="h-7 w-7 rounded-lg text-muted hover:text-danger hover:bg-surface"
                       >
                         <X className="h-3.5 w-3.5" />
@@ -497,14 +724,24 @@ export function FolderEditModal({
         />
       )}
 
-      {/* Chat Selector Modal */}
-      {chatSelectOpen && (
-        <ChatSelectorModal
+      {/* Chat Picker Modal (Telegram Style) */}
+      {chatPickerMode && (
+        <ChatPickerModal
+          mode={chatPickerMode}
           conversations={conversations}
           currentUserId={currentUserId}
-          selectedIds={selectedIds}
-          onDone={(ids) => setSelectedIds(ids)}
-          onClose={() => setChatSelectOpen(false)}
+          selectedTypes={chatPickerMode === 'include' ? includedChatTypes : excludedChatTypes}
+          selectedConversationIds={chatPickerMode === 'include' ? selectedIds : excludedConversationIds}
+          onDone={(types, ids) => {
+            if (chatPickerMode === 'include') {
+              setIncludedChatTypes(types);
+              setSelectedIds(ids);
+            } else {
+              setExcludedChatTypes(types);
+              setExcludedConversationIds(ids);
+            }
+          }}
+          onClose={() => setChatPickerMode(null)}
         />
       )}
     </div>
@@ -512,7 +749,7 @@ export function FolderEditModal({
 }
 
 // ---------------------------------------------------------------------------
-// Icon Picker Modal (Image 5)
+// Icon Picker Modal (30 Icons Grid)
 // ---------------------------------------------------------------------------
 
 interface IconPickerModalProps {
@@ -575,27 +812,40 @@ export function IconPickerModal({
 }
 
 // ---------------------------------------------------------------------------
-// Chat Selector Modal
+// Chat Picker Modal (Telegram Style: Types + Individual Chats)
 // ---------------------------------------------------------------------------
 
-interface ChatSelectorModalProps {
+interface ChatPickerModalProps {
+  mode: 'include' | 'exclude';
   conversations: Conversation[];
   currentUserId: string;
-  selectedIds: string[];
-  onDone: (selectedIds: string[]) => void;
+  selectedTypes: string[];
+  selectedConversationIds: string[];
+  onDone: (selectedTypes: string[], selectedConversationIds: string[]) => void;
   onClose: () => void;
 }
 
-export function ChatSelectorModal({
+export function ChatPickerModal({
+  mode,
   conversations,
   currentUserId,
-  selectedIds: initialSelected,
+  selectedTypes: initialTypes,
+  selectedConversationIds: initialIds,
   onDone,
   onClose,
-}: ChatSelectorModalProps) {
+}: ChatPickerModalProps) {
   const t = useTranslation();
-  const [selected, setSelected] = useState<Set<string>>(new Set(initialSelected));
+  const [typesSet, setTypesSet] = useState<Set<string>>(new Set(initialTypes));
+  const [idsSet, setIdsSet] = useState<Set<string>>(new Set(initialIds));
   const [query, setQuery] = useState('');
+
+  const availableTypes = mode === 'include' ? INCLUDED_CHAT_TYPES : EXCLUDED_CHAT_TYPES;
+
+  const filteredTypes = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return availableTypes;
+    return availableTypes.filter((type) => type.label.toLowerCase().includes(q));
+  }, [availableTypes, query]);
 
   const filteredConversations = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -606,8 +856,8 @@ export function ChatSelectorModal({
     });
   }, [conversations, query, currentUserId, t]);
 
-  const toggleChat = (id: string) => {
-    setSelected((prev) => {
+  const toggleType = (id: string) => {
+    setTypesSet((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -615,96 +865,182 @@ export function ChatSelectorModal({
     });
   };
 
+  const toggleConv = (id: string) => {
+    setIdsSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const totalCount = typesSet.size + idsSet.size;
+
   return (
     <div
       className="fixed inset-0 z-70 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm animate-in fade-in duration-150"
       role="dialog"
       aria-modal="true"
     >
-      <div className="relative flex max-h-[85vh] w-full max-w-sm flex-col overflow-hidden rounded-3xl border border-line bg-surface shadow-2xl">
+      <div className="relative flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-3xl border border-line bg-surface shadow-2xl">
+        {/* Header with counter */}
         <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
-          <h4 className="text-base font-bold text-ink">Выбрать чаты</h4>
-          <IconButton label="Закрыть" onClick={onClose} className="h-8 w-8 rounded-lg hover:bg-canvas">
-            <X className="h-4 w-4" />
-          </IconButton>
+          <div className="flex items-center gap-2">
+            <h4 className="text-base font-bold text-ink">
+              {mode === 'include' ? 'Чаты в папке' : 'Чаты не в папке'}
+            </h4>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold text-muted tabular-nums">
+              {totalCount} / 100
+            </span>
+            <IconButton label="Закрыть" onClick={onClose} className="h-8 w-8 rounded-lg hover:bg-canvas">
+              <X className="h-4 w-4" />
+            </IconButton>
+          </div>
         </div>
 
         {/* Search */}
         <div className="border-b border-line p-3">
-          <div className="flex items-center gap-2 rounded-xl border border-line bg-canvas px-3 py-1.5">
-            <Search className="h-4 w-4 text-muted" />
+          <div className="flex items-center gap-2 rounded-xl border border-line bg-canvas px-3 py-2">
+            <Search className="h-4 w-4 text-muted shrink-0" />
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Поиск чатов и групп..."
+              placeholder="Поиск"
               className="w-full bg-transparent text-xs text-ink outline-none"
             />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="text-muted hover:text-ink"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Chats List */}
-        <div className="overflow-y-auto p-2 space-y-1 divide-y divide-line/40">
-          {filteredConversations.length === 0 ? (
-            <div className="p-6 text-center text-xs text-muted">
-              Чаты не найдены
+        {/* Scrollable list */}
+        <div className="overflow-y-auto p-3 space-y-4">
+          {/* Section: Chat Types */}
+          {filteredTypes.length > 0 && (
+            <div>
+              <div className="mb-1.5 px-2 text-[11px] font-bold uppercase tracking-wider text-muted">
+                ТИПЫ ЧАТОВ
+              </div>
+              <div className="space-y-1">
+                {filteredTypes.map((type) => {
+                  const Icon = type.icon;
+                  const isChecked = typesSet.has(type.id);
+                  return (
+                    <button
+                      key={type.id}
+                      type="button"
+                      onClick={() => toggleType(type.id)}
+                      className="flex w-full items-center justify-between rounded-xl p-2 text-left transition hover:bg-canvas"
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <div
+                          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white shadow-sm ${type.bgClass}`}
+                        >
+                          <Icon className="h-4 w-4" />
+                        </div>
+                        <span className="truncate text-sm font-medium text-ink">
+                          {type.label}
+                        </span>
+                      </div>
+                      <div
+                        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-lg border transition ${
+                          isChecked
+                            ? 'border-brand bg-brand text-white shadow-sm'
+                            : 'border-line bg-canvas'
+                        }`}
+                      >
+                        {isChecked && <Check className="h-3 w-3 stroke-[3]" />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          ) : (
-            filteredConversations.map((conv) => {
-              const group = isGroup(conv);
-              const title = group ? groupTitle(conv) : conversationTitle(conv, currentUserId, t);
-              const isChecked = selected.has(conv.id);
-              return (
-                <button
-                  key={conv.id}
-                  type="button"
-                  onClick={() => toggleChat(conv.id)}
-                  className="flex w-full items-center justify-between rounded-xl p-2.5 text-left transition hover:bg-canvas"
-                >
-                  <div className="flex min-w-0 flex-1 items-center gap-2.5">
-                    <Avatar
-                      src={conv.avatarUrl ?? undefined}
-                      name={title}
-                      className="h-9 w-9 text-xs"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-semibold text-ink">
-                        {title}
-                      </div>
-                      <div className="text-[10px] text-muted">
-                        {group ? 'Группа' : 'Личный чат'}
-                      </div>
-                    </div>
-                  </div>
-                  <div
-                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-lg border transition ${
-                      isChecked
-                        ? 'border-brand bg-brand text-white'
-                        : 'border-line bg-canvas'
-                    }`}
-                  >
-                    {isChecked && <Check className="h-3 w-3 stroke-[3]" />}
-                  </div>
-                </button>
-              );
-            })
           )}
+
+          {/* Section: Individual Chats */}
+          <div>
+            <div className="mb-1.5 px-2 text-[11px] font-bold uppercase tracking-wider text-muted">
+              ЧАТЫ
+            </div>
+            <div className="space-y-1">
+              {filteredConversations.length === 0 ? (
+                <div className="p-4 text-center text-xs text-muted">
+                  Чаты не найдены
+                </div>
+              ) : (
+                filteredConversations.map((conv) => {
+                  const group = isGroup(conv);
+                  const title = group ? groupTitle(conv) : conversationTitle(conv, currentUserId, t);
+                  const subtitle = getConversationSubtitle(conv);
+                  const isChecked = idsSet.has(conv.id);
+                  return (
+                    <button
+                      key={conv.id}
+                      type="button"
+                      onClick={() => toggleConv(conv.id)}
+                      className="flex w-full items-center justify-between rounded-xl p-2 text-left transition hover:bg-canvas"
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <Avatar
+                          src={conv.avatarUrl ?? undefined}
+                          name={title}
+                          className="h-9 w-9 text-xs"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium text-ink">
+                            {title}
+                          </div>
+                          <div className="text-[11px] text-muted">
+                            {subtitle}
+                          </div>
+                        </div>
+                      </div>
+                      <div
+                        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-lg border transition ${
+                          isChecked
+                            ? 'border-brand bg-brand text-white shadow-sm'
+                            : 'border-line bg-canvas'
+                        }`}
+                      >
+                        {isChecked && <Check className="h-3 w-3 stroke-[3]" />}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-line px-4 py-3 bg-canvas/30">
-          <span className="text-xs text-muted">
-            Выбрано: {selected.size}
-          </span>
+        <div className="flex items-center justify-end gap-2 border-t border-line px-4 py-3 bg-canvas/30">
+          <Button
+            variant="secondary"
+            className="px-4 py-1.5 text-xs font-semibold"
+            onClick={onClose}
+          >
+            Отмена
+          </Button>
           <Button
             variant="primary"
             className="px-4 py-1.5 text-xs font-semibold"
             onClick={() => {
-              onDone(Array.from(selected));
+              onDone(Array.from(typesSet), Array.from(idsSet));
               onClose();
             }}
           >
-            Готово
+            Сохранить
           </Button>
         </div>
       </div>

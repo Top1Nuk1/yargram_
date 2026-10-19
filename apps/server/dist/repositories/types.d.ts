@@ -281,12 +281,18 @@ export interface FolderRepository {
         name: string;
         conversationIds?: string[] | undefined;
         icon?: string | null | undefined;
+        includedChatTypes?: string[] | undefined;
+        excludedConversationIds?: string[] | undefined;
+        excludedChatTypes?: string[] | undefined;
     }): Promise<ConversationFolder>;
     update(id: string, userId: string, input: {
         name?: string | undefined;
         position?: number | undefined;
         conversationIds?: string[] | undefined;
         icon?: string | null | undefined;
+        includedChatTypes?: string[] | undefined;
+        excludedConversationIds?: string[] | undefined;
+        excludedChatTypes?: string[] | undefined;
     }): Promise<ConversationFolder>;
     delete(id: string, userId: string): Promise<void>;
 }

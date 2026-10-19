@@ -171,4 +171,75 @@ describe('FoldersScreen', () => {
       expect(handleDelete).toHaveBeenCalledWith('folder-1');
     });
   });
+
+  it('allows picking included and excluded chat types and conversations', async () => {
+    const handleCreate = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <FoldersScreen
+        user={mockUser}
+        folders={mockFolders}
+        conversations={mockConversations}
+        onFolderCreate={handleCreate}
+        onFolderUpdate={vi.fn()}
+        onFolderDelete={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Создать новую папку'));
+    const input = screen.getByPlaceholderText('Название папки');
+    fireEvent.change(input, { target: { value: 'Кастомная папка' } });
+
+    // Click "Добавить чаты" for included chats (first button)
+    const addButtons = screen.getAllByRole('button', { name: /Добавить чаты/i });
+    expect(addButtons.length).toBe(2);
+    fireEvent.click(addButtons[0]);
+
+    expect(screen.getByText('Чаты в папке')).toBeDefined();
+    expect(screen.getByText('0 / 100')).toBeDefined();
+
+    // Select "Группы" type
+    const groupsType = screen.getByRole('button', { name: /Группы/i });
+    fireEvent.click(groupsType);
+    expect(screen.getByText('1 / 100')).toBeDefined();
+
+    // Select conversation "Иван"
+    const ivanConv = screen.getByRole('button', { name: /Иван/i });
+    fireEvent.click(ivanConv);
+    expect(screen.getByText('2 / 100')).toBeDefined();
+
+    // Click "Сохранить" in picker
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    // Now click "Добавить чаты" for excluded chats (second button)
+    const addExcludedButtons = screen.getAllByRole('button', { name: /Добавить чаты/i });
+    fireEvent.click(addExcludedButtons[1]);
+
+    expect(screen.getByText('Чаты не в папке')).toBeDefined();
+
+    // Select "Без уведомлений" type
+    const mutedType = screen.getByRole('button', { name: /Без уведомлений/i });
+    fireEvent.click(mutedType);
+
+    // Click "Сохранить" in exclusion picker
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    // Save the folder
+    const createBtn = screen.getByRole('button', { name: 'Создать' });
+    fireEvent.click(createBtn);
+
+    await waitFor(() => {
+      expect(handleCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Кастомная папка',
+          includedChatTypes: ['groups'],
+          conversationIds: ['conv-1'],
+          excludedChatTypes: ['muted'],
+          excludedConversationIds: [],
+        }),
+      );
+    });
+  });
 });
+

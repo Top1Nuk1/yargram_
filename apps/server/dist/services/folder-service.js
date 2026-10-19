@@ -25,6 +25,9 @@ export class FolderService {
             name: this.normalizeName(input.name),
             conversationIds: await this.ownedConversationIds(currentUserId, input.conversationIds ?? []),
             icon: input.icon ?? null,
+            includedChatTypes: input.includedChatTypes ?? [],
+            excludedConversationIds: await this.ownedConversationIds(currentUserId, input.excludedConversationIds ?? []),
+            excludedChatTypes: input.excludedChatTypes ?? [],
         });
         await this.publish(currentUserId);
         return folder;
@@ -34,6 +37,13 @@ export class FolderService {
             ...(input.name === undefined ? {} : { name: this.normalizeName(input.name) }),
             ...(input.position === undefined ? {} : { position: input.position }),
             ...(input.icon === undefined ? {} : { icon: input.icon }),
+            ...(input.includedChatTypes === undefined ? {} : { includedChatTypes: input.includedChatTypes }),
+            ...(input.excludedChatTypes === undefined ? {} : { excludedChatTypes: input.excludedChatTypes }),
+            ...(input.excludedConversationIds === undefined
+                ? {}
+                : {
+                    excludedConversationIds: await this.ownedConversationIds(currentUserId, input.excludedConversationIds),
+                }),
             ...(input.conversationIds === undefined
                 ? {}
                 : {

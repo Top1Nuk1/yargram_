@@ -594,6 +594,9 @@ export type ConversationFolder = {
   position: number;
   conversationIds: string[];
   icon?: string | null | undefined;
+  includedChatTypes?: string[] | undefined;
+  excludedConversationIds?: string[] | undefined;
+  excludedChatTypes?: string[] | undefined;
   createdAt: string;
   updatedAt: string;
 };

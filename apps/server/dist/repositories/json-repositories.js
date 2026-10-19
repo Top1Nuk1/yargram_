@@ -866,6 +866,9 @@ class JsonFolderRepository {
                 position,
                 conversationIds: [...new Set(input.conversationIds ?? [])],
                 icon: input.icon ?? null,
+                includedChatTypes: input.includedChatTypes ? [...new Set(input.includedChatTypes)] : [],
+                excludedConversationIds: input.excludedConversationIds ? [...new Set(input.excludedConversationIds)] : [],
+                excludedChatTypes: input.excludedChatTypes ? [...new Set(input.excludedChatTypes)] : [],
                 createdAt: timestamp,
                 updatedAt: timestamp,
             };
@@ -887,6 +890,15 @@ class JsonFolderRepository {
             }
             if (input.icon !== undefined) {
                 folder.icon = input.icon;
+            }
+            if (input.includedChatTypes !== undefined) {
+                folder.includedChatTypes = [...new Set(input.includedChatTypes)];
+            }
+            if (input.excludedConversationIds !== undefined) {
+                folder.excludedConversationIds = [...new Set(input.excludedConversationIds)];
+            }
+            if (input.excludedChatTypes !== undefined) {
+                folder.excludedChatTypes = [...new Set(input.excludedChatTypes)];
             }
             folder.updatedAt = new Date().toISOString();
             return folder;

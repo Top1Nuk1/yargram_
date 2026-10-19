@@ -603,6 +603,9 @@ export interface ChatFolder {
   position: number;
   conversationIds: string[];
   icon?: string | null;
+  includedChatTypes?: string[];
+  excludedConversationIds?: string[];
+  excludedChatTypes?: string[];
   createdAt: string;
   updatedAt: string;
 }

@@ -321,6 +321,9 @@ const folderCreateSchema = z.object({
     name: z.string().trim().min(1).max(40),
     conversationIds: z.array(z.string().uuid()).max(100).optional(),
     icon: z.string().trim().max(50).nullable().optional(),
+    includedChatTypes: z.array(z.string().trim().max(50)).max(20).optional(),
+    excludedConversationIds: z.array(z.string().uuid()).max(100).optional(),
+    excludedChatTypes: z.array(z.string().trim().max(50)).max(20).optional(),
 });
 const folderUpdateSchema = z
     .object({
@@ -328,6 +331,9 @@ const folderUpdateSchema = z
     position: z.number().int().min(0).max(10_000).optional(),
     conversationIds: z.array(z.string().uuid()).max(100).optional(),
     icon: z.string().trim().max(50).nullable().optional(),
+    includedChatTypes: z.array(z.string().trim().max(50)).max(20).optional(),
+    excludedConversationIds: z.array(z.string().uuid()).max(100).optional(),
+    excludedChatTypes: z.array(z.string().trim().max(50)).max(20).optional(),
 })
     .refine((input) => Object.values(input).some((value) => value !== undefined), {
     message: "At least one folder field is required",
@@ -896,6 +902,9 @@ export function createApiRouter(dependencies) {
                 ? {}
                 : { conversationIds: input.conversationIds }),
             ...(input.icon === undefined ? {} : { icon: input.icon }),
+            ...(input.includedChatTypes === undefined ? {} : { includedChatTypes: input.includedChatTypes }),
+            ...(input.excludedConversationIds === undefined ? {} : { excludedConversationIds: input.excludedConversationIds }),
+            ...(input.excludedChatTypes === undefined ? {} : { excludedChatTypes: input.excludedChatTypes }),
         });
         response.status(201).json({ folder });
     }));
@@ -906,6 +915,9 @@ export function createApiRouter(dependencies) {
             ...(input.name === undefined ? {} : { name: input.name }),
             ...(input.position === undefined ? {} : { position: input.position }),
             ...(input.icon === undefined ? {} : { icon: input.icon }),
+            ...(input.includedChatTypes === undefined ? {} : { includedChatTypes: input.includedChatTypes }),
+            ...(input.excludedConversationIds === undefined ? {} : { excludedConversationIds: input.excludedConversationIds }),
+            ...(input.excludedChatTypes === undefined ? {} : { excludedChatTypes: input.excludedChatTypes }),
             ...(input.conversationIds === undefined
                 ? {}
                 : { conversationIds: input.conversationIds }),
