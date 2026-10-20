@@ -11,11 +11,50 @@ $ErrorActionPreference = "Stop"
 try { $Host.UI.RawUI.WindowTitle = "Yargram Server" } catch { }
 
 $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$ExpectedIp = "26.53.76.128"
-if (-not [string]::IsNullOrWhiteSpace($env:RADMIN_IP)) { $ExpectedIp = $env:RADMIN_IP }
 $ExpectedPort = 3000
 $ExpectedHttpsPort = 3443
 $EnvironmentFile = Join-Path $ProjectRoot ".env"
+
+function Get-ActiveIpAddresses {
+    try {
+        return @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+            Where-Object { $_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up } |
+            ForEach-Object { $_.GetIPProperties().UnicastAddresses } |
+            Where-Object { $_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+            ForEach-Object { $_.Address.IPAddressToString })
+    }
+    catch {
+        return @("127.0.0.1")
+    }
+}
+
+$allActiveIps = Get-ActiveIpAddresses
+
+# Определение Radmin VPN IP
+$RadminIp = $null
+if (-not [string]::IsNullOrWhiteSpace($env:RADMIN_IP) -and ($allActiveIps -contains $env:RADMIN_IP)) {
+    $RadminIp = $env:RADMIN_IP
+} elseif ($allActiveIps -contains "26.53.76.128") {
+    $RadminIp = "26.53.76.128"
+} else {
+    $radminCandidate = $allActiveIps | Where-Object { $_ -like "26.*" } | Select-Object -First 1
+    if ($radminCandidate) { $RadminIp = $radminCandidate }
+}
+
+# Определение LAN IP (Wi-Fi или проводной Ethernet)
+$LanIp = $allActiveIps | Where-Object {
+    $_ -like "192.168.*" -or $_ -like "10.*" -or ($_ -match "^172\.(1[6-9]|2[0-9]|3[0-1])\.")
+} | Select-Object -First 1
+
+if (-not $LanIp) {
+    $LanIp = ($allActiveIps | Where-Object { $_ -ne "127.0.0.1" -and $_ -notlike "169.254.*" -and $_ -notlike "26.*" } | Select-Object -First 1)
+}
+if (-not $LanIp) {
+    $LanIp = "127.0.0.1"
+}
+
+# Рабочий адрес по умолчанию
+$ExpectedIp = if ($RadminIp) { $RadminIp } else { $LanIp }
 
 function Invoke-Npm {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
@@ -147,8 +186,10 @@ if ($null -eq $npm) {
 }
 $script:NpmCommand = $npm.Source
 
-if (-not (Test-LocalIpAddress -IpAddress $ExpectedIp)) {
-    throw "IP $ExpectedIp не найден среди активных адаптеров. Запустите Radmin VPN и подключитесь к нужной сети Yargram."
+if ($RadminIp) {
+    Write-Host "Сеть: обнаружен адаптер Radmin VPN ($RadminIp)." -ForegroundColor Green
+} else {
+    Write-Host "Сеть: Radmin VPN не обнаружен. Yargram работает в локальной сети Wi-Fi/LAN ($LanIp)." -ForegroundColor Yellow
 }
 
 Set-Location -LiteralPath $ProjectRoot
@@ -248,7 +289,18 @@ Import-DotEnvFile -Path $EnvironmentFile
 $env:NODE_ENV = "production"
 $env:HOST = "0.0.0.0"
 $env:PORT = "$ExpectedPort"
-$env:CORS_ORIGINS = "http://${ExpectedIp}:3000,https://${ExpectedIp}:${ExpectedHttpsPort},http://localhost:3000,https://localhost:${ExpectedHttpsPort},http://127.0.0.1:3000,https://127.0.0.1:${ExpectedHttpsPort},http://${ExpectedIp}:5173,http://localhost:5173,http://127.0.0.1:5173"
+$corsList = @(
+    "http://localhost:$ExpectedPort", "https://localhost:$ExpectedHttpsPort",
+    "http://127.0.0.1:$ExpectedPort", "https://127.0.0.1:$ExpectedHttpsPort",
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://${LanIp}:$ExpectedPort", "https://${LanIp}:$ExpectedHttpsPort",
+    "https://top1nuk1.alwaysdata.net", "http://top1nuk1.alwaysdata.net",
+    "https://yargram.site", "http://yargram.site", "https://www.yargram.site"
+)
+if ($RadminIp) {
+    $corsList += @("http://${RadminIp}:$ExpectedPort", "https://${RadminIp}:${ExpectedHttpsPort}")
+}
+$env:CORS_ORIGINS = ($corsList | Select-Object -Unique) -join ","
 
 # HTTPS нужен только для звонков. Если сертификат не готов, Yargram работает
 # по HTTP: переписка, файлы и фотографии доступны, звонки — нет.
@@ -294,13 +346,26 @@ if ($firewallRules.Count -lt 2 -or @($firewallRules | Where-Object { $_.Enabled 
     Write-Warning "Правила Windows Firewall для Yargram не найдены. Для доступа друга запустите лаунчер с подтверждением UAC."
 }
 
-Write-Host "Yargram доступен в сети Radmin VPN:" -ForegroundColor Green
-Write-Host "  HTTP (друг):    http://${ExpectedIp}:$ExpectedPort" -ForegroundColor Green
-if ($httpsReady) {
-    Write-Host "  HTTPS (звонки): https://${ExpectedIp}:$ExpectedHttpsPort" -ForegroundColor Green
+Write-Host ""
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "  Yargram запущен и готов к работе!" -ForegroundColor Green
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "  🌐 В интернете (РФ без VPN и без запреток):" -ForegroundColor White
+Write-Host "     https://top1nuk1.alwaysdata.net" -ForegroundColor Cyan
+Write-Host "     (Приложение: https://top1nuk1.alwaysdata.net/app)" -ForegroundColor DarkCyan
+if ($LanIp -ne "127.0.0.1") {
+    Write-Host "  🏠 В домашней сети Wi-Fi (телефон / ноутбук без VPN):" -ForegroundColor White
+    Write-Host "     http://${LanIp}:$ExpectedPort" -ForegroundColor Green
 }
-else {
-    Write-Host "  HTTPS (звонки): недоступен — сертификат не подготовлен" -ForegroundColor DarkGray
+Write-Host "  💻 На этом компьютере:" -ForegroundColor White
+Write-Host "     http://localhost:$ExpectedPort" -ForegroundColor Gray
+if ($RadminIp) {
+    Write-Host "  🔒 Radmin VPN:" -ForegroundColor White
+    Write-Host "     HTTP:  http://${RadminIp}:$ExpectedPort" -ForegroundColor Yellow
+    if ($httpsReady) {
+        Write-Host "     HTTPS: https://${RadminIp}:$ExpectedHttpsPort" -ForegroundColor Yellow
+    }
 }
+Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Для остановки нажмите Ctrl+C." -ForegroundColor DarkGray
 Invoke-Npm run start --workspace "@yargram/server"
