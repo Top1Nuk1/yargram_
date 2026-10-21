@@ -128,6 +128,11 @@ async function main() {
 
   const wranglerToken = readWranglerToken();
 
+  if (!token && wranglerToken) {
+    token = wranglerToken;
+    console.log("· Загружен токен авторизации Cloudflare из Wrangler (вход через браузер)");
+  }
+
   if (!token && existsSync(TOKEN_FILE)) {
     try {
       token = readFileSync(TOKEN_FILE, "utf-8").trim();
@@ -137,11 +142,6 @@ async function main() {
     } catch {
       // ignore
     }
-  }
-
-  if (!token && wranglerToken) {
-    token = wranglerToken;
-    console.log("· Загружен токен авторизации Cloudflare из Wrangler (вход через Google)");
   }
 
   if (!token) {
