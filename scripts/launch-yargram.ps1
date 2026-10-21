@@ -11,14 +11,39 @@ $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 # RADMIN_IP (прежнее имя оставлено, чтобы уже созданные ярлыки не сломались).
 # Когда появится публичное имя (домен или адрес туннеля), сюда можно положить
 # его: лаунчер сам соберёт ссылки для печати.
-$radminIp = $env:RADMIN_IP
-if ([string]::IsNullOrWhiteSpace($radminIp)) {
-    $radminIp = "26.53.76.128"
+function Get-ActiveIpAddresses {
+    try {
+        return @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+            Where-Object { $_.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up } |
+            ForEach-Object { $_.GetIPProperties().UnicastAddresses } |
+            Where-Object { $_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+            ForEach-Object { $_.Address.IPAddressToString })
+    }
+    catch {
+        return @("127.0.0.1")
+    }
 }
+
+$allActiveIps = Get-ActiveIpAddresses
+$radminIp = if (-not [string]::IsNullOrWhiteSpace($env:RADMIN_IP) -and ($allActiveIps -contains $env:RADMIN_IP)) {
+    $env:RADMIN_IP
+} elseif ($allActiveIps -contains "26.53.76.128") {
+    "26.53.76.128"
+} else {
+    ($allActiveIps | Where-Object { $_ -like "26.*" } | Select-Object -First 1)
+}
+
+$lanIp = ($allActiveIps | Where-Object {
+    $_ -like "192.168.*" -or $_ -like "10.*" -or ($_ -match "^172\.(1[6-9]|2[0-9]|3[0-1])\.")
+} | Select-Object -First 1)
+if (-not $lanIp) { $lanIp = "127.0.0.1" }
+
+$primaryIp = if ($radminIp) { $radminIp } else { $lanIp }
+
 $httpPort = if ([string]::IsNullOrWhiteSpace($env:PORT)) { 3000 } else { $env:PORT }
 $httpsPort = if ([string]::IsNullOrWhiteSpace($env:HTTPS_PORT)) { 3443 } else { $env:HTTPS_PORT }
-$httpUrl = "http://${radminIp}:${httpPort}"
-$httpsUrl = "https://${radminIp}:${httpsPort}"
+$httpUrl = "http://${primaryIp}:${httpPort}"
+$httpsUrl = "https://${primaryIp}:${httpsPort}"
 
 function Test-IsAdministrator {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -94,16 +119,18 @@ try {
     # нужен только для звонков и может не подняться, если нет сертификата.
     $httpReady = $false
     $httpsReady = $false
+    $probeUrls = @("http://127.0.0.1:${httpPort}", "http://localhost:${httpPort}", $httpUrl) | Select-Object -Unique
     for ($attempt = 0; $attempt -lt 240; $attempt++) {
         if (-not $httpReady) {
-            try {
-                $httpHealth = Invoke-RestMethod -Uri "$httpUrl/api/health" -TimeoutSec 2
-                if ($httpHealth.status -eq "ok" -and $httpHealth.service -eq "yargram-server") {
-                    $httpReady = $true
+            foreach ($probe in $probeUrls) {
+                try {
+                    $httpHealth = Invoke-RestMethod -Uri "$probe/api/health" -TimeoutSec 2
+                    if ($httpHealth.status -eq "ok" -and $httpHealth.service -eq "yargram-server") {
+                        $httpReady = $true
+                        break
+                    }
                 }
-            }
-            catch {
-                # Server installation and the first build can take a little while.
+                catch { }
             }
         }
 
@@ -165,32 +192,29 @@ try {
     }
 
     Write-Host ""
-    Write-Host "Yargram запущен успешно." -ForegroundColor Green
-    # Публичный адрес из .env важнее внутреннего: если он задан, друзьям нужен
-    # именно он — остальное лишь то, как сервер видит сам себя.
-    if (-not [string]::IsNullOrWhiteSpace($env:PUBLIC_ORIGIN)) {
-        Write-Host "Ссылка другу: $($env:PUBLIC_ORIGIN)" -ForegroundColor Yellow
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host "             Yargram успешно запущен!" -ForegroundColor Green
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host "  🌐 В интернете (РФ без VPN и без запреток):" -ForegroundColor White
+    Write-Host "     https://top1nuk1.alwaysdata.net" -ForegroundColor Cyan
+    Write-Host "     (Приложение: https://top1nuk1.alwaysdata.net/app)" -ForegroundColor DarkCyan
+    if ($lanIp -ne "127.0.0.1") {
+        Write-Host "  🏠 Домашняя сеть Wi-Fi (телефон / ноутбук без VPN):" -ForegroundColor White
+        Write-Host "     http://${lanIp}:${httpPort}" -ForegroundColor Green
     }
-    else {
-        Write-Host "Ссылка другу: $httpUrl" -ForegroundColor Yellow
+    Write-Host "  💻 На этом компьютере:" -ForegroundColor White
+    Write-Host "     http://localhost:${httpPort}" -ForegroundColor Gray
+    if ($radminIp) {
+        Write-Host "  🔒 Radmin VPN:" -ForegroundColor White
+        Write-Host "     http://${radminIp}:${httpPort}" -ForegroundColor Yellow
+        if ($httpsReady) {
+            Write-Host "     (HTTPS: https://${radminIp}:${httpsPort})" -ForegroundColor Yellow
+        }
     }
-    if ($httpsReady) {
-        Write-Host "Для звонков:  $httpsUrl" -ForegroundColor Green
-    }
-    else {
-        Write-Host "Звонки сейчас недоступны: HTTPS-сертификат не подготовлен." -ForegroundColor DarkGray
-        Write-Host "Переписка, файлы и фотографии работают по ссылке выше." -ForegroundColor DarkGray
-    }
-
+    Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "Не закрывайте окно сервера, пока друг пользуется Yargram." -ForegroundColor Magenta
-    Write-Host "Резервные копии: runtime\backups — раз в сутки, старше недели удаляются сами." -ForegroundColor DarkGray
-    if ($httpsReady) {
-        Start-Process $httpsUrl
-    }
-    else {
-        Start-Process $httpUrl
-    }
+    Write-Host "Не закрывайте окно сервера, пока вы или друзья пользуетесь Yargram." -ForegroundColor Magenta
+    Start-Process "http://localhost:${httpPort}"
     Wait-ForEnter
 }
 catch {
